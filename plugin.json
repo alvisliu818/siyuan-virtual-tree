@@ -1,21 +1,12 @@
 {
   "name": "siyuan-virtual-tree",
-  "author": "VirtualTree",
-  "url": "https://github.com/example/siyuan-virtual-tree",
+  "author": "alvisliu818",
+  "url": "https://github.com/alvisliu818/siyuan-virtual-tree",
   "version": "0.1.0",
   "minAppVersion": "3.6.4",
-  "backends": [
-    "windows",
-    "linux",
-    "darwin",
-    "all"
-  ],
-  "frontends": [
-    "desktop",
-    "mobile",
-    "all"
-  ],
-  "disabledInPublish": false,
+  "backends": ["all"],
+  "frontends": ["all"],
+  "disabledInPublish": true,
   "displayName": {
     "default": "Virtual Document Tree",
     "zh_CN": "虚拟文档树"
