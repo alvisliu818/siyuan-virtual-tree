@@ -1,0 +1,141 @@
+.virtual-tree-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+.virtual-tree-toolbar {
+  display: flex;
+  align-items: center;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--b3-border-color);
+  flex-shrink: 0;
+  gap: 2px;
+}
+
+.virtual-tree-toolbar .block__icon:hover {
+  background-color: var(--b3-list-hover);
+}
+
+.virtual-tree-toolbar .block__icon.is-active {
+  color: var(--b3-theme-primary);
+  background-color: var(--b3-list-hover);
+}
+
+.virtual-tree-toolbar .block__logo {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 14px;
+  color: var(--b3-theme-on-background);
+}
+
+.virtual-tree-toolbar .block__logo-text {
+  font-size: 13px;
+}
+
+.virtual-tree-container {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 4px 0;
+}
+
+.virtual-tree-container .tree-item {
+  padding: 0;
+}
+
+.virtual-tree-container .tree-item-self {
+  display: flex;
+  align-items: center;
+  padding: 3px 8px;
+  gap: 4px;
+  cursor: pointer;
+  border-radius: var(--b3-border-radius);
+  min-height: 28px;
+  transition: background-color 0.15s;
+}
+
+.virtual-tree-container .tree-item-self:hover {
+  background-color: var(--b3-list-hover);
+}
+
+.virtual-tree-container .tree-item-children {
+  overflow: hidden;
+}
+
+.virtual-tree-container .tree-item.is-collapsed > .tree-item-children {
+  display: none;
+}
+
+.virtual-tree-container .tree-item-inner {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--b3-font-size);
+  // flex: 1;
+}
+
+.virtual-tree-filename {
+  border-radius: 2px;
+  padding: 0 2px;
+}
+
+.virtual-tree-weight {
+  font-size: 10px;
+  color: var(--b3-theme-on-surface);
+  background-color: var(--b3-theme-surface);
+  border-radius: 3px;
+  padding: 0 4px;
+  line-height: 16px;
+  flex-shrink: 0;
+}
+
+.virtual-tree-container .collapse-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  margin-left: auto;
+  transition: transform 0.1s ease-in-out;
+  color: var(--b3-theme-on-surface);
+}
+
+.virtual-tree-container .collapse-icon svg {
+  width: 12px;
+  height: 12px;
+}
+
+.virtual-tree-container .tree-item.is-collapsed > .tree-item-self > .collapse-icon {
+  transform: rotate(-90deg);
+}
+
+.virtual-tree-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--b3-theme-on-surface);
+  font-size: var(--b3-font-size);
+  padding: 20px;
+  text-align: center;
+  opacity: 0.6;
+}
+
+.virtual-tree-locate-flash {
+  animation: virtual-tree-flash 2s ease-out;
+}
+
+@keyframes virtual-tree-flash {
+  0% {
+    background-color: var(--b3-theme-primary);
+    color: var(--b3-theme-on-primary);
+  }
+  100% {
+    background-color: transparent;
+    color: inherit;
+  }
+}

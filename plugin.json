@@ -1,0 +1,36 @@
+{
+  "name": "siyuan-virtual-tree",
+  "author": "VirtualTree",
+  "url": "https://github.com/example/siyuan-virtual-tree",
+  "version": "0.1.0",
+  "minAppVersion": "3.6.4",
+  "backends": [
+    "windows",
+    "linux",
+    "darwin",
+    "all"
+  ],
+  "frontends": [
+    "desktop",
+    "mobile",
+    "all"
+  ],
+  "disabledInPublish": false,
+  "displayName": {
+    "default": "Virtual Document Tree",
+    "zh_CN": "虚拟文档树"
+  },
+  "description": {
+    "default": "Virtual document tree panel for SiYuan Notes",
+    "zh_CN": "思源笔记虚拟文档树面板，根据文档首块链接关系构建虚拟树"
+  },
+  "readme": {
+    "default": "README.md",
+    "zh_CN": "README_zh_CN.md"
+  },
+  "keywords": [
+    "虚拟文档树",
+    "virtual tree",
+    "文档关系"
+  ]
+}

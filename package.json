@@ -1,0 +1,29 @@
+{
+  "name": "siyuan-virtual-tree",
+  "version": "0.1.0",
+  "description": "Virtual document tree panel for SiYuan Notes",
+  "main": ".src/index.js",
+  "type": "module",
+  "scripts": {
+    "dev": "rollup --config rollup.config.js -w",
+    "clean": "node -e \"const fs=require('fs');fs.rmSync('.src',{recursive:true,force:true});fs.rmSync('dist',{recursive:true,force:true});\"",
+    "build": "npm run clean && rollup --config rollup.config.js && npm run zip",
+    "zip": "node scripts/zip.js"
+  },
+  "devDependencies": {
+    "@rollup/plugin-commonjs": "^24.0.0",
+    "@rollup/plugin-node-resolve": "^15.0.0",
+    "@rollup/plugin-typescript": "^11.0.0",
+    "@types/node": "^18.0.0",
+    "adm-zip": "^0.6.0",
+    "rollup": "^3.0.0",
+    "rollup-plugin-copy": "^3.5.0",
+    "rollup-plugin-postcss": "^4.0.2",
+    "sass": "^1.69.0",
+    "tslib": "^2.5.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "siyuan": "^1.0.0"
+  }
+}
