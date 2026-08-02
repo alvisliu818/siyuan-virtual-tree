@@ -1,0 +1,48 @@
+{
+  "name": "siyuan-file-editor",
+  "author": "alvisliu",
+  "url": "https://github.com/alvisliu/siyuan-file-editor",
+  "version": "0.1.0",
+  "minAppVersion": "3.7.0",
+  "kernels": [
+    "windows",
+    "linux",
+    "darwin",
+    "docker",
+    "all"
+  ],
+  "backends": [
+    "windows",
+    "linux",
+    "darwin",
+    "docker",
+    "all"
+  ],
+  "frontends": [
+    "desktop",
+    "browser-desktop",
+    "desktop-window",
+    "all"
+  ],
+  "disabledInPublish": false,
+  "displayName": {
+    "default": "File Editor",
+    "zh-CN": "文件编辑器"
+  },
+  "description": {
+    "default": "VSCode-like file editor & Obsidian-like file manager for SiYuan, powered by Monaco Editor.",
+    "zh-CN": "类 VSCode 文件编辑器与类 Obsidian 文件管理器,基于 Monaco Editor。"
+  },
+  "readme": {
+    "default": "README.md",
+    "zh-CN": "README.md"
+  },
+  "icon": "icon.png",
+  "keywords": [
+    "文件编辑器",
+    "monaco",
+    "file manager",
+    "editor",
+    "VSCode"
+  ]
+}

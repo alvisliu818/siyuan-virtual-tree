@@ -1,0 +1,222 @@
+/* === 文件树 Dock === */
+.syfe-file-tree-dock {
+    height: 100%;
+}
+
+.syfe-tree__toolbar {
+    flex-shrink: 0;
+    border-bottom: 1px solid var(--b3-border-color);
+}
+
+.syfe-tree__scroll {
+    overflow: auto;
+    min-height: 0;
+}
+
+.syfe-tree__root,
+.syfe-tree__children {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.syfe-tree__item {
+    user-select: none;
+}
+
+.syfe-tree__row {
+    display: flex;
+    align-items: center;
+    height: 28px;
+    padding: 0 4px;
+    cursor: pointer;
+    border-radius: 4px;
+    gap: 4px;
+
+    &:hover {
+        background-color: var(--b3-list-hover);
+    }
+}
+
+.syfe-tree__toggle {
+    width: 16px;
+    height: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+
+    svg {
+        width: 10px;
+        height: 10px;
+        opacity: 0.6;
+    }
+
+    &:empty {
+        width: 16px;
+    }
+}
+
+.syfe-tree__item--dir[data-expanded="true"] > .syfe-tree__row > .syfe-tree__toggle svg {
+    transform: rotate(90deg);
+}
+
+.syfe-tree__icon {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+
+    svg {
+        width: 16px;
+        height: 16px;
+    }
+}
+
+.syfe-tree__label {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 13px;
+    color: var(--b3-theme-on-background);
+}
+
+.syfe-tree__children {
+    padding-left: 16px;
+}
+
+.syfe-tree__empty {
+    padding: 8px 12px;
+    font-size: 12px;
+    color: var(--b3-theme-on-surface);
+    list-style: none;
+}
+
+/* === 编辑器 Tab === */
+.syfe-editor-tab {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+}
+
+.syfe-editor {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+}
+
+.syfe-editor__path {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 12px;
+    font-size: 12px;
+    color: var(--b3-theme-on-surface);
+    background: var(--b3-theme-surface);
+    border-bottom: 1px solid var(--b3-border-color);
+    flex-shrink: 0;
+    font-family: var(--b3-font-family-code);
+}
+
+.syfe-editor__dirty {
+    color: var(--b3-font-color10);
+    font-size: 14px;
+}
+
+.syfe-editor__container {
+    flex: 1;
+    min-height: 0;
+}
+
+.syfe-editor__binary,
+.syfe-editor__error {
+    padding: 24px;
+    text-align: center;
+    color: var(--b3-theme-on-surface);
+    font-size: 14px;
+}
+
+.syfe-editor--readonly {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+}
+
+/* === 搜索面板 === */
+.syfe-search-tab {
+    height: 100%;
+}
+
+.syfe-search {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+}
+
+.syfe-search__bar {
+    display: flex;
+    gap: 8px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--b3-border-color);
+    flex-shrink: 0;
+}
+
+.syfe-search__info {
+    padding: 4px 12px;
+    font-size: 12px;
+    color: var(--b3-theme-on-surface);
+    flex-shrink: 0;
+    min-height: 24px;
+}
+
+.syfe-search__scroll {
+    overflow: auto;
+    min-height: 0;
+}
+
+.syfe-search__results {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.syfe-search__item {
+    padding: 6px 12px;
+    cursor: pointer;
+    border-bottom: 1px solid var(--b3-border-color);
+
+    &:hover {
+        background-color: var(--b3-list-hover);
+    }
+}
+
+.syfe-search__item-path {
+    font-size: 12px;
+    color: var(--b3-theme-on-surface);
+    font-family: var(--b3-font-family-code);
+    margin-bottom: 2px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.syfe-search__item-line {
+    color: var(--b3-font-color5);
+}
+
+.syfe-search__item-preview {
+    font-size: 13px;
+    color: var(--b3-theme-on-background);
+    font-family: var(--b3-font-family-code);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.syfe-search__mark {
+    background-color: var(--b3-font-background8);
+    color: var(--b3-theme-on-background);
+    border-radius: 2px;
+    padding: 0 2px;
+}

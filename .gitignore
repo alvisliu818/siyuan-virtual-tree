@@ -1,0 +1,16 @@
+node_modules/
+dist/
+*.zip
+.trae/
+*.log
+.DS_Store
+.idea/
+.vscode/
+
+# Dev build outputs at root
+/index.js
+/index.css
+/i18n/
+/*.worker.js
+/*.ttf
+/[0-9]*.js
