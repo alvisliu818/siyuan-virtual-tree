@@ -1,0 +1,13 @@
+{
+  "name": "siyuan-file-editor-terminal-server",
+  "version": "0.1.0",
+  "description": "WebSocket terminal server for siyuan-file-editor plugin",
+  "main": "terminal-server.js",
+  "scripts": {
+    "start": "node terminal-server.js"
+  },
+  "dependencies": {
+    "node-pty": "^1.0.0",
+    "ws": "^8.18.0"
+  }
+}

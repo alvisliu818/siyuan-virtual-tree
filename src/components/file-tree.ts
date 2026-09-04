@@ -1,13 +1,14 @@
 import {Menu, Dialog, confirm, showMessage} from "siyuan";
 import {readDir, renameFile, removeFile, mkdir, writeFile} from "../api/file";
 import {joinPath, basename, dirname} from "../utils/path";
-import {getFileIcon, iconHTML} from "../utils/icons";
+import {fileIconHTML, folderIconHTML} from "../utils/icons";
 import {DirEntry} from "../types";
 
 // 文件树操作接口(由插件入口提供)
 export interface IFileTreeActions {
     openFile(path: string): void;
     openSearch(rootPath?: string): void;
+    openTerminal(cwd: string): void;
 }
 
 function escapeHTML(s: string): string {
@@ -29,13 +30,18 @@ function sortEntries(entries: DirEntry[]): DirEntry[] {
 }
 
 // 生成单个条目 HTML
-function createEntryHTML(entry: DirEntry, parentPath: string): string {
+// isEmpty: 目录已知为空(无子条目),此时不显示折叠箭头
+function createEntryHTML(entry: DirEntry, parentPath: string, isEmpty = false): string {
     const fullPath = joinPath(parentPath, entry.name);
     if (entry.isDir) {
+        // 空目录不显示折叠图标(与文件行的空 toggle 保持一致,保证对齐)
+        const toggle = isEmpty
+            ? `<span class="syfe-tree__toggle"></span>`
+            : `<span class="syfe-tree__toggle"><svg><use xlink:href="#iconRight"></use></svg></span>`;
         return `<li class="syfe-tree__item syfe-tree__item--dir" data-path="${escapeHTML(fullPath)}" data-is-dir="true" data-loaded="false" data-expanded="false">
             <div class="syfe-tree__row">
-                <span class="syfe-tree__toggle"><svg><use xlink:href="#iconRight"></use></svg></span>
-                <span class="syfe-tree__icon">${iconHTML("iconFolder")}</span>
+                ${toggle}
+                <span class="syfe-tree__icon">${folderIconHTML(entry.name, false)}</span>
                 <span class="syfe-tree__label">${escapeHTML(entry.name)}</span>
             </div>
             <ul class="syfe-tree__children" style="display:none;"></ul>
@@ -44,7 +50,7 @@ function createEntryHTML(entry: DirEntry, parentPath: string): string {
     return `<li class="syfe-tree__item syfe-tree__item--file" data-path="${escapeHTML(fullPath)}" data-is-dir="false">
         <div class="syfe-tree__row">
             <span class="syfe-tree__toggle"></span>
-            <span class="syfe-tree__icon">${iconHTML(getFileIcon(entry.name))}</span>
+            <span class="syfe-tree__icon">${fileIconHTML(entry.name)}</span>
             <span class="syfe-tree__label">${escapeHTML(entry.name)}</span>
         </div>
     </li>`;
@@ -60,7 +66,18 @@ export async function renderTree(container: HTMLElement, dirPath: string): Promi
             container.innerHTML = `<li class="syfe-tree__empty">空目录</li>`;
             return;
         }
-        container.innerHTML = sorted.map(e => createEntryHTML(e, dirPath)).join("");
+        // 检测子目录是否为空,空目录不渲染折叠箭头
+        const emptyDirs = new Set<string>();
+        await Promise.all(sorted.map(async (e) => {
+            if (!e.isDir) return;
+            try {
+                const sub = await readDir(joinPath(dirPath, e.name));
+                if (!Array.isArray(sub) || sub.length === 0) emptyDirs.add(e.name);
+            } catch {
+                // 读取失败视为非空(保留折叠箭头),避免误判
+            }
+        }));
+        container.innerHTML = sorted.map(e => createEntryHTML(e, dirPath, emptyDirs.has(e.name))).join("");
     } catch (e) {
         console.error("[siyuan-file-editor] renderTree error:", e);
         container.innerHTML = `<li class="syfe-tree__empty">读取失败: ${escapeHTML(String(e))}</li>`;
@@ -78,6 +95,40 @@ async function refreshFolderLi(li: HTMLElement): Promise<void> {
     children.style.display = "";
 }
 
+// 内容变更后,就地修正某目录自身在父树中的折叠箭头
+// (目录由空变非空 / 由非空变空时,其父节点渲染的 <li> 上的箭头需要同步,且不能折叠父节点)
+async function syncDirToggleInParent(rootEl: HTMLElement, dirPath: string, rootPath: string): Promise<void> {
+    const parentPath = dirname(dirPath);
+    if (parentPath === rootPath) return; // 根目录无父节点
+    const parentLi = findFolderLi(rootEl, parentPath, rootPath);
+    if (!parentLi || parentLi.dataset.loaded !== "true") return; // 父未展开则无需处理
+    const childLi = parentLi.querySelector(`:scope > .syfe-tree__children > li[data-path="${escapeSelector(dirPath)}"]`) as HTMLElement | null;
+    if (!childLi) return;
+    const toggleEl = childLi.querySelector(":scope > .syfe-tree__row > .syfe-tree__toggle") as HTMLElement;
+    if (!toggleEl) return;
+    try {
+        const sub = await readDir(dirPath);
+        const isEmpty = !Array.isArray(sub) || sub.length === 0;
+        const hasChevron = !!toggleEl.querySelector("svg");
+        if (isEmpty && hasChevron) {
+            toggleEl.innerHTML = "";
+        } else if (!isEmpty && !hasChevron) {
+            toggleEl.innerHTML = `<svg><use xlink:href="#iconRight"></use></svg>`;
+        }
+    } catch {
+        // 读取失败则保持现状
+    }
+}
+
+// 更新文件夹图标(展开/折叠状态切换时调用)
+function updateFolderIcon(li: HTMLElement): void {
+    const iconEl = li.querySelector(":scope > .syfe-tree__row > .syfe-tree__icon") as HTMLElement;
+    if (!iconEl) return;
+    const folderName = basename(li.dataset.path || "");
+    const expanded = li.dataset.expanded === "true";
+    iconEl.innerHTML = folderIconHTML(folderName, expanded);
+}
+
 // 展开/折叠文件夹
 export async function toggleFolder(li: HTMLElement): Promise<void> {
     const children = li.querySelector(":scope > .syfe-tree__children") as HTMLElement;
@@ -86,10 +137,12 @@ export async function toggleFolder(li: HTMLElement): Promise<void> {
     if (expanded) {
         children.style.display = "none";
         li.dataset.expanded = "false";
+        updateFolderIcon(li);
         return;
     }
     children.style.display = "";
     li.dataset.expanded = "true";
+    updateFolderIcon(li);
     if (li.dataset.loaded === "false") {
         await renderTree(children, li.dataset.path!);
         li.dataset.loaded = "true";
@@ -102,7 +155,40 @@ export function collapseAll(rootEl: HTMLElement): void {
         const children = li.querySelector(":scope > .syfe-tree__children") as HTMLElement;
         if (children) children.style.display = "none";
         li.dataset.expanded = "false";
+        updateFolderIcon(li);
     });
+}
+
+// 刷新所有已展开文件夹的图标(保留展开状态)
+// 用于扩展加载后更新文件树图标,不改变树的展开/折叠状态
+export async function refreshAllExpanded(rootEl: HTMLElement): Promise<void> {
+    // 1. 重新渲染根目录(保留当前展开的文件夹路径)
+    const rootPath = rootEl.dataset.path;
+    if (!rootPath) return;
+    // 记录所有已展开的文件夹路径
+    const expandedPaths = new Set<string>();
+    rootEl.querySelectorAll<HTMLElement>("li.syfe-tree__item--dir[data-expanded='true']").forEach(li => {
+        const p = li.dataset.path;
+        if (p) expandedPaths.add(p);
+    });
+    // 2. 重新渲染根目录
+    await renderTree(rootEl, rootPath);
+    // 3. 重新展开之前展开的文件夹(递归,因为子文件夹需要父文件夹先展开才能找到)
+    const toExpand = Array.from(expandedPaths).sort((a, b) => a.split("/").length - b.split("/").length);
+    for (const p of toExpand) {
+        if (p === rootPath) continue;
+        const li = rootEl.querySelector(`li[data-path="${escapeSelector(p)}"]`) as HTMLElement | null;
+        if (li) {
+            const children = li.querySelector(":scope > .syfe-tree__children") as HTMLElement;
+            if (children) {
+                await renderTree(children, p);
+                li.dataset.loaded = "true";
+                li.dataset.expanded = "true";
+                children.style.display = "";
+                updateFolderIcon(li);
+            }
+        }
+    }
 }
 
 // 按路径查找对应的 <li>,根路径返回 null
@@ -175,6 +261,7 @@ export async function createNewFile(parentDir: string, rootEl: HTMLElement, root
         await writeFile(fullPath, "");
         showMessage("文件已创建", 2000, "info");
         await refreshPath(rootEl, parentDir, rootPath);
+        await syncDirToggleInParent(rootEl, parentDir, rootPath);
     } catch (e) {
         showMessage(`创建失败: ${e}`, 5000, "error");
     }
@@ -189,6 +276,7 @@ export async function createNewFolder(parentDir: string, rootEl: HTMLElement, ro
         await mkdir(fullPath);
         showMessage("文件夹已创建", 2000, "info");
         await refreshPath(rootEl, parentDir, rootPath);
+        await syncDirToggleInParent(rootEl, parentDir, rootPath);
     } catch (e) {
         showMessage(`创建失败: ${e}`, 5000, "error");
     }
@@ -204,6 +292,9 @@ export async function renameEntry(path: string, rootEl: HTMLElement, rootPath: s
         await renameFile(path, newPath);
         showMessage("重命名成功", 2000, "info");
         await refreshPath(rootEl, dirname(path), rootPath);
+        await refreshPath(rootEl, dirname(newPath), rootPath);
+        await syncDirToggleInParent(rootEl, dirname(path), rootPath);
+        await syncDirToggleInParent(rootEl, dirname(newPath), rootPath);
     } catch (e) {
         showMessage(`重命名失败: ${e}`, 5000, "error");
     }
@@ -221,6 +312,7 @@ export function deleteEntry(path: string, isDir: boolean, rootEl: HTMLElement, r
                 await removeFile(path);
                 showMessage("已删除", 2000, "info");
                 await refreshPath(rootEl, dirname(path), rootPath);
+                await syncDirToggleInParent(rootEl, dirname(path), rootPath);
             } catch (e) {
                 showMessage(`删除失败: ${e}`, 5000, "error");
             }
@@ -256,6 +348,11 @@ export function showFileTreeMenu(
             label: "在此目录搜索",
             click: () => actions.openSearch(path),
         });
+        menu.addItem({
+            icon: "iconTerminal",
+            label: "在集成终端中打开",
+            click: () => actions.openTerminal(path),
+        });
         menu.addSeparator();
     }
     menu.addItem({
@@ -279,5 +376,13 @@ export function showFileTreeMenu(
             );
         },
     });
+    // 文件:在父目录中打开终端(目录已在上方添加终端选项)
+    if (!isDir) {
+        menu.addItem({
+            icon: "iconTerminal",
+            label: "在集成终端中打开",
+            click: () => actions.openTerminal(dirname(path)),
+        });
+    }
     menu.open({x: e.clientX, y: e.clientY});
 }

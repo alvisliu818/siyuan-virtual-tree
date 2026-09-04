@@ -3,7 +3,9 @@ import {TAB_TYPE} from "../constants";
 import {basename} from "../utils/path";
 import {EditorConfig} from "../types";
 import {createEditor} from "../editor/monaco";
-import {BINARY_EXTENSIONS} from "../constants";
+import {BINARY_EXTENSIONS, isImageFile, isOfficeFile} from "../constants";
+import {openImageTab} from "./image-tab";
+import {openOfficeTab} from "./office-tab";
 import {
     getModel,
     saveModel,
@@ -37,6 +39,16 @@ function escapeHTML(s: string): string {
 
 // 打开文件编辑 Tab(同文件去重,聚焦已有 Tab)
 export function openFileTab(plugin: IPluginForTab, path: string): void {
+    // 图片文件交由独立的图片查看 Tab 处理
+    if (isImageFile(path)) {
+        openImageTab(plugin as any, path);
+        return;
+    }
+    // Office 文档(docx/xlsx/pptx、csv、旧版 doc/xls/ppt)交由独立的 Office Tab 处理
+    if (isOfficeFile(path)) {
+        openOfficeTab(plugin as any, path);
+        return;
+    }
     const opened = plugin.getOpenedTab()[TAB_TYPE] || [];
     const existing = opened.find((c: any) => c?.data?.path === path);
     if (existing) {

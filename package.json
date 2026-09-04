@@ -4,8 +4,10 @@
   "description": "VSCode-like file editor & Obsidian-like file manager for SiYuan, powered by Monaco Editor.",
   "main": "index.js",
   "scripts": {
-    "dev": "webpack --config webpack.config.js --mode development",
-    "build": "webpack --config webpack.config.js --mode production"
+    "dev": "node tools/clean-env-run.js node_modules/webpack/bin/webpack.js --config webpack.config.js --mode development",
+    "build": "node tools/clean-env-run.js node_modules/webpack/bin/webpack.js --config webpack.config.js --mode production",
+    "zip": "node scripts/zip-dist.js",
+    "package": "npm run build && npm run zip"
   },
   "keywords": [
     "siyuan",
@@ -32,7 +34,18 @@
     "tslib": "^2.8.1",
     "typescript": "^5.6.0",
     "webpack": "^5.107.2",
-    "webpack-cli": "^7.0.3",
-    "zip-webpack-plugin": "^4.0.3"
+    "webpack-cli": "^7.0.3"
+  },
+  "dependencies": {
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
+    "docx": "^9.7.1",
+    "jszip": "^3.10.1",
+    "mammoth": "^1.12.2",
+    "quill": "^2.0.3",
+    "vscode-oniguruma": "^2.0.1",
+    "vscode-textmate": "^9.3.2",
+    "x-data-spreadsheet": "^1.1.9",
+    "xlsx": "^0.18.5"
   }
 }

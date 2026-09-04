@@ -4,7 +4,6 @@ const webpack = require("webpack");
 const {EsbuildPlugin} = require("esbuild-loader");
 const MiniCssExtractPlugin = require("mini-css-extract-plugin");
 const CopyPlugin = require("copy-webpack-plugin");
-const ZipPlugin = require("zip-webpack-plugin");
 const MonacoWebpackPlugin = require("monaco-editor-webpack-plugin");
 
 // Monaco 按需加载的语言与特性,控制打包体积
@@ -18,10 +17,15 @@ const monacoFeatures = [
     "codelens", "colorPicker", "documentSymbols", "quickCommand",
 ];
 
+// 思源插件目录(开发模式直接输出到此目录,避免手动复制 chunk 文件)
+// 可通过环境变量 SYFI_PLUGIN_DIR 覆盖
+const SIYUAN_PLUGIN_DIR = process.env.SYFI_PLUGIN_DIR || "E:\\HOME\\SiYuan\\data\\plugins\\siyuan-file-editor";
+
 module.exports = (env, argv) => {
     const production = argv.mode === "production";
-    // 生产模式输出到 dist/ 子目录(完整插件目录),开发模式输出到项目根目录
-    const outputPath = production ? path.resolve(__dirname, "dist") : path.resolve(__dirname);
+    // 生产模式输出到 dist/ 子目录(完整插件目录)
+    // 开发模式输出到思源插件目录(直接生效,避免手动复制大量 chunk 文件)
+    const outputPath = production ? path.resolve(__dirname, "dist") : path.resolve(SIYUAN_PLUGIN_DIR);
 
     const plugins = [
         new MiniCssExtractPlugin({
@@ -53,20 +57,14 @@ module.exports = (env, argv) => {
                 ],
             }),
         );
-        // 打包 dist/ 为 package.zip(排除 zip 自身,避免递归)
-        plugins.push(
-            new ZipPlugin({
-                filename: "package.zip",
-                pathPrefix: "",
-                exclude: [/package\.zip$/],
-            }),
-        );
     } else {
-        // 开发模式:仅复制 i18n 到根目录
+        // 开发模式:复制 i18n、plugin.json、icon.png 到思源插件目录
         plugins.push(
             new CopyPlugin({
                 patterns: [
                     {from: "src/i18n/", to: "./i18n/"},
+                    {from: "plugin.json", to: "./"},
+                    {from: "icon.png", to: "./", noErrorOnMissing: true},
                 ],
             }),
         );
@@ -79,6 +77,9 @@ module.exports = (env, argv) => {
         output: {
             filename: "index.js",
             path: outputPath,
+            // 生产模式:构建前清空 dist/,确保其中只有本次打包产物
+            // (zip 等二次产物不输出到此目录,由 scripts/zip-dist.js 输出到 build/)
+            clean: production,
             libraryTarget: "commonjs2",
             library: {
                 type: "commonjs2",

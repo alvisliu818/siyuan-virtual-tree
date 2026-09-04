@@ -6,6 +6,7 @@ import {
     collapseAll,
     createNewFile,
     createNewFolder,
+    promptDialog,
     IFileTreeActions,
 } from "../components/file-tree";
 
@@ -15,6 +16,9 @@ export interface IPluginForDock {
     name: string;
     openFile(path: string): void;
     openSearch(rootPath?: string): void;
+    openTerminal(cwd: string): void;
+    getFileTreeRoot(): string;
+    setFileTreeRoot(path: string): void;
 }
 
 // Dock 实例上附加的字段
@@ -45,11 +49,12 @@ export function createFileTreeDockConfig(plugin: IPluginForDock) {
         },
         data: {},
         init(this: FileTreeDockInstance) {
-            const rootPath = this.data?.rootPath || WORKSPACE_ROOT;
-            this._rootPath = rootPath;
+            // 优先使用插件配置中的根目录,其次使用 data.rootPath,最后回退到默认值
+            this._rootPath = plugin.getFileTreeRoot() || this.data?.rootPath || WORKSPACE_ROOT;
             this._actions = {
                 openFile: (path: string) => plugin.openFile(path),
                 openSearch: (rp?: string) => plugin.openSearch(rp),
+                openTerminal: (cwd: string) => plugin.openTerminal(cwd),
             };
 
             this.element.classList.add("syfe-file-tree-dock", "fn__flex-column");
@@ -60,6 +65,9 @@ export function createFileTreeDockConfig(plugin: IPluginForDock) {
                         <span class="block__logotext">文件</span>
                     </div>
                     <span class="fn__flex-1 fn__space"></span>
+                    <span class="block__icon ariaLabel" data-action="change-root" aria-label="切换根目录" data-position="north">
+                        <svg><use xlink:href="#iconFolder"></use></svg>
+                    </span>
                     <span class="block__icon ariaLabel" data-action="new-file" aria-label="新建文件" data-position="north">
                         <svg><use xlink:href="#iconFile"></use></svg>
                     </span>
@@ -76,16 +84,30 @@ export function createFileTreeDockConfig(plugin: IPluginForDock) {
                         <svg><use xlink:href="#iconSearch"></use></svg>
                     </span>
                 </div>
+                <div class="syfe-tree__path" data-action="change-root" title="点击切换根目录">${escapeHTML(this._rootPath)}</div>
                 <div class="fn__flex-1 syfe-tree__scroll">
-                    <ul class="syfe-tree__root" data-path="${escapeHTML(rootPath)}"></ul>
+                    <ul class="syfe-tree__root" data-path="${escapeHTML(this._rootPath)}"></ul>
                 </div>`;
 
             const rootEl = this.element.querySelector(".syfe-tree__root") as HTMLElement;
             this._rootEl = rootEl;
+            const pathLabel = this.element.querySelector(".syfe-tree__path") as HTMLElement;
             const self = this;
 
+            // 切换根目录:弹出输入框,保存到配置并重新渲染
+            const changeRoot = async () => {
+                const newPath = await promptDialog("切换根目录", self._rootPath || "/data");
+                if (!newPath) return;
+                self._rootPath = newPath;
+                rootEl.dataset.path = newPath;
+                pathLabel.textContent = newPath;
+                // 保存到配置,下次打开 Dock 时生效
+                plugin.setFileTreeRoot(newPath);
+                renderTree(rootEl, newPath);
+            };
+
             // 渲染根目录
-            renderTree(rootEl, rootPath);
+            renderTree(rootEl, this._rootPath);
 
             // 点击事件(委托)
             this._clickHandler = (e: MouseEvent) => {
@@ -94,21 +116,25 @@ export function createFileTreeDockConfig(plugin: IPluginForDock) {
                 const actionEl = target.closest("[data-action]") as HTMLElement;
                 if (actionEl) {
                     const action = actionEl.dataset.action;
+                    const currentRoot = self._rootPath!;
                     switch (action) {
+                        case "change-root":
+                            changeRoot();
+                            break;
                         case "refresh":
-                            renderTree(rootEl, rootPath);
+                            renderTree(rootEl, currentRoot);
                             break;
                         case "collapse":
                             collapseAll(rootEl);
                             break;
                         case "search":
-                            plugin.openSearch(rootPath);
+                            plugin.openSearch(currentRoot);
                             break;
                         case "new-file":
-                            createNewFile(rootPath, rootEl, rootPath);
+                            createNewFile(currentRoot, rootEl, currentRoot);
                             break;
                         case "new-folder":
-                            createNewFolder(rootPath, rootEl, rootPath);
+                            createNewFolder(currentRoot, rootEl, currentRoot);
                             break;
                     }
                     return;
@@ -139,7 +165,7 @@ export function createFileTreeDockConfig(plugin: IPluginForDock) {
                 e.stopPropagation();
                 const path = li.dataset.path!;
                 const isDir = li.dataset.isDir === "true";
-                showFileTreeMenu(e, path, isDir, rootEl, rootPath, self._actions!);
+                showFileTreeMenu(e, path, isDir, rootEl, self._rootPath!, self._actions!);
             };
             this.element.addEventListener("contextmenu", this._contextHandler);
         },

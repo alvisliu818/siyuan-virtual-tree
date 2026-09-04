@@ -1,6 +1,7 @@
 import {extname} from "./path";
+import {getFileIconFor as getExtFileIcon, getFolderIcon as getExtFolderIcon} from "../extensions/icon-theme-loader";
 
-// 扩展名 → 思源内置 SVG icon id 映射
+// 扩展名 → 思源内置 SVG icon id 映射(当无扩展图标主题时使用)
 const ICON_MAP: Record<string, string> = {
     ".md": "iconMarkdown",
     ".markdown": "iconMarkdown",
@@ -38,13 +39,34 @@ const ICON_MAP: Record<string, string> = {
     ".pdf": "iconFile",
 };
 
-// 根据文件名返回思源 icon id,未知类型返回 iconFile
+// 根据文件名返回思源内置 icon id,未知类型返回 iconFile
 export function getFileIcon(name: string): string {
     const ext = extname(name);
     return ICON_MAP[ext] || "iconFile";
 }
 
-// 生成带 icon 的 SVG HTML
+// 生成文件图标的 HTML
+// 如果安装了 VSCode 图标主题扩展,优先使用其 SVG 图标,否则回退到思源内置图标
+export function fileIconHTML(name: string): string {
+    const extIcon = getExtFileIcon(name);
+    if (extIcon) {
+        return `<img class="syfe-tree__ext-icon" src="${extIcon}" alt="" />`;
+    }
+    return `<svg class="b3-list-item__graphic"><use xlink:href="#${getFileIcon(name)}"></use></svg>`;
+}
+
+// 生成文件夹图标的 HTML
+// name: 文件夹名(用于按名称匹配特定图标,如 src → folder-src)
+// expanded: 是否展开状态(展开状态使用不同图标)
+export function folderIconHTML(name?: string, expanded?: boolean): string {
+    const extIcon = getExtFolderIcon(name, expanded);
+    if (extIcon) {
+        return `<img class="syfe-tree__ext-icon" src="${extIcon}" alt="" />`;
+    }
+    return `<svg class="b3-list-item__graphic"><use xlink:href="#iconFolder"></use></svg>`;
+}
+
+// 生成带 icon 的 SVG HTML(兼容旧接口)
 export function iconHTML(iconId: string): string {
     return `<svg class="b3-list-item__graphic"><use xlink:href="#${iconId}"></use></svg>`;
 }

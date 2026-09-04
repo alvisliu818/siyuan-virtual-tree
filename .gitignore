@@ -1,16 +1,20 @@
 node_modules/
 dist/
+build/
 *.zip
 .trae/
 *.log
 .DS_Store
 .idea/
 .vscode/
+.workbuddy/
 
-# Dev build outputs at root
+# Dev build outputs at root (legacy, now outputs to SiYuan plugin dir)
 /index.js
 /index.css
 /i18n/
 /*.worker.js
 /*.ttf
 /[0-9]*.js
+/vendors-*.js
+/node_modules_*.js

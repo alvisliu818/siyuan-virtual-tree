@@ -1,6 +1,7 @@
 import * as monaco from "monaco-editor";
 import {extname} from "../utils/path";
 import {EditorConfig} from "../types";
+import {getActiveThemeName} from "../extensions/theme-loader";
 
 let initialized = false;
 
@@ -85,7 +86,49 @@ export function getCurrentMode(): 0 | 1 {
 export function setupMonaco(pluginName: string): void {
     if (initialized) return;
     initialized = true;
+    configureTypeScriptWorker();
     applyTheme(getCurrentMode());
+}
+
+// 配置 TypeScript/JavaScript worker
+// 禁用语义和语法诊断,避免分析深度嵌套表达式时栈溢出(minified 代码等)
+// 语法高亮由 Monaco 的 Monarch tokenizer 提供,不依赖 worker 诊断
+function configureTypeScriptWorker(): void {
+    const ts = (monaco.languages.typescript as any);
+    if (ts?.typescriptDefaults) {
+        ts.typescriptDefaults.setDiagnosticsOptions({
+            noSemanticValidation: true,
+            noSyntaxValidation: true,
+        });
+        ts.typescriptDefaults.setCompilerOptions({
+            target: ts.ScriptTarget.ESNext,
+            allowNonTsExtensions: true,
+            moduleResolution: ts.ModuleResolutionKind.NodeJs,
+            module: ts.ModuleKind.ESNext,
+            noEmit: true,
+            esModuleInterop: true,
+            jsx: ts.JsxEmit.React,
+            allowJs: true,
+            typeRoots: [],
+        });
+    }
+    if (ts?.javascriptDefaults) {
+        ts.javascriptDefaults.setDiagnosticsOptions({
+            noSemanticValidation: true,
+            noSyntaxValidation: true,
+        });
+        ts.javascriptDefaults.setCompilerOptions({
+            target: ts.ScriptTarget.ESNext,
+            allowNonTsExtensions: true,
+            moduleResolution: ts.ModuleResolutionKind.NodeJs,
+            module: ts.ModuleKind.ESNext,
+            noEmit: true,
+            esModuleInterop: true,
+            jsx: ts.JsxEmit.React,
+            allowJs: true,
+            typeRoots: [],
+        });
+    }
 }
 
 // 根据思源配色定义并切换 Monaco 主题
@@ -117,7 +160,9 @@ export function createEditor(
 ): monaco.editor.IStandaloneCodeEditor {
     const editor = monaco.editor.create(container, {
         model,
-        theme: getCurrentMode() === 1 ? "siyuan-dark" : "siyuan-light",
+        // 优先使用当前激活的扩展主题;此处不能硬编码思源主题,
+        // 因为创建实例时的 theme 参数会全局覆盖 setTheme,导致扩展代码主题失效
+        theme: getActiveThemeName() ?? (getCurrentMode() === 1 ? "siyuan-dark" : "siyuan-light"),
         fontSize: config.fontSize,
         tabSize: config.tabSize,
         wordWrap: config.wordWrap,
@@ -132,6 +177,100 @@ export function createEditor(
     });
     // Ctrl/Cmd + S 保存
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, onSave);
+
+    // 修复:思源拦截了 paste 事件,导致 Monaco 编辑器无法粘贴
+    // 方案:在 window capture 阶段拦截 Ctrl+V/Ctrl+C/Ctrl+X keydown 事件,
+    // 阻止思源处理,然后用 navigator.clipboard API 读写剪贴板
+    const isEditorFocused = (): boolean => {
+        if (editor.hasTextFocus()) return true;
+        const active = document.activeElement;
+        if (active && container.contains(active)) return true;
+        return false;
+    };
+
+    // 从剪贴板读取文本并插入编辑器
+    const doPaste = async () => {
+        try {
+            const text = await navigator.clipboard.readText();
+            if (text) {
+                const selection = editor.getSelection();
+                if (selection) {
+                    editor.executeEdits('paste', [{
+                        range: selection,
+                        text: text,
+                        forceMoveMarkers: true,
+                    }]);
+                    editor.pushUndoStop();
+                }
+            }
+        } catch (e) {
+            // readText 可能因权限失败,回退到 document.execCommand
+            console.warn("[siyuan-file-editor] clipboard.readText 失败,尝试 execCommand:", e);
+            try {
+                document.execCommand('paste');
+            } catch {
+                // 忽略
+            }
+        }
+    };
+
+    // 复制选中文本到剪贴板
+    const doCopy = async () => {
+        const selection = editor.getSelection();
+        if (!selection || selection.isEmpty()) return;
+        const text = editor.getModel()?.getValueInRange(selection) || '';
+        try {
+            await navigator.clipboard.writeText(text);
+        } catch (e) {
+            console.warn("[siyuan-file-editor] clipboard.writeText 失败:", e);
+        }
+    };
+
+    // 剪切:复制后删除选中文本
+    const doCut = async () => {
+        const selection = editor.getSelection();
+        if (!selection || selection.isEmpty()) return;
+        const text = editor.getModel()?.getValueInRange(selection) || '';
+        try {
+            await navigator.clipboard.writeText(text);
+        } catch (e) {
+            console.warn("[siyuan-file-editor] clipboard.writeText 失败:", e);
+        }
+        editor.executeEdits('cut', [{
+            range: selection,
+            text: '',
+            forceMoveMarkers: true,
+        }]);
+        editor.pushUndoStop();
+    };
+
+    // keydown capture:拦截 Ctrl+V/C/X,当编辑器有焦点时阻止思源处理
+    const keydownHandler = (e: KeyboardEvent) => {
+        if (!isEditorFocused()) return;
+        const ctrl = e.ctrlKey || e.metaKey;
+        if (!ctrl) return;
+        const key = e.key.toLowerCase();
+        if (key === 'v') {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            doPaste();
+        } else if (key === 'c') {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            doCopy();
+        } else if (key === 'x') {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            doCut();
+        }
+    };
+    window.addEventListener('keydown', keydownHandler, true);
+
+    // 编辑器销毁时移除监听器,避免内存泄漏
+    editor.onDidDispose(() => {
+        window.removeEventListener('keydown', keydownHandler, true);
+    });
+
     return editor;
 }
 

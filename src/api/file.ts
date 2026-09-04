@@ -58,6 +58,26 @@ export async function writeFile(path: string, content: string): Promise<void> {
     if (json.code !== 0) throw new Error(json.msg || `写入文件失败: ${path}`);
 }
 
+// 写入二进制文件内容(/api/file/putFile,multipart)
+// 用于 Office 文档(docx/xlsx/pptx)等二进制格式的保存
+export async function writeBinaryFile(path: string, data: ArrayBuffer | Uint8Array): Promise<void> {
+    const fd = new FormData();
+    fd.append("path", path);
+    fd.append("modTime", Date.now().toString());
+    // 统一转成以 ArrayBuffer 为底层的 Uint8Array,满足 BlobPart 的类型要求
+    // (TS 5.7 起 Uint8Array 带 ArrayBufferLike 泛型参数,SharedArrayBuffer 不可赋给 BlobPart)
+    const bytes = data instanceof Uint8Array ? new Uint8Array(data) : new Uint8Array(data);
+    fd.append("file", new Blob([bytes]), "file");
+    const resp = await fetch("/api/file/putFile", {
+        method: "POST",
+        headers: authHeaders(), // 不设 Content-Type,让浏览器自动添加 multipart boundary
+        body: fd,
+    });
+    if (!resp.ok) throw new Error(`写入文件失败: ${path} (${resp.status})`);
+    const json = await resp.json();
+    if (json.code !== 0) throw new Error(json.msg || `写入文件失败: ${path}`);
+}
+
 // 创建目录(/api/file/putFile,isDir=true)
 export async function mkdir(path: string): Promise<void> {
     const fd = new FormData();

@@ -8,6 +8,26 @@
     border-bottom: 1px solid var(--b3-border-color);
 }
 
+.syfe-tree__path {
+    flex-shrink: 0;
+    padding: 4px 10px;
+    font-size: 12px;
+    font-family: var(--b3-font-family-code);
+    color: var(--b3-theme-on-surface);
+    background: var(--b3-theme-background);
+    border-bottom: 1px solid var(--b3-border-color);
+    cursor: pointer;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    transition: background 0.15s;
+
+    &:hover {
+        background: var(--b3-list-hover-background);
+        color: var(--b3-theme-on-background);
+    }
+}
+
 .syfe-tree__scroll {
     overflow: auto;
     min-height: 0;
@@ -69,6 +89,12 @@
     svg {
         width: 16px;
         height: 16px;
+    }
+
+    .syfe-tree__ext-icon {
+        width: 16px;
+        height: 16px;
+        object-fit: contain;
     }
 }
 
@@ -141,6 +167,133 @@
     display: flex;
     flex-direction: column;
     justify-content: center;
+}
+
+/* === 图片查看器 === */
+.syfe-image-tab {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+}
+
+.syfe-image {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    background: var(--b3-theme-background);
+}
+
+.syfe-image__header {
+    flex-shrink: 0;
+    padding: 4px 12px;
+    font-size: 12px;
+    font-family: var(--b3-font-family-code);
+    color: var(--b3-theme-on-surface);
+    background: var(--b3-theme-surface);
+    border-bottom: 1px solid var(--b3-border-color);
+}
+
+.syfe-image__pathtext {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.syfe-image__toolbar {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 2px 8px;
+    background: var(--b3-theme-surface);
+    border-bottom: 1px solid var(--b3-border-color);
+    flex-shrink: 0;
+    font-size: 12px;
+
+    .b3-button {
+        padding: 2px 8px;
+        min-width: 28px;
+        font-size: 13px;
+
+        svg {
+            width: 12px;
+            height: 12px;
+            fill: currentColor;
+        }
+
+        &:disabled {
+            opacity: 0.35;
+            cursor: default;
+        }
+    }
+}
+
+.syfe-image__sep {
+    width: 1px;
+    height: 16px;
+    margin: 0 6px;
+    background: var(--b3-border-color);
+    flex-shrink: 0;
+}
+
+.syfe-image__zoom {
+    min-width: 52px;
+    text-align: center;
+    font-family: var(--b3-font-family-code);
+}
+
+.syfe-image__info {
+    margin-left: auto;
+    padding-right: 4px;
+    color: var(--b3-theme-on-surface);
+    font-family: var(--b3-font-family-code);
+    opacity: 0.75;
+    white-space: nowrap;
+}
+
+.syfe-image__viewport {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    cursor: grab;
+    background-color: var(--b3-theme-surface);
+    background-image: linear-gradient(45deg, var(--b3-border-color) 25%, transparent 25%, transparent 75%, var(--b3-border-color) 75%),
+                      linear-gradient(45deg, var(--b3-border-color) 25%, transparent 25%, transparent 75%, var(--b3-border-color) 75%);
+    background-size: 16px 16px;
+    background-position: 0 0, 8px 8px;
+
+    &--grabbing {
+        cursor: grabbing;
+    }
+}
+
+.syfe-image__stage {
+    min-width: 100%;
+    min-height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+    box-sizing: border-box;
+}
+
+.syfe-image__img {
+    display: block;
+    object-fit: contain;
+    transform-origin: center center;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
+    user-select: none;
+    -webkit-user-drag: none;
+}
+
+.syfe-image__hint,
+.syfe-image__error {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    color: var(--b3-theme-on-surface);
+    font-size: 13px;
 }
 
 /* === 搜索面板 === */
@@ -219,4 +372,447 @@
     color: var(--b3-theme-on-background);
     border-radius: 2px;
     padding: 0 2px;
+}
+
+/* === 扩展市场 === */
+.syfe-ext-market {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+}
+
+.syfe-ext-market__search {
+    display: flex;
+    gap: 8px;
+    padding: 8px 12px;
+    flex-shrink: 0;
+    align-items: center;
+}
+
+.syfe-ext-market__search .b3-select {
+    flex-shrink: 0;
+    width: auto;
+}
+
+.syfe-ext-market__tabs {
+    display: flex;
+    gap: 4px;
+    padding: 0 12px;
+    border-bottom: 1px solid var(--b3-border-color);
+    flex-shrink: 0;
+}
+
+.syfe-ext-market__tab {
+    &--active {
+        border-bottom: 2px solid var(--b3-theme-primary);
+    }
+}
+
+.syfe-ext-market__list {
+    flex: 1;
+    overflow: auto;
+    padding: 8px 12px;
+}
+
+.syfe-ext-market__empty,
+.syfe-ext-market__loading {
+    text-align: center;
+    color: var(--b3-theme-on-surface);
+    padding: 24px;
+}
+
+.syfe-ext-market__error {
+    color: var(--b3-card-error-color);
+    padding: 12px;
+}
+
+.syfe-ext-card {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 12px;
+    border: 1px solid var(--b3-border-color);
+    border-radius: 4px;
+    margin-bottom: 8px;
+}
+
+.syfe-ext-card__icon {
+    width: 42px;
+    height: 42px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    img {
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+    }
+}
+
+.syfe-ext-card__icon-default {
+    width: 28px;
+    height: 28px;
+    opacity: 0.6;
+}
+
+.syfe-ext-card__info {
+    flex: 1;
+    min-width: 0;
+}
+
+.syfe-ext-card__title {
+    font-weight: 600;
+    font-size: 14px;
+    margin-bottom: 2px;
+}
+
+.syfe-ext-card__meta {
+    font-size: 12px;
+    color: var(--b3-theme-on-surface);
+    margin-bottom: 4px;
+}
+
+.syfe-ext-card__desc {
+    font-size: 12px;
+    color: var(--b3-theme-on-surface);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+}
+
+.syfe-ext-card__contrib {
+    margin-top: 4px;
+    display: flex;
+    gap: 4px;
+    flex-wrap: wrap;
+}
+
+.syfe-ext-card__action {
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.syfe-tag {
+    font-size: 11px;
+    padding: 1px 6px;
+    border-radius: 3px;
+    background: var(--b3-theme-surface);
+    color: var(--b3-theme-on-surface);
+}
+
+// 警告态标签(如扩展图标文件缺失)
+.syfe-tag--warn {
+    background: var(--b3-card-warning-background, #fdf0d5);
+    color: var(--b3-card-warning-color, #8a6116);
+}
+
+/* === 终端 Tab === */
+.syfe-terminal-tab {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+}
+
+.syfe-terminal {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    background: #1e1e1e;
+}
+
+.syfe-terminal__header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 12px;
+    background: var(--b3-theme-surface);
+    border-bottom: 1px solid var(--b3-border-color);
+    flex-shrink: 0;
+}
+
+.syfe-terminal__title {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--b3-theme-on-background);
+    font-family: var(--b3-font-family-code);
+}
+
+.syfe-terminal__status {
+    font-size: 11px;
+    padding: 1px 8px;
+    border-radius: 3px;
+    color: var(--b3-theme-on-surface);
+
+    &[data-status="connected"] {
+        color: #0dbc79;
+    }
+
+    &[data-status="connecting"] {
+        color: #e5e510;
+    }
+
+    &[data-status="disconnected"],
+    &[data-status="error"] {
+        color: #cd3131;
+    }
+
+    &[data-status="exited"] {
+        color: var(--b3-theme-on-surface);
+    }
+}
+
+.syfe-terminal__container {
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+    padding: 4px 8px;
+
+    .xterm {
+        height: 100%;
+        padding: 0;
+    }
+
+    .xterm-viewport {
+        overflow-y: auto;
+    }
+}
+
+/* === Office 文档 Tab(表格 / 文档 / 演示文稿 / 旧版兜底) === */
+.syfe-office-tab {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.syfe-office__bar {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 12px;
+    font-size: 12px;
+    background: var(--b3-theme-surface);
+    border-bottom: 1px solid var(--b3-border-color);
+}
+
+.syfe-office__kind {
+    flex-shrink: 0;
+    padding: 1px 6px;
+    border-radius: 3px;
+    color: var(--b3-theme-on-surface);
+    background: var(--b3-theme-background);
+    border: 1px solid var(--b3-border-color);
+}
+
+.syfe-office__name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: var(--b3-font-family-code);
+    color: var(--b3-theme-on-surface);
+}
+
+.syfe-office__dirty {
+    flex-shrink: 0;
+    color: #cd3131;
+}
+
+.syfe-office__actions,
+.syfe-office__extra {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.syfe-office__body {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background: var(--b3-theme-background);
+}
+
+.syfe-office__loading,
+.syfe-office__error {
+    padding: 24px;
+    font-size: 13px;
+    color: var(--b3-theme-on-surface);
+}
+
+.syfe-office__error {
+    color: #cd3131;
+}
+
+// 各引擎根节点
+.syfe-office {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+/* --- 电子表格 --- */
+.syfe-office--sheet {
+    .syfe-office__sheet-mount {
+        flex: 1;
+        min-height: 0;
+        overflow: hidden;
+    }
+}
+
+/* --- 文档(富文本) --- */
+.syfe-office--doc {
+    .ql-toolbar {
+        flex-shrink: 0;
+        border: none;
+        border-bottom: 1px solid var(--b3-border-color);
+        background: var(--b3-theme-surface);
+    }
+
+    .syfe-office__doc-editor {
+        flex: 1;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+        border: none;
+        background: #fff;
+        color: #1a1a1a;
+        overflow-y: auto;
+    }
+
+    .ql-editor {
+        flex: 1;
+        width: 100%;
+        max-width: 820px;
+        margin: 0 auto;
+        padding: 32px 40px;
+        font-size: 14px;
+        line-height: 1.7;
+        background: #fff;
+        color: #1a1a1a;
+    }
+}
+
+/* --- 演示文稿 --- */
+.syfe-office--ppt {
+    .syfe-office__ppt-zoombar {
+        flex-shrink: 0;
+        display: flex;
+        justify-content: flex-end;
+        padding: 2px 12px;
+        font-size: 12px;
+        color: var(--b3-theme-on-surface);
+        background: var(--b3-theme-surface);
+        border-bottom: 1px solid var(--b3-border-color);
+    }
+
+    .syfe-office__ppt-scroll {
+        flex: 1;
+        min-height: 0;
+        overflow: auto;
+        padding: 16px;
+        display: flex;
+        justify-content: center;
+    }
+
+    .syfe-office__ppt-stage {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 16px;
+    }
+
+    .syfe-office__ppt-slide {
+        position: relative;
+        flex-shrink: 0;
+        background: #fff;
+        box-shadow: 0 1px 6px rgba(0, 0, 0, 0.25);
+        overflow: hidden;
+    }
+
+    .syfe-office__ppt-shape {
+        position: absolute;
+        display: flex;
+        align-items: flex-start;
+        overflow: visible;
+
+        &:hover {
+            outline: 1px dashed rgba(64, 128, 255, 0.6);
+        }
+    }
+
+    .syfe-office__ppt-text {
+        width: 100%;
+        outline: none;
+        line-height: 1.35;
+        white-space: pre-wrap;
+        word-break: break-word;
+
+        &:focus {
+            outline: 1px solid #4285f4;
+            background: rgba(66, 133, 244, 0.06);
+        }
+    }
+
+    .syfe-office__ppt-pic {
+        position: absolute;
+        user-select: none;
+    }
+
+    .syfe-office__ppt-index {
+        position: absolute;
+        right: 6px;
+        bottom: 2px;
+        font-size: 11px;
+        color: #999;
+    }
+}
+
+/* --- 旧版二进制格式兜底 --- */
+.syfe-office--legacy {
+    overflow: auto;
+
+    .syfe-office__legacy-box {
+        margin: 48px auto;
+        max-width: 560px;
+        padding: 24px;
+        text-align: center;
+        color: var(--b3-theme-on-surface);
+    }
+
+    .syfe-office__legacy-title {
+        font-size: 15px;
+        font-weight: 600;
+        margin-bottom: 12px;
+        word-break: break-all;
+    }
+
+    .syfe-office__legacy-desc {
+        font-size: 13px;
+        line-height: 1.7;
+        margin-bottom: 16px;
+    }
+
+    .syfe-office__legacy-btn {
+        margin-bottom: 16px;
+    }
+
+    .syfe-office__legacy-path {
+        font-family: var(--b3-font-family-code);
+        font-size: 11px;
+        word-break: break-all;
+        opacity: 0.7;
+    }
 }
