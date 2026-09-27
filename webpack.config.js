@@ -54,6 +54,8 @@ module.exports = (env, argv) => {
                     {from: "README*.md", to: "./"},
                     {from: "plugin.json", to: "./"},
                     {from: "src/i18n/", to: "./i18n/"},
+                    // Vditor(Markdown 所见即所得)的静态资源:运行时按 cdn 路径懒加载
+                    {from: "node_modules/vditor/dist", to: "./vditor/dist"},
                 ],
             }),
         );
@@ -65,6 +67,7 @@ module.exports = (env, argv) => {
                     {from: "src/i18n/", to: "./i18n/"},
                     {from: "plugin.json", to: "./"},
                     {from: "icon.png", to: "./", noErrorOnMissing: true},
+                    {from: "node_modules/vditor/dist", to: "./vditor/dist"},
                 ],
             }),
         );
@@ -96,7 +99,11 @@ module.exports = (env, argv) => {
         optimization: {
             minimize: production,
             minimizer: [
-                new EsbuildPlugin(),
+                // exclude:跳过 CopyPlugin 复制的 vditor 静态资源
+                // (mathjax mathmaps 的 .js 实为 JSON 内容,esbuild 解析会报语法错误)
+                new EsbuildPlugin({
+                    exclude: /vditor\//,
+                }),
             ],
         },
         resolve: {

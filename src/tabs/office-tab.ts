@@ -3,6 +3,7 @@ import {OFFICE_TAB_TYPE, getOfficeKind} from "../constants";
 import {basename} from "../utils/path";
 import {openWithExternalApp} from "../utils/external-app";
 import {OfficeEngine} from "../office/types";
+import {createBacklinkPanel, BacklinkPanel} from "../components/backlink-panel";
 
 // Office 文档 Tab:统一承载表格 / 文档 / 演示文稿 / 旧版兜底四类引擎
 
@@ -23,6 +24,7 @@ interface OfficeTabInstance {
     _closing?: boolean;
     _onKey?: (e: KeyboardEvent) => void;
     _reload?: () => void;
+    _backlink?: BacklinkPanel;
 }
 
 function escapeHTML(s: string): string {
@@ -37,7 +39,8 @@ const KIND_LABEL: Record<string, string> = {
 };
 
 // 打开 Office 文档 Tab(同文件去重,聚焦已有 Tab)
-export function openOfficeTab(plugin: IPluginForOfficeTab, path: string): void {
+// opts.position 指定时,在指定方向以分栏方式打开
+export function openOfficeTab(plugin: IPluginForOfficeTab, path: string, opts?: { position?: "right" | "bottom" }): void {
     const opened = plugin.getOpenedTab()[OFFICE_TAB_TYPE] || [];
     const existing = opened.find((c: any) => c?.data?.path === path);
     if (existing) {
@@ -55,6 +58,7 @@ export function openOfficeTab(plugin: IPluginForOfficeTab, path: string): void {
             title: basename(path),
             data: {path},
         },
+        position: opts?.position,
     } as any);
 }
 
@@ -88,7 +92,12 @@ export function createOfficeTabConfig(_plugin: IPluginForOfficeTab) {
                         <button class="b3-button b3-button--text" data-act="external">外部应用打开</button>
                     </span>
                 </div>
+                <div class="syfe-office__backlink"></div>
                 <div class="syfe-office__body"><div class="syfe-office__loading">正在加载…</div></div>`;
+
+            // 反向链接面板(默认收起,展开时懒扫描)
+            this._backlink = createBacklinkPanel(_plugin as any, path);
+            (this.element.querySelector(".syfe-office__backlink") as HTMLElement).appendChild(this._backlink.el);
 
             const barEl = this.element.querySelector(".syfe-office__bar") as HTMLElement;
             const bodyEl = this.element.querySelector(".syfe-office__body") as HTMLElement;
@@ -265,6 +274,8 @@ export function createOfficeTabConfig(_plugin: IPluginForOfficeTab) {
                 this.element.removeEventListener("keydown", this._onKey);
                 this._onKey = undefined;
             }
+            this._backlink?.dispose();
+            this._backlink = undefined;
             try {
                 this._engine?.dispose();
             } catch {

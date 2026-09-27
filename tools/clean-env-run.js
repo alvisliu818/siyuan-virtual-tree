@@ -28,9 +28,13 @@ delete env.BASH_ENV;
 delete env.ENV;
 delete env.GENIE_TRASH_DIR;
 // PATH 中的 safe-bin shim 目录(Windows 下以 ";" 分隔)
-env.PATH = env.PATH.split(";")
-    .filter(p => p.length > 0 && !/safe-bin|genie-trash/i.test(p))
-    .join(";");
+// 环境变量大小写不固定(PATH/Path),先找到实际的键
+const pathKey = Object.keys(env).find(k => k.toUpperCase() === "PATH");
+if (pathKey && env[pathKey]) {
+    env[pathKey] = env[pathKey].split(";")
+        .filter(p => p.length > 0 && !/safe-bin|genie-trash/i.test(p))
+        .join(";");
+}
 
 const child = spawn(process.execPath, [path.resolve(entry), ...rest], {
     cwd: process.cwd(),

@@ -1,8 +1,9 @@
 import {openTab, showMessage} from "siyuan";
 import {IMAGE_TAB_TYPE} from "../constants";
 import {getImageMime, formatFileSize, isImageFile} from "../constants";
-import {basename, dirname, joinPath} from "../utils/path";
+import {basename, dirname, joinPath, extname} from "../utils/path";
 import {readBinaryFile, readDir} from "../api/file";
+import {createBacklinkPanel, BacklinkPanel} from "../components/backlink-panel";
 
 // 图片查看 Tab 所需的插件接口(结构化类型,避免循环依赖)
 export interface IPluginForImageTab {
@@ -19,6 +20,7 @@ interface ImageTabInstance {
     _path?: string;
     _objectUrl?: string; // 当前图片的 blob URL(destroy / 切换时需释放)
     _disposables?: Array<() => void>;
+    _backlink?: BacklinkPanel; // 反向链接面板(同目录切换图片时更新目标)
 }
 
 // 缩放范围
@@ -30,7 +32,8 @@ function escapeHTML(s: string): string {
 }
 
 // 打开图片查看 Tab(同图片去重,聚焦已有 Tab)
-export function openImageTab(plugin: IPluginForImageTab, path: string): void {
+// opts.position 指定时,在指定方向以分栏方式打开
+export function openImageTab(plugin: IPluginForImageTab, path: string, opts?: { position?: "right" | "bottom" }): void {
     const opened = plugin.getOpenedTab()[IMAGE_TAB_TYPE] || [];
     const existing = opened.find((c: any) => c?.data?.path === path);
     if (existing) {
@@ -48,6 +51,7 @@ export function openImageTab(plugin: IPluginForImageTab, path: string): void {
             title: basename(path),
             data: {path},
         },
+        position: opts?.position,
     } as any);
 }
 
@@ -65,6 +69,12 @@ export function createImageTabConfig(plugin: IPluginForImageTab) {
             this._disposables = [];
 
             const dom = buildViewerDOM(this.element);
+
+            // 反向链接面板(默认收起,展开时懒扫描)
+            this._backlink = createBacklinkPanel(plugin as any, path);
+            (this.element.querySelector(".syfe-image__backlink") as HTMLElement).appendChild(this._backlink.el);
+            this._disposables.push(() => this._backlink?.dispose());
+
             const viewer = createViewer(dom, plugin, this);
             this._disposables.push(() => viewer.dispose());
             viewer.load(path);
@@ -139,6 +149,7 @@ function buildViewerDOM(container: HTMLElement): ViewerDOM {
                 <button class="b3-button b3-button--text" data-action="save" title="另存为">另存为</button>
                 <span class="syfe-image__info"></span>
             </div>
+            <div class="syfe-image__backlink"></div>
             <div class="syfe-image__viewport">
                 <div class="syfe-image__stage"><div class="syfe-image__hint">加载中...</div></div>
             </div>
@@ -208,7 +219,7 @@ function createViewer(dom: ViewerDOM, plugin: IPluginForImageTab, tab: ImageTabI
         const parts: string[] = [];
         if (naturalW && naturalH) parts.push(`${naturalW}×${naturalH}`);
         if (byteLength) parts.push(formatFileSize(byteLength));
-        parts.push((path.split(".").pop() || "").toUpperCase());
+        parts.push(extname(path).replace(/^\./, "").toUpperCase());
         if (siblings.length > 1 && siblingIndex >= 0) parts.push(`${siblingIndex + 1}/${siblings.length}`);
         dom.infoLabel.textContent = parts.join(" · ");
     }
@@ -296,6 +307,8 @@ function createViewer(dom: ViewerDOM, plugin: IPluginForImageTab, tab: ImageTabI
         path = target;
         tab._path = target;
         tab.data.path = target;
+        // 反向链接面板跟随当前图片
+        tab._backlink?.setTarget(target);
         try {
             tab.parent?.updateTitle?.(basename(target));
         } catch {

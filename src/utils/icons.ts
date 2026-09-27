@@ -37,6 +37,24 @@ const ICON_MAP: Record<string, string> = {
     ".bmp": "iconImage",
     ".webp": "iconImage",
     ".pdf": "iconFile",
+    // 音视频:思源内置 iconVideo / iconRecord(NodeAudio 用的也是 iconRecord)
+    ".mp4": "iconVideo",
+    ".m4v": "iconVideo",
+    ".webm": "iconVideo",
+    ".ogv": "iconVideo",
+    ".mov": "iconVideo",
+    ".mkv": "iconVideo",
+    ".avi": "iconVideo",
+    ".wmv": "iconVideo",
+    ".flv": "iconVideo",
+    ".mp3": "iconRecord",
+    ".wav": "iconRecord",
+    ".ogg": "iconRecord",
+    ".m4a": "iconRecord",
+    ".aac": "iconRecord",
+    ".flac": "iconRecord",
+    ".wma": "iconRecord",
+    ".opus": "iconRecord",
 };
 
 // 根据文件名返回思源内置 icon id,未知类型返回 iconFile

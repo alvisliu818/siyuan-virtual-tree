@@ -1,11 +1,14 @@
-import {openTab, confirm, showMessage} from "siyuan";
-import {TAB_TYPE} from "../constants";
-import {basename} from "../utils/path";
-import {EditorConfig} from "../types";
+import {openTab, confirm, showMessage, Menu} from "siyuan";
+import {TAB_TYPE, isMarkdownFile} from "../constants";
+import {basename, extname, dirname, joinPath, sepFor} from "../utils/path";
+import {EditorConfig, DirEntry} from "../types";
 import {createEditor} from "../editor/monaco";
-import {BINARY_EXTENSIONS, isImageFile, isOfficeFile} from "../constants";
+import {readDir} from "../api/file";
+import {BINARY_EXTENSIONS, isImageFile, isOfficeFile, isMediaFile} from "../constants";
+import {openMediaTab} from "./media-tab";
 import {openImageTab} from "./image-tab";
 import {openOfficeTab} from "./office-tab";
+import {openMarkdownTab} from "./markdown-tab";
 import {
     getModel,
     saveModel,
@@ -13,6 +16,8 @@ import {
     isDirty,
     consumePendingReveal,
 } from "../editor/model-manager";
+import {createBacklinkPanel} from "../components/backlink-panel";
+import {addRecent} from "../recent-files";
 
 // 编辑器 Tab 所需的插件接口(结构化类型,避免循环依赖)
 export interface IPluginForTab {
@@ -37,16 +42,109 @@ function escapeHTML(s: string): string {
     return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+// 把完整路径拆成可点击的分段(面包屑):[{label: "E:", fullPath: "E:\\"}, ...]
+// 根目录(盘符 E:\ / POSIX /)也作为一段,basename 为空时回退用完整路径
+function pathSegments(path: string): Array<{label: string; fullPath: string}> {
+    const segs: Array<{label: string; fullPath: string}> = [];
+    let cur = path;
+    while (cur) {
+        segs.unshift({label: basename(cur) || cur, fullPath: cur});
+        const parent = dirname(cur);
+        if (!parent || parent === cur) break;
+        cur = parent;
+    }
+    return segs;
+}
+
+// 渲染路径分段 HTML(每段 data-dir 为"其所在目录",点击即列出同级条目以切换)
+function renderPathSegments(path: string): string {
+    const segs = pathSegments(path);
+    if (segs.length === 0) return escapeHTML(path);
+    const sep = sepFor(path);
+    return segs.map(s => {
+        const parentDir = dirname(s.fullPath) || s.fullPath;
+        return `<span class="syfe-editor__seg" data-dir="${escapeHTML(parentDir)}" title="点击切换文件或文件夹">${escapeHTML(s.label)}</span>`;
+    }).join(`<span class="syfe-editor__sep">${escapeHTML(sep)}</span>`);
+}
+
+// 顶部路径点击:列出某目录下的条目(文件夹优先),可切换到同级/下级文件或文件夹
+// 点文件夹 → 进入该文件夹继续选;点文件 → 直接打开
+async function showPathSwitchMenu(
+    plugin: IPluginForTab,
+    dirPath: string,
+    anchor: HTMLElement,
+    currentPath: string,
+): Promise<void> {
+    let raw: any;
+    try {
+        raw = await readDir(dirPath);
+    } catch (e) {
+        showMessage(`读取目录失败: ${e}`, 3000, "error");
+        return;
+    }
+    const entries = (Array.isArray(raw) ? raw : []) as DirEntry[];
+    if (entries.length === 0) {
+        showMessage("该目录为空", 2000, "info");
+        return;
+    }
+    const byName = (a: DirEntry, b: DirEntry) => a.name.localeCompare(b.name);
+    const dirs = entries.filter(e => e.isDir).sort(byName);
+    const files = entries.filter(e => !e.isDir).sort(byName);
+
+    const menu = new Menu();
+    const rect = anchor.getBoundingClientRect();
+    const enter = (p: string) => {
+        void showPathSwitchMenu(plugin, p, anchor, currentPath);
+    };
+    // 条目过多时截断,避免菜单过长卡顿
+    const MAX = 200;
+    let shown = 0;
+    for (const d of dirs) {
+        if (shown++ >= MAX) break;
+        const p = joinPath(dirPath, d.name);
+        menu.addItem({icon: "iconFolder", label: d.name, click: () => enter(p)});
+    }
+    for (const f of files) {
+        if (shown++ >= MAX) break;
+        const p = joinPath(dirPath, f.name);
+        const mark = p === currentPath ? " · 当前" : "";
+        menu.addItem({icon: "iconFile", label: f.name + mark, click: () => openFileTab(plugin, p)});
+    }
+    if (entries.length > MAX) {
+        menu.addSeparator();
+        menu.addItem({label: `仅显示前 ${MAX} 项(共 ${entries.length} 项)`, click: () => {}});
+    }
+    menu.open({x: rect.left, y: rect.bottom});
+}
+
+// 打开文件时的额外选项:position 用于"在分栏打开"(SiYuan openTab 的 right/bottom 拆分)
+export interface OpenTabOptions {
+    position?: "right" | "bottom";
+}
+
 // 打开文件编辑 Tab(同文件去重,聚焦已有 Tab)
-export function openFileTab(plugin: IPluginForTab, path: string): void {
+// opts.position 指定时,在指定方向以分栏方式打开(支持同时查看多个文件)
+export function openFileTab(plugin: IPluginForTab, path: string, opts?: OpenTabOptions): void {
+    // 记录最近打开(放到最前,去重),供斜杆命令文件选择器快速插入
+    void addRecent(plugin as any, path);
     // 图片文件交由独立的图片查看 Tab 处理
     if (isImageFile(path)) {
-        openImageTab(plugin as any, path);
+        openImageTab(plugin as any, path, opts);
+        return;
+    }
+    // 音视频文件交由独立的播放器 Tab 处理
+    if (isMediaFile(path)) {
+        openMediaTab(plugin as any, path, opts);
         return;
     }
     // Office 文档(docx/xlsx/pptx、csv、旧版 doc/xls/ppt)交由独立的 Office Tab 处理
     if (isOfficeFile(path)) {
-        openOfficeTab(plugin as any, path);
+        openOfficeTab(plugin as any, path, opts);
+        return;
+    }
+    // Markdown 文件交由独立的 Markdown Tab 处理(所见即所得/源码双模式)
+    if (isMarkdownFile(path)) {
+        openMarkdownTab(plugin as any, path, undefined, opts);
         return;
     }
     const opened = plugin.getOpenedTab()[TAB_TYPE] || [];
@@ -66,6 +164,7 @@ export function openFileTab(plugin: IPluginForTab, path: string): void {
             title: basename(path),
             data: {path},
         },
+        position: opts?.position,
     } as any);
 }
 
@@ -83,13 +182,18 @@ export function createEditorTabConfig(plugin: IPluginForTab) {
             this._disposables = [];
             this.element.classList.add("syfe-editor-tab");
 
-            const isBinary = BINARY_EXTENSIONS.has("." + (path.split(".").pop() || "").toLowerCase());
+            const isBinary = BINARY_EXTENSIONS.has(extname(path));
             if (isBinary) {
                 this.element.innerHTML = `
                     <div class="syfe-editor syfe-editor--readonly">
                         <div class="syfe-editor__path">${escapeHTML(path)}</div>
+                        <div class="syfe-editor__backlink"></div>
                         <div class="syfe-editor__binary">该文件为二进制格式,不在编辑器中打开。</div>
                     </div>`;
+                const blEl = this.element.querySelector(".syfe-editor__backlink") as HTMLElement;
+                const bl = createBacklinkPanel(plugin as any, path);
+                blEl.appendChild(bl.el);
+                this._disposables!.push(() => bl.dispose());
                 return;
             }
 
@@ -97,13 +201,32 @@ export function createEditorTabConfig(plugin: IPluginForTab) {
                 <div class="syfe-editor">
                     <div class="syfe-editor__path" data-path="${escapeHTML(path)}">
                         <span class="syfe-editor__dirty" style="display:none;">●</span>
-                        <span class="syfe-editor__pathtext">${escapeHTML(path)}</span>
+                        <span class="syfe-editor__pathtext">${renderPathSegments(path)}</span>
                     </div>
+                    <div class="syfe-editor__backlink"></div>
                     <div class="syfe-editor__container"></div>
                 </div>`;
             const container = this.element.querySelector(".syfe-editor__container") as HTMLElement;
             const dirtyDot = this.element.querySelector(".syfe-editor__dirty") as HTMLElement;
+            const pathEl = this.element.querySelector(".syfe-editor__path") as HTMLElement;
             const self = this;
+
+            // 点击顶部分段:列出同级条目,可切换到其他文件或文件夹
+            const pathClickHandler = (e: MouseEvent) => {
+                const seg = (e.target as HTMLElement).closest(".syfe-editor__seg") as HTMLElement | null;
+                if (!seg) return;
+                const dir = seg.dataset.dir;
+                if (!dir) return;
+                void showPathSwitchMenu(plugin, dir, seg, path);
+            };
+            pathEl.addEventListener("click", pathClickHandler);
+            this._disposables!.push(() => pathEl.removeEventListener("click", pathClickHandler));
+
+            // 反向链接面板(默认收起,展开时懒扫描)
+            const backlinkEl = this.element.querySelector(".syfe-editor__backlink") as HTMLElement;
+            const backlink = createBacklinkPanel(plugin as any, path);
+            backlinkEl.appendChild(backlink.el);
+            this._disposables!.push(() => backlink.dispose());
 
             const updateDirtyUI = (dirty: boolean) => {
                 if (dirtyDot) dirtyDot.style.display = dirty ? "" : "none";
@@ -119,7 +242,7 @@ export function createEditorTabConfig(plugin: IPluginForTab) {
                 try {
                     const model = await getModel(path);
                     const editor = createEditor(container, model, path, plugin.config, async () => {
-                        await self.save();
+                        await (self as any).save();
                     });
                     self._editor = editor;
                     // 初始脏状态(复用 model 时可能已脏)
@@ -131,7 +254,7 @@ export function createEditorTabConfig(plugin: IPluginForTab) {
                         }
                         updateDirtyUI(true);
                     });
-                    self._disposables.push(() => sub.dispose());
+                    self._disposables!.push(() => sub.dispose());
                     // 搜索结果跳转
                     const revealLine = consumePendingReveal(path);
                     if (revealLine !== null) {

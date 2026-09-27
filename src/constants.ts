@@ -1,19 +1,41 @@
 // 插件内唯一类型标识与常量
+// 注:WORKSPACE_ROOT 定义在 utils/path.ts(避免与 path.ts 形成循环依赖)
+import {extname, SIYUAN_ROOT} from "./utils/path";
+
 export const TAB_TYPE = "siyuan-file-editor-tab";
 export const IMAGE_TAB_TYPE = "siyuan-file-editor-image";
 export const OFFICE_TAB_TYPE = "siyuan-file-editor-office";
 export const SEARCH_TAB_TYPE = "siyuan-file-editor-search";
 export const TERMINAL_TAB_TYPE = "siyuan-file-editor-terminal";
+export const MARKDOWN_TAB_TYPE = "siyuan-file-editor-markdown";
+// 音视频播放器 Tab(视频/音频文件不进文本编辑器,也不再提示"二进制文件")
+export const MEDIA_TAB_TYPE = "siyuan-file-editor-media";
+// 新标签页(接管顶部「+」后打开的启动台:搜索 + 固定 + 最近打开 + 收藏)
+export const START_TAB_TYPE = "siyuan-file-editor-start";
 export const DOCK_TYPE = "siyuan-file-editor-dock";
+// 侧边栏「最近使用」面板(展示最近打开的文件)
+export const RECENT_DOCK_TYPE = "siyuan-file-editor-recent-dock";
+// 侧边栏「标签」面板(按标签聚合文件/文件夹,文件夹可就地展开)
+export const TAG_DOCK_TYPE = "siyuan-file-editor-tag-dock";
+
+// Markdown 扩展名(由独立的 Markdown Tab 打开,支持所见即所得/源码双模式)
+export const MARKDOWN_EXTENSIONS = new Set([".md", ".markdown"]);
+
+// 是否为 Markdown 文件
+export function isMarkdownFile(path: string): boolean {
+    return MARKDOWN_EXTENSIONS.has(extname(path));
+}
 
 // 终端服务默认 WebSocket 地址
 export const DEFAULT_TERMINAL_SERVER_URL = "ws://127.0.0.1:9800";
 
 // 插件数据存储键
 export const STORAGE_CONFIG = "config.json";
+// 思源文档挂载记录(挂到真实目录下的 sydoc:// 虚拟条目)
+export const STORAGE_SY_MOUNTS = "sy-mounts.json";
 
 // 文件浏览根目录(思源工作空间 data 目录)
-export const WORKSPACE_ROOT = "/data";
+export const WORKSPACE_ROOT = SIYUAN_ROOT;
 
 // 搜索时识别为文本的扩展名
 export const TEXT_EXTENSIONS = new Set([
@@ -55,10 +77,9 @@ export const LEGACY_OFFICE_EXTENSIONS = new Set([
 export type OfficeKind = "spreadsheet" | "document" | "presentation" | "legacy";
 
 // 取小写扩展名(含点)
+// 用 extname(基于 basename)而非 split("/").pop(),才能正确处理 Windows 反斜杠路径
 export function getExt(path: string): string {
-    const name = path.split("/").pop() || "";
-    const i = name.lastIndexOf(".");
-    return i <= 0 ? "" : name.slice(i).toLowerCase();
+    return extname(path);
 }
 
 // 判断路径属于哪种 Office 文档;非 Office 文件返回 null
@@ -78,8 +99,7 @@ export function isOfficeFile(path: string): boolean {
 
 // 根据路径扩展名判断是否为图片文件
 export function isImageFile(path: string): boolean {
-    const ext = "." + (path.split(".").pop() || "").toLowerCase();
-    return IMAGE_EXTENSIONS.has(ext);
+    return IMAGE_EXTENSIONS.has(extname(path));
 }
 
 // 图片扩展名 → MIME 类型映射
@@ -102,7 +122,87 @@ const IMAGE_MIME_MAP: Record<string, string> = {
 
 // 根据路径扩展名推断图片 MIME 类型
 export function getImageMime(path: string): string {
-    return IMAGE_MIME_MAP["." + (path.split(".").pop() || "").toLowerCase()] || "application/octet-stream";
+    return IMAGE_MIME_MAP[extname(path)] || "application/octet-stream";
+}
+
+// ===== 音视频支持 =====
+// 视频扩展名(以播放器 Tab 打开)
+export const VIDEO_EXTENSIONS = new Set([
+    ".mp4", ".m4v", ".webm", ".ogv", ".mov", ".mkv", ".avi", ".wmv",
+    ".flv", ".3gp", ".3g2", ".mpg", ".mpeg", ".mpe", ".ts", ".mts",
+]);
+
+// 音频扩展名(以播放器 Tab 打开)
+export const AUDIO_EXTENSIONS = new Set([
+    ".mp3", ".wav", ".ogg", ".oga", ".m4a", ".aac", ".flac", ".wma",
+    ".opus", ".weba", ".aiff", ".aif", ".aifc", ".mid", ".midi", ".amr",
+]);
+
+// 音视频类型
+export type MediaKind = "video" | "audio";
+
+// 判断路径属于哪种媒体;非音视频文件返回 null
+export function getMediaKind(path: string): MediaKind | null {
+    const ext = extname(path);
+    if (VIDEO_EXTENSIONS.has(ext)) return "video";
+    if (AUDIO_EXTENSIONS.has(ext)) return "audio";
+    return null;
+}
+
+// 是否为视频文件
+export function isVideoFile(path: string): boolean {
+    return VIDEO_EXTENSIONS.has(extname(path));
+}
+
+// 是否为音频文件
+export function isAudioFile(path: string): boolean {
+    return AUDIO_EXTENSIONS.has(extname(path));
+}
+
+// 是否为音视频文件(由播放器 Tab 打开)
+export function isMediaFile(path: string): boolean {
+    return getMediaKind(path) !== null;
+}
+
+// 媒体扩展名 → MIME 类型映射(交给 <video>/<audio> 解码,让浏览器按容器类型探测)
+const MEDIA_MIME_MAP: Record<string, string> = {
+    ".mp4": "video/mp4",
+    ".m4v": "video/mp4",
+    ".webm": "video/webm",
+    ".ogv": "video/ogg",
+    ".mov": "video/quicktime",
+    ".mkv": "video/x-matroska",
+    ".avi": "video/x-msvideo",
+    ".wmv": "video/x-ms-wmv",
+    ".flv": "video/x-flv",
+    ".3gp": "video/3gpp",
+    ".3g2": "video/3gpp2",
+    ".mpg": "video/mpeg",
+    ".mpeg": "video/mpeg",
+    ".mpe": "video/mpeg",
+    ".ts": "video/mp2t",
+    ".mts": "video/mp2t",
+    ".mp3": "audio/mpeg",
+    ".wav": "audio/wav",
+    ".ogg": "audio/ogg",
+    ".oga": "audio/ogg",
+    ".m4a": "audio/mp4",
+    ".aac": "audio/aac",
+    ".flac": "audio/flac",
+    ".wma": "audio/x-ms-wma",
+    ".opus": "audio/ogg",
+    ".weba": "audio/webm",
+    ".aiff": "audio/aiff",
+    ".aif": "audio/aiff",
+    ".aifc": "audio/aiff",
+    ".mid": "audio/midi",
+    ".midi": "audio/midi",
+    ".amr": "audio/amr",
+};
+
+// 根据路径扩展名推断音视频 MIME 类型
+export function getMediaMime(path: string): string {
+    return MEDIA_MIME_MAP[extname(path)] || "application/octet-stream";
 }
 
 // 格式化文件体积

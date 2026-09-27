@@ -2,15 +2,29 @@ import {Plugin, Setting, showMessage} from "siyuan";
 import {DOCK_TYPE, WORKSPACE_ROOT, DEFAULT_TERMINAL_SERVER_URL} from "./constants";
 import {EditorConfig, DEFAULT_CONFIG} from "./types";
 import {setupMonaco, applyTheme, getCurrentMode, disposeMonaco} from "./editor/monaco";
-import {disposeAll, disposeAllModels} from "./editor/model-manager";
+import {disposeAll} from "./editor/model-manager";
 import {createEditorTabConfig, openFileTab} from "./tabs/editor-tab";
-import {createImageTabConfig} from "./tabs/image-tab";
-import {createOfficeTabConfig} from "./tabs/office-tab";
+import {createImageTabConfig, openImageTab} from "./tabs/image-tab";
+import {createOfficeTabConfig, openOfficeTab} from "./tabs/office-tab";
+import {createMarkdownTabConfig, openMarkdownTab, MarkdownMode} from "./tabs/markdown-tab";
+import {createMediaTabConfig, openMediaTab} from "./tabs/media-tab";
+import {createStartTabConfig, openStartTab, installNewTabHijack} from "./tabs/start-tab";
 import {createTerminalTabConfig, openTerminalTab} from "./tabs/terminal-tab";
 import {createFileTreeDockConfig} from "./dock/file-tree-dock";
+import {createRecentDockConfig} from "./dock/recent-dock";
+import {createTagDockConfig} from "./dock/tag-dock";
 import {createSearchTabConfig, openSearchTab} from "./components/search-panel";
 import {loadConfig, saveConfig} from "./utils/config";
+import {querySQL} from "./api/file";
+import {basename} from "./utils/path";
 import {loadAllExtensions} from "./extensions/extension-manager";
+import {loadTagData} from "./tags/tag-store";
+import {openTagManagerDialog} from "./tags/tag-ui";
+import {loadRecents, addRecent, addRecentDoc, flushRecents} from "./recent-files";
+import {loadStartPage, itemFromPath, itemFromDoc, toggleInGroup} from "./start-page";
+import {isVirtualPath, virtualId, initMountStore} from "./utils/virtual-tree";
+import {registerSlashCommands} from "./protyle/slash-commands";
+import {registerLinkReveal} from "./protyle/link-reveal";
 import {openExtensionMarket} from "./extensions/market-ui";
 import {clearAllGrammars} from "./extensions/grammar-loader";
 import {clearAllThemes, applyThemeByPreference, getLoadedThemes} from "./extensions/theme-loader";
@@ -35,6 +49,11 @@ export default class FileEditorPlugin extends Plugin {
     private terminalShellSelect?: HTMLSelectElement;
     private colorThemeSelect?: HTMLSelectElement;
     private iconThemeSelect?: HTMLSelectElement;
+    private markdownModeSelect?: HTMLSelectElement;
+    private newTabReplacePlusInput?: HTMLInputElement;
+    private newTabShowPinnedInput?: HTMLInputElement;
+    private newTabShowRecentInput?: HTMLInputElement;
+    private newTabShowFavoritesInput?: HTMLInputElement;
 
     onload(): void {
         setupMonaco(this.name);
@@ -43,11 +62,28 @@ export default class FileEditorPlugin extends Plugin {
         this.addTab(createEditorTabConfig(this as any));
         this.addTab(createImageTabConfig(this as any));
         this.addTab(createOfficeTabConfig(this as any));
+        this.addTab(createMarkdownTabConfig(this as any));
+        this.addTab(createMediaTabConfig(this as any));
+        // 新标签页(接管顶部「+」后打开的启动台:搜索 + 固定 + 最近打开 + 收藏)
+        this.addTab(createStartTabConfig(this as any));
         this.addTab(createSearchTabConfig(this as any));
         this.addTab(createTerminalTabConfig(this as any));
 
         // 注册 Dock
         this.addDock(createFileTreeDockConfig(this as any));
+        // 侧边栏「最近使用」面板(展示最近打开的文件,点击打开/右键复制链接)
+        this.addDock(createRecentDockConfig(this as any));
+        // 侧边栏「标签」面板(按标签聚合文件/文件夹,文件夹可就地逐级展开)
+        this.addDock(createTagDockConfig(this as any));
+
+        // 注册思源编辑器斜杆命令(输入 /file 或 /文件 插入文件链接)
+        registerSlashCommands(this, () => this.getFileTreeRoot());
+
+        // 思源正文 file:// 链接右键菜单:追加「在文件夹树中定位」等
+        registerLinkReveal(this);
+
+        // 接管思源顶部「+」:点击改为打开新标签页(设置里可关闭,恢复原生新建文档)
+        installNewTabHijack(this as any, () => this.config.newTabReplacePlus !== false);
 
         // 顶栏图标 → 切换 Dock
         this.addTopBar({
@@ -109,6 +145,38 @@ export default class FileEditorPlugin extends Plugin {
         this.config = await loadConfig(this);
         // 设置面板控件同步当前值
         this.syncSettingUI();
+        // 加载标签数据(预设标签库 + 文件/文件夹打标记录)
+        try {
+            await loadTagData(this);
+        } catch (e) {
+            console.error("[siyuan-file-editor] 加载标签失败:", e);
+        }
+        // 加载最近使用列表(文件 + 思源文档,供侧边栏面板与斜杆命令选择器使用)
+        try {
+            await loadRecents(this);
+        } catch (e) {
+            console.error("[siyuan-file-editor] 加载最近使用失败:", e);
+        }
+        // 加载新标签页的固定/收藏数据(文件树右键与新标签页都依赖,失败不影响其他功能)
+        try {
+            await loadStartPage(this);
+        } catch (e) {
+            console.error("[siyuan-file-editor] 加载新标签页数据失败:", e);
+        }
+        // 加载思源文档挂载记录(挂到真实目录下的虚拟条目;Dock 初始化早于此刻,加载后刷新文件树)
+        try {
+            await initMountStore(this as any);
+            this.refreshFileTrees();
+        } catch (e) {
+            console.error("[siyuan-file-editor] 加载思源文档挂载记录失败:", e);
+        }
+        // 记录最近使用的思源文档(必须在 loadRecents 之后注册,否则会被加载结果覆盖)
+        this.eventBus.on("switch-protyle", (e: any) => {
+            const protyle = e?.detail?.protyle;
+            const rootID = protyle?.block?.rootID;
+            if (!rootID) return;
+            void this.recordRecentDoc(rootID, protyle?.path);
+        });
         // 加载已安装的 VSCode 扩展
         try {
             const results = await loadAllExtensions(this);
@@ -150,6 +218,26 @@ export default class FileEditorPlugin extends Plugin {
         rootEls.forEach(el => refreshAllExpanded(el));
     }
 
+    // 记录最近使用的思源文档:查 blocks 表取 hpath(末段即文档标题),content 作为兜底
+    private async recordRecentDoc(rootID: string, path?: string): Promise<void> {
+        let title = "";
+        let hpath = "";
+        try {
+            const id = String(rootID).replace(/'/g, "''");
+            const rows = await querySQL(`SELECT content, hpath FROM blocks WHERE id = '${id}' LIMIT 1`);
+            const row = Array.isArray(rows) && rows[0] ? rows[0] : null;
+            if (row) {
+                hpath = String(row.hpath || "");
+                const segs = hpath.split("/").filter(Boolean);
+                title = segs.length > 0 ? segs[segs.length - 1] : String(row.content || "");
+            }
+        } catch {
+            // 查询失败则用路径兜底
+        }
+        if (!title && path) title = basename(path).replace(/\.sy$/i, "");
+        await addRecentDoc(this as any, rootID, title || rootID, hpath || undefined);
+    }
+
     onunload(): void {
         disposeAll();
         // 清理扩展系统
@@ -160,6 +248,8 @@ export default class FileEditorPlugin extends Plugin {
         clearAllIconThemes();
         disposeMonaco();
         this.themeObserver?.disconnect();
+        // 最近使用防抖落盘:卸载前强制写入,避免丢失防抖窗口内的记录
+        void flushRecents();
     }
 
     // 打开文件编辑 Tab
@@ -167,6 +257,57 @@ export default class FileEditorPlugin extends Plugin {
         openFileTab(this as any, path);
     }
 
+    // 在指定方向以分栏方式打开文件(支持同时查看多个文件)
+    openFileSplit(path: string, position: "right" | "bottom"): void {
+        openFileTab(this as any, path, {position});
+    }
+
+    // 打开图片查看 Tab("打开方式"用)
+    openImage(path: string): void {
+        void addRecent(this as any, path);
+        openImageTab(this as any, path);
+    }
+
+    // 打开 Office 查看 Tab("打开方式"用)
+    openOffice(path: string): void {
+        void addRecent(this as any, path);
+        openOfficeTab(this as any, path);
+    }
+
+    // 打开 Markdown 编辑 Tab(双模式:所见即所得/源码)
+    openMarkdown(path: string, mode?: MarkdownMode): void {
+        void addRecent(this as any, path);
+        openMarkdownTab(this as any, path, mode);
+    }
+
+    // 打开音视频播放器 Tab("打开方式"用)
+    openMedia(path: string): void {
+        void addRecent(this as any, path);
+        openMediaTab(this as any, path);
+    }
+
+    // 打开新标签页(接管顶部「+」后的启动台)
+    openStart(): void {
+        openStartTab(this as any);
+    }
+
+    // 新标签页:切换固定 / 收藏(供文件树右键菜单调用)
+    async togglePin(path: string): Promise<void> {
+        // 虚拟文档:条目为思源文档(title 用树节点标签,由调用方刷新)
+        const item = isVirtualPath(path)
+            ? itemFromDoc(virtualId(path), virtualLabelFromDOM(path) || virtualId(path))
+            : itemFromPath(path);
+        const nowIn = await toggleInGroup(this as any, "pinned", item);
+        showMessage(nowIn ? "已固定到新标签页" : "已取消固定", 2000, "info");
+    }
+
+    async toggleFavorite(path: string): Promise<void> {
+        const item = isVirtualPath(path)
+            ? itemFromDoc(virtualId(path), virtualLabelFromDOM(path) || virtualId(path))
+            : itemFromPath(path);
+        const nowIn = await toggleInGroup(this as any, "favorites", item);
+        showMessage(nowIn ? "已收藏" : "已取消收藏", 2000, "info");
+    }
     // 打开搜索面板
     openSearch(rootPath?: string): void {
         openSearchTab(this as any, rootPath || this.config.fileTreeRoot || WORKSPACE_ROOT);
@@ -286,6 +427,19 @@ export default class FileEditorPlugin extends Plugin {
             actionElement: this.formatOnSaveInput,
         });
 
+        // 标签管理(新建/编辑/删除预设标签,支持嵌套、颜色、图标)
+        const tagManageBtn = document.createElement("button");
+        tagManageBtn.className = "b3-button b3-button--outline fn__size200";
+        tagManageBtn.textContent = "管理标签…";
+        tagManageBtn.addEventListener("click", () => {
+            openTagManagerDialog(this, () => this.refreshFileTrees());
+        });
+        this.setting!.addItem({
+            title: "标签",
+            description: "管理预设标签(支持嵌套、颜色、图标);在文件树右键条目可打标签,工具栏标签按钮可按标签筛选",
+            actionElement: tagManageBtn,
+        });
+
         // 搜索最大文件大小
         this.searchMaxSizeInput = document.createElement("input");
         this.searchMaxSizeInput.className = "b3-text-field fn__size200";
@@ -302,10 +456,10 @@ export default class FileEditorPlugin extends Plugin {
         this.fileTreeRootInput = document.createElement("input");
         this.fileTreeRootInput.className = "b3-text-field fn__flex-1";
         this.fileTreeRootInput.type = "text";
-        this.fileTreeRootInput.placeholder = "/data";
+        this.fileTreeRootInput.placeholder = "/data 或 E:\\HOME\\BaiduSyncdisk";
         this.setting!.addItem({
             title: "文件树根目录",
-            description: "文件管理器 Dock 默认打开的目录路径(如 /data 或 /data/public)",
+            description: "文件管理器 Dock 默认打开的目录路径。思源工作空间内填 /data 或 /data/public;工作空间外填系统绝对路径(如 E:\\HOME\\BaiduSyncdisk,仅桌面端支持)",
             actionElement: this.fileTreeRootInput,
         });
 
@@ -377,6 +531,57 @@ export default class FileEditorPlugin extends Plugin {
             description: "文件树与 Tab 的文件/文件夹图标。安装图标类扩展(如 Material Icon Theme)后可在此选择,保存后立即生效",
             actionElement: this.iconThemeSelect,
         });
+
+        // 新标签页:接管顶部「+」
+        this.newTabReplacePlusInput = document.createElement("input");
+        this.newTabReplacePlusInput.type = "checkbox";
+        this.newTabReplacePlusInput.className = "b3-switch";
+        this.setting!.addItem({
+            title: "新标签页:接管顶部「+」",
+            description: "开启后,点击思源顶部的「+」不再新建文档,而是打开插件「新标签页」(搜索文件 + 固定 + 最近打开 + 收藏)。页内「新建思源文档」按钮保留原生新建能力",
+            actionElement: this.newTabReplacePlusInput,
+        });
+
+        // 新标签页:各分区显隐
+        this.newTabShowPinnedInput = document.createElement("input");
+        this.newTabShowPinnedInput.type = "checkbox";
+        this.newTabShowPinnedInput.className = "b3-switch";
+        this.setting!.addItem({
+            title: "新标签页:显示「固定」",
+            description: "固定区钉在页顶,可在文件树右键「固定到新标签页」添加",
+            actionElement: this.newTabShowPinnedInput,
+        });
+
+        this.newTabShowRecentInput = document.createElement("input");
+        this.newTabShowRecentInput.type = "checkbox";
+        this.newTabShowRecentInput.className = "b3-switch";
+        this.setting!.addItem({
+            title: "新标签页:显示「最近打开」",
+            description: "最近打开的文件与思源文档(来自「最近使用」列表)",
+            actionElement: this.newTabShowRecentInput,
+        });
+
+        this.newTabShowFavoritesInput = document.createElement("input");
+        this.newTabShowFavoritesInput.type = "checkbox";
+        this.newTabShowFavoritesInput.className = "b3-switch";
+        this.setting!.addItem({
+            title: "新标签页:显示「收藏」",
+            description: "收藏区,可在文件树右键「收藏」添加",
+            actionElement: this.newTabShowFavoritesInput,
+        });
+
+        // Markdown 默认模式(对齐 Obsidian:实时预览 / 源码 / 阅读)
+        this.markdownModeSelect = document.createElement("select");
+        this.markdownModeSelect.className = "b3-select fn__size200";
+        this.markdownModeSelect.innerHTML = `
+            <option value="live">实时预览</option>
+            <option value="source">源码</option>
+            <option value="reading">阅读</option>`;
+        this.setting!.addItem({
+            title: "Markdown 默认模式",
+            description: "打开 .md 文件时的默认模式,Tab 顶部可随时切换。实时预览=边写边渲染(光标行显示源码);源码=纯文本;阅读=完整渲染且只读。超过 512KB 的大文件始终以源码模式打开",
+            actionElement: this.markdownModeSelect,
+        });
     }
 
     // 同步设置面板控件值为当前配置
@@ -393,6 +598,11 @@ export default class FileEditorPlugin extends Plugin {
         if (this.terminalServerUrlInput) this.terminalServerUrlInput.value = this.config.terminalServerUrl;
         if (this.siyuanWorkspacePathInput) this.siyuanWorkspacePathInput.value = this.config.siyuanWorkspacePath;
         if (this.terminalShellSelect) this.terminalShellSelect.value = this.config.terminalShell || "auto";
+        if (this.markdownModeSelect) this.markdownModeSelect.value = this.config.markdownDefaultMode || "live";
+        if (this.newTabReplacePlusInput) this.newTabReplacePlusInput.checked = this.config.newTabReplacePlus !== false;
+        if (this.newTabShowPinnedInput) this.newTabShowPinnedInput.checked = this.config.newTabShowPinned !== false;
+        if (this.newTabShowRecentInput) this.newTabShowRecentInput.checked = this.config.newTabShowRecent !== false;
+        if (this.newTabShowFavoritesInput) this.newTabShowFavoritesInput.checked = this.config.newTabShowFavorites !== false;
         // 主题下拉的选项依赖扩展数据,此处仅同步值;选项在 onLayoutReady 后填充
         this.refreshThemeSettingUI();
     }
@@ -412,6 +622,11 @@ export default class FileEditorPlugin extends Plugin {
             siyuanWorkspacePath: (this.siyuanWorkspacePathInput?.value || "").trim(),
             colorTheme: this.colorThemeSelect?.value || "",
             iconTheme: this.iconThemeSelect?.value || "",
+            markdownDefaultMode: (this.markdownModeSelect?.value as "live" | "source" | "reading") || "live",
+            newTabReplacePlus: this.newTabReplacePlusInput?.checked ?? true,
+            newTabShowPinned: this.newTabShowPinnedInput?.checked ?? true,
+            newTabShowRecent: this.newTabShowRecentInput?.checked ?? true,
+            newTabShowFavorites: this.newTabShowFavoritesInput?.checked ?? true,
         };
         await saveConfig(this, this.config);
         // 主题设置立即生效
@@ -428,4 +643,18 @@ function escapeAttr(s: string): string {
 
 function escapeText(s: string): string {
     return s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+}
+
+// 虚拟文档树节点的显示名:优先从可见树节点取标签文本(同步),
+// 树不可见(如新标签页固定区右键)时回退缓存,再回退空
+const docLabelCache = new Map<string, string>();
+function virtualLabelFromDOM(vPath: string): string {
+    const sel = `.syfe-tree__item[data-path="${vPath.replace(/["\\]/g, "\\$&")}"] .syfe-tree__label`;
+    const el = document.querySelector(sel) as HTMLElement | null;
+    const text = el?.textContent?.trim();
+    if (text) {
+        docLabelCache.set(vPath, text);
+        return text;
+    }
+    return docLabelCache.get(vPath) || "";
 }

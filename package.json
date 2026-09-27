@@ -17,7 +17,6 @@
   ],
   "author": "alvisliu",
   "license": "MIT",
-  "packageManager": "pnpm@11.4.0",
   "engines": {
     "node": ">=18.0.0"
   },
@@ -43,6 +42,7 @@
     "jszip": "^3.10.1",
     "mammoth": "^1.12.2",
     "quill": "^2.0.3",
+    "vditor": "^4.0.0",
     "vscode-oniguruma": "^2.0.1",
     "vscode-textmate": "^9.3.2",
     "x-data-spreadsheet": "^1.1.9",

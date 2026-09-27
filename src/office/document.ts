@@ -1,6 +1,137 @@
 import "quill/dist/quill.snow.css";
+import JSZip from "jszip";
 import {readBinaryFile, writeBinaryFile} from "../api/file";
 import {OfficeEngine} from "./types";
+
+// mammoth 默认只转换正文,会丢弃「页面页眉/页脚」里的内容。很多文档的标题/抬头就放在页眉里,
+// 导致「标题内容没有显示 / 内容显示不完整」。这里额外从 docx 包里抽取页眉页脚文本,
+// 以只读面板的形式展示在编辑器上下方(不进入 Quill 模型,保存时不会写回正文)。
+// 标题样式映射:英文 + 中文(中文 Word 默认样式名为「标题 1」..「标题 6」)。
+// 不映射时 mammoth 会把它们当成普通段落,标题既不变大也不作为标题呈现。
+const HEADING_STYLE_MAP: string[] = [
+    "p[style-name='Heading 1'] => h1:fresh",
+    "p[style-name='Heading 2'] => h2:fresh",
+    "p[style-name='Heading 3'] => h3:fresh",
+    "p[style-name='Heading 4'] => h4:fresh",
+    "p[style-name='Heading 5'] => h5:fresh",
+    "p[style-name='Heading 6'] => h6:fresh",
+    "p[style-name='标题 1'] => h1:fresh",
+    "p[style-name='标题 2'] => h2:fresh",
+    "p[style-name='标题 3'] => h3:fresh",
+    "p[style-name='标题 4'] => h4:fresh",
+    "p[style-name='标题 5'] => h5:fresh",
+    "p[style-name='标题 6'] => h6:fresh",
+];
+
+function decodeXmlEntities(s: string): string {
+    return s
+        .replace(/&lt;/g, "<")
+        .replace(/&gt;/g, ">")
+        .replace(/&quot;/g, '"')
+        .replace(/&apos;/g, "'")
+        .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(Number(d)))
+        .replace(/&#x([0-9a-fA-F]+);/g, (_, h) => String.fromCodePoint(parseInt(h, 16)))
+        .replace(/&amp;/g, "&");
+}
+
+// 从 docx(zip)里抽取所有页眉 / 页脚的文本段落(仅展示用)
+async function extractHeaderFooterText(buf: ArrayBuffer): Promise<{header: string[]; footer: string[]}> {
+    try {
+        const zip = await JSZip.loadAsync(buf);
+        const names = Object.keys(zip.files);
+        const headerFiles = names.filter((n) => /^word\/header\d*\.xml$/i.test(n));
+        const footerFiles = names.filter((n) => /^word\/footer\d*\.xml$/i.test(n));
+
+        const collect = async (files: string[]): Promise<string[]> => {
+            const paras: string[] = [];
+            for (const f of files) {
+                const xml = await zip.files[f].async("string");
+                let doc: Document;
+                try {
+                    doc = new DOMParser().parseFromString(xml, "application/xml");
+                } catch {
+                    continue;
+                }
+                const pNodes = Array.from(doc.getElementsByTagName("w:p"));
+                for (const p of pNodes) {
+                    const tNodes = Array.from(p.getElementsByTagName("w:t"));
+                    const text = tNodes
+                        .map((t) => decodeXmlEntities(t.textContent || ""))
+                        .join("")
+                        .trim();
+                    if (text) paras.push(text);
+                }
+            }
+            return paras;
+        };
+
+        return {header: await collect(headerFiles), footer: await collect(footerFiles)};
+    } catch {
+        return {header: [], footer: []};
+    }
+}
+
+// 中文数字 → 级别
+const ZH_NUM_LEVEL: Record<string, number> = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6};
+
+// 从 styles.xml 动态生成标题样式映射。很多中文文档(尤其 WPS / 教程模板)的标题样式
+// 不叫「Heading N」,而是「一级标题」「二级标题」等自定义名,mammoth 默认映射不上,
+// 导致标题被当普通段落渲染(「标题内容没有显示」)。识别两类信号:
+// 1) 样式带 w:outlineLvl(大纲级别,语义上就是标题)→ 映射为对应级别的 h1-h6;
+// 2) 样式名匹配「N级标题」/「标题 N」/「Heading N」→ 映射为 hN。
+async function buildHeadingStyleMap(buf: ArrayBuffer): Promise<string[]> {
+    const map: string[] = [];
+    try {
+        const zip = await JSZip.loadAsync(buf);
+        const stylesFile = zip.file("word/styles.xml");
+        if (!stylesFile) return map;
+        const xml = await stylesFile.async("string");
+        const blocks = xml.split(/<w:style[\s>]/).slice(1);
+        for (const raw of blocks) {
+            const block = "<w:style " + raw.split("</w:style>")[0];
+            const nameMatch = block.match(/<w:name w:val="([^"]+)"/);
+            if (!nameMatch) continue;
+            const name = nameMatch[1];
+            if (name.includes("'")) continue; // 名字含引号无法安全写入 styleMap,跳过
+            let level = 0;
+            const outline = block.match(/<w:outlineLvl w:val="(\d+)"/);
+            if (outline) {
+                level = Number(outline[1]) + 1;
+            } else {
+                const m1 = name.match(/^(?:heading|标题)\s*([1-6])$/i);
+                const m2 = name.match(/^([一二三四五六])级标题$/);
+                if (m1) level = Number(m1[1]);
+                else if (m2) level = ZH_NUM_LEVEL[m2[1]] || 0;
+            }
+            if (level >= 1 && level <= 6) {
+                map.push(`p[style-name='${name}'] => h${level}:fresh`);
+            }
+        }
+    } catch {
+        // 解析失败不影响主流程
+    }
+    return map;
+}
+
+// EMF/WMF 是 Word 矢量图格式,浏览器不能渲染;mammoth 默认把所有图片 base64 内联,
+// 一份带多张 EMF 的文档会让 HTML 膨胀到几十上百 MB,编辑器直接卡死/截断
+// (「内容显示不完整」)。这里跳过这两类不可显示的图片,其余图片保持内联。
+function makeConvertImage(mammoth: any) {
+    try {
+        if (!mammoth?.images?.imgElement) return undefined;
+        return mammoth.images.imgElement((el: any) => {
+            const type = String(el?.contentType || "");
+            if (/emf|wmf/i.test(type)) {
+                return Promise.resolve({});
+            }
+            return el.readAsBase64String().then((b64: string) => ({
+                src: "data:" + type + ";base64," + b64,
+            }));
+        });
+    } catch {
+        return undefined;
+    }
+}
 
 // 文档引擎:.docx → HTML(mammoth) → Quill 富文本编辑 → HTML → .docx(docx)
 // 说明:往返转换会有一定格式损耗(复杂版式、页眉页脚、图片等不保留),正文内容与
@@ -182,10 +313,26 @@ export async function createDocumentEngine(
 ): Promise<OfficeEngine> {
     const buf = await readBinaryFile(path);
 
-    // mammoth:docx → HTML
+    // 抽取页眉/页脚文本(只读展示,不进入 Quill 模型,保存时不会写回正文)
+    const hf = await extractHeaderFooterText(buf);
+
+    // 动态识别文档自定义标题样式(如「一级标题」),避免标题被渲染成普通段落
+    const dynamicStyleMap = await buildHeadingStyleMap(buf);
+
+    // mammoth:docx → HTML(正文)
+    // 注意:convertToHtml 的签名是 (input, options),styleMap/convertImage 必须放在第二个
+    // 参数里,混进第一个参数会被静默忽略
     const mammothMod: any = await import("mammoth/mammoth.browser.js");
     const mammoth = mammothMod.default || mammothMod;
-    const converted = await mammoth.convertToHtml({arrayBuffer: buf});
+    const convertImage = makeConvertImage(mammoth);
+    const converted = await mammoth.convertToHtml(
+        {arrayBuffer: buf},
+        {
+            styleMap: [...HEADING_STYLE_MAP, ...dynamicStyleMap],
+            includeDefaultStyleMap: true,
+            ...(convertImage ? {convertImage} : {}),
+        },
+    );
     const initialHTML: string = converted?.value || "";
 
     // Quill:富文本编辑
@@ -223,6 +370,21 @@ export async function createDocumentEngine(
             quill.root.innerHTML = initialHTML;
         }
     }
+
+    // 页眉/页脚:只读面板,放在工具栏下方与编辑区下方(不进入 Quill 模型)
+    const buildPanel = (paras: string[], cls: string, label: string): HTMLElement | null => {
+        if (!paras.length) return null;
+        const panel = document.createElement("div");
+        panel.className = cls;
+        panel.setAttribute("data-label", label);
+        panel.innerHTML = paras.map((t) => `<p>${t}</p>`).join("");
+        return panel;
+    };
+    const headerPanel = buildPanel(hf.header, "syfe-docx-header-panel", "页眉");
+    const footerPanel = buildPanel(hf.footer, "syfe-docx-footer-panel", "页脚");
+    if (headerPanel) root.insertBefore(headerPanel, editorEl);
+    if (footerPanel) root.appendChild(footerPanel);
+
     const onChange = () => {
         if (loading) return;
         if (!dirty) {
