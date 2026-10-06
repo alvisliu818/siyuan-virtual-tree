@@ -1,0 +1,23 @@
+{
+  "settings": "设置",
+  "ruleManage": "渲染规则",
+  "dataSourceManage": "数据源",
+  "addRule": "新增规则",
+  "lang": "语言标识",
+  "renderer": "渲染器",
+  "mode": "渲染模式",
+  "enabled": "启用",
+  "autoOpen": "自动展开",
+  "actions": "操作",
+  "delete": "删除",
+  "addDataSource": "新增数据源",
+  "dsName": "名称",
+  "dsType": "类型",
+  "dsUrl": "地址",
+  "dsToken": "令牌",
+  "appearance": "外观",
+  "autoRender": "打开文档时自动渲染",
+  "showToolbarButton": "代码块头部显示渲染按钮",
+  "maxRows": "结果最大行数",
+  "about": "关于"
+}

@@ -1,0 +1,20 @@
+{
+  "name": "siyuan-plugin-code-render",
+  "version": "0.1.0",
+  "description": "思源笔记代码块渲染：可注册的渲染器框架，内置 MySQL / SQL 预设（语法高亮、格式化、DDL 表结构、执行结果）",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "test": "node scripts/run-sql-test.mjs",
+    "test:inplace": "node scripts/run-inplace-test.mjs",
+    "verify": "node scripts/verify-load.cjs",
+    "make": "npm run test && npm run test:inplace && npm run build && npm run verify"
+  },
+  "devDependencies": {
+    "jsdom": "^30.0.1",
+    "siyuan": "^1.2.6",
+    "typescript": "^5.4.5",
+    "vite": "^5.2.11"
+  }
+}

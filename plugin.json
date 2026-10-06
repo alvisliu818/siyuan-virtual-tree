@@ -1,0 +1,27 @@
+{
+  "name": "siyuan-plugin-code-render",
+  "author": "alvisliu",
+  "url": "https://github.com/siyuan-note/siyuan",
+  "version": "0.2.3",
+  "minAppVersion": "3.0.0",
+  "backends": ["all"],
+  "frontends": ["all"],
+  "displayName": {
+    "default": "代码块渲染",
+    "zh_CN": "代码块渲染",
+    "en_US": "Code Block Render"
+  },
+  "description": {
+    "default": "为代码块挂载自定义渲染器，内置 MySQL / SQL 预设：语法高亮、格式化、DDL 表结构、SQL 执行结果",
+    "zh_CN": "为代码块挂载自定义渲染器，内置 MySQL / SQL 预设：语法高亮、格式化、DDL 表结构、SQL 执行结果",
+    "en_US": "Attach custom renderers to code blocks. Built-in MySQL / SQL preset: highlight, format, DDL schema, query result"
+  },
+  "readme": {
+    "default": "README_zh_CN.md",
+    "zh_CN": "README_zh_CN.md",
+    "en_US": "README.md"
+  },
+  "keywords": ["代码块", "渲染", "mysql", "sql", "高亮", "格式化", "表结构", "code", "render", "sql"],
+  "funding": {},
+  "disabled": false
+}

@@ -1,0 +1,23 @@
+{
+  "settings": "Settings",
+  "ruleManage": "Render rules",
+  "dataSourceManage": "Data sources",
+  "addRule": "Add rule",
+  "lang": "Language",
+  "renderer": "Renderer",
+  "mode": "Mode",
+  "enabled": "Enabled",
+  "autoOpen": "Auto expand",
+  "actions": "Actions",
+  "delete": "Delete",
+  "addDataSource": "Add data source",
+  "dsName": "Name",
+  "dsType": "Type",
+  "dsUrl": "URL",
+  "dsToken": "Token",
+  "appearance": "Appearance",
+  "autoRender": "Auto render when opening a document",
+  "showToolbarButton": "Show render button in code block header",
+  "maxRows": "Max result rows",
+  "about": "About"
+}
