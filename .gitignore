@@ -7,8 +7,13 @@ build/
 .DS_Store
 .idea/
 .vscode/
+# ===== AI 助手工作区 =====
+# 私人助手文件由 E:\HOME\Code 私有仓库跟踪，公开仓库一律不提交。
+# 注意：只精确放行 memory/，不要写!.workbuddy/ —— 那会把 tmp/ 等
+# 过程产物一并放行（.gitignore 对已跟踪文件无效，必须白名单到具体路径）。
 .workbuddy/
-
+!.workbuddy/memory/
+!.workbuddy/memory/**
 # Dev build outputs at root (legacy, now outputs to SiYuan plugin dir)
 /index.js
 /index.css
