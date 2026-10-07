@@ -2,7 +2,7 @@ import {openTab, confirm, showMessage, Menu} from "siyuan";
 import {TAB_TYPE, isMarkdownFile} from "../constants";
 import {basename, extname, dirname, joinPath, sepFor} from "../utils/path";
 import {EditorConfig, DirEntry} from "../types";
-import {createEditor} from "../editor/monaco";
+import {createEditor, getLanguageByPath} from "../editor/monaco";
 import {readDir} from "../api/file";
 import {BINARY_EXTENSIONS, isImageFile, isOfficeFile, isMediaFile, isNotebookFile} from "../constants";
 import {openMediaTab} from "./media-tab";
@@ -19,6 +19,7 @@ import {
 } from "../editor/model-manager";
 import {createBacklinkPanel} from "../components/backlink-panel";
 import {addRecent} from "../recent-files";
+import {registerPythonEditor, unregisterPythonEditor} from "../utils/python-lsp-bridge";
 
 // 编辑器 Tab 所需的插件接口(结构化类型,避免循环依赖)
 export interface IPluginForTab {
@@ -251,6 +252,18 @@ export function createEditorTabConfig(plugin: IPluginForTab) {
                         await (self as any).save();
                     });
                     self._editor = editor;
+                    // Python 文件登记到 LSP 桥接层。
+                    // 为什么要登记而不是靠 monaco model 的 URI 反查:monaco 给的
+                    // model URI 是 `inmemory://model/1` 这种自造串,里面**没有**真实
+                    // 磁盘路径,而 pyright 的 didOpen/补全都必须按真实路径走。
+                    // 顺带这一步也把「打开 .py 就把内容推给 pyright」给做了。
+                    if (getLanguageByPath(path) === "python") {
+                        try {
+                            registerPythonEditor(editor, path);
+                        } catch (e) {
+                            console.warn("[siyuan-file-editor] Python LSP 登记失败:", e);
+                        }
+                    }
                     // 初始脏状态(复用 model 时可能已脏)
                     updateDirtyUI(isDirty(path));
                     // 内容变更 → 标脏
@@ -319,6 +332,13 @@ export function createEditorTabConfig(plugin: IPluginForTab) {
             return false; // 阻止本次关闭,等待用户选择
         },
         destroy(this: EditorTabInstance) {
+            // 先摘 LSP:必须在 editor.dispose() 之前,
+            // 因为注销逻辑要读 editor.getModel() 来清 marker
+            try {
+                if (this._editor) unregisterPythonEditor(this._editor);
+            } catch {
+                // 忽略
+            }
             this._disposables?.forEach(d => {
                 try {
                     d();

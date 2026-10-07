@@ -24,6 +24,9 @@ const LANG_MAP: Record<string, string> = {
     ".md": "markdown",
     ".markdown": "markdown",
     ".py": "python",
+    // .pyi 是 PEP 484 的类型存根,语法与 .py 一致,交给同一个 language id
+    // 才能拿到 pyright 的补全/跳转(否则退化成纯文本,存根里的类型全看不见)
+    ".pyi": "python",
     ".go": "go",
     ".rs": "rust",
     ".java": "java",

@@ -27,6 +27,29 @@ const SIYUAN_PLUGIN_DIR = process.env.SYFI_PLUGIN_DIR || "E:\\HOME\\SiYuan\\data
 const NODE_PTY_SRC = path.resolve(__dirname, "scripts", "node_modules", "node-pty");
 const NODE_PTY_DEST = "node_modules/node-pty";
 
+// pyright(Python 语言服务器)依赖目录。它是**运行时**用 ELECTRON_RUN_AS_NODE
+// 拉起的独立 Node 进程,不能被 webpack 打包(webpack 会把它的 require 图当
+// 浏览器代码处理,连 fs 都用不了),必须原样复制。
+const PYRIGHT_SRC = path.resolve(__dirname, "node_modules", "pyright");
+const PYRIGHT_DEST = "pyright";
+
+/**
+ * 生成 pyright 的复制规则。
+ *
+ * 整包原样复制(29M),不做任何排除 —— 用户明确要求「不需要管体积, 能用都用上」。
+ * 保留全部内容的理由(每项都会实际影响功能):
+ *   dist/typeshed-fallback/stdlib  4.3M  Python 标准库存根,缺了满屏红波浪线
+ *   dist/typeshed-fallback/stubs  18M   第三方库存根,缺了 import 全部报
+ *                                        "Import could not be resolved"
+ *   dist/*.map                     ~3M   调试符号,排查 pyright 自身崩溃时有用
+ *   dist/tests                      -     pyright 自测,留着无害
+ * 相比这些,29M 体积不构成取舍理由。
+ */
+function pyrightPatterns() {
+    if (!fs.existsSync(PYRIGHT_SRC)) return [];
+    return [{from: PYRIGHT_SRC, to: PYRIGHT_DEST}];
+}
+
 /**
  * 生成 node-pty 的复制规则。
  * node-pty 加载原生模块时按序找 build/Release → build/Debug → prebuilds/<platform>-<arch>,
@@ -96,6 +119,8 @@ module.exports = (env, argv) => {
                     {from: "tools/syfe-kernel.py", to: "./syfe-kernel.py"},
                     // node-pty:终端真 PTY 的原生模块(按当前平台复制)
                     ...nodePtyPatterns(),
+                    // pyright:Python 语言服务器(运行时独立进程,需整包复制)
+                    ...pyrightPatterns(),
                 ],
             }),
         );
@@ -114,6 +139,8 @@ module.exports = (env, argv) => {
                     {from: "tools/syfe-kernel.py", to: "./syfe-kernel.py"},
                     // node-pty:终端真 PTY 的原生模块(按当前平台复制)
                     ...nodePtyPatterns(),
+                    // pyright:Python 语言服务器(运行时独立进程,需整包复制)
+                    ...pyrightPatterns(),
                 ],
             }),
         );

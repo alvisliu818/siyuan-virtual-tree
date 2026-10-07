@@ -37,6 +37,9 @@ import {clearAllThemes, applyThemeByPreference, getLoadedThemes} from "./extensi
 import {clearAllSnippets} from "./extensions/snippet-loader";
 import {clearAllLsp} from "./extensions/lsp-loader";
 import {clearAllIconThemes, getIconThemesWithMissingIcons, getLoadedIconThemes, activateIconThemeByPreference} from "./extensions/icon-theme-loader";
+import {registerPythonLsp, disposePythonLsp} from "./utils/python-lsp-bridge";
+import {disposePythonKernel} from "./utils/python-kernel";
+import {stopPythonLanguageServer} from "./utils/python-lsp";
 import {refreshAllExpanded} from "./components/file-tree";
 import "./index.scss";
 
@@ -87,6 +90,16 @@ export default class FileEditorPlugin extends Plugin {
             }
         } catch {
             // ignore
+        }
+
+        // Python 语言服务(pyright)。
+        // 必须放在 __SIYUAN_FILE_EDITOR_DIR__ 注入之后 —— pyright 入口是靠这个
+        // 目录在<插件目录>/pyright/ 下定位的,拿不到就只会静默退回内核静态补全。
+        // start() 内部是异步且有超时的,不会拖慢插件加载。
+        try {
+            registerPythonLsp();
+        } catch (e) {
+            console.warn("[siyuan-file-editor] Python LSP 注册失败:", e);
         }
 
         // 注册 Tab 类型
@@ -322,6 +335,15 @@ export default class FileEditorPlugin extends Plugin {
     }
 
     onunload(): void {
+        // 停掉 Python 语言服务与持久内核:两者都是常驻子进程,
+        // 不显式关的话思源禁用插件后它们会一直挂在后台吃内存
+        try {
+            disposePythonLsp();
+        } catch {
+            // ignore
+        }
+        void disposePythonKernel();
+        void stopPythonLanguageServer();
         disposeAll();
         // 清理扩展系统
         clearAllGrammars();
