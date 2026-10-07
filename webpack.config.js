@@ -21,6 +21,40 @@ const monacoFeatures = [
 // 可通过环境变量 SYFI_PLUGIN_DIR 覆盖
 const SIYUAN_PLUGIN_DIR = process.env.SYFI_PLUGIN_DIR || "E:\\HOME\\SiYuan\\data\\plugins\\siyuan-file-editor";
 
+// node-pty 依赖目录。node-pty 是原生模块(内含平台相关的 .node/.dll),
+// 无法被 webpack 打包,只能原样复制到插件目录,由运行时 require 加载。
+// 装在 scripts/ 下(与 terminal-server 共用依赖),打包时按当前平台只复制一份。
+const NODE_PTY_SRC = path.resolve(__dirname, "scripts", "node_modules", "node-pty");
+const NODE_PTY_DEST = "node_modules/node-pty";
+
+/**
+ * 生成 node-pty 的复制规则。
+ * node-pty 加载原生模块时按序找 build/Release → build/Debug → prebuilds/<platform>-<arch>,
+ * 且是**运行时**按 process.platform/process.arch 解析,
+ * 因此这里只需打包构建机当前平台的那一份,避免把 win32/darwin 全带(全量 64M)。
+ * 排除 *.pdb(调试符号,占 17M)和测试文件、.map。
+ */
+function nodePtyPatterns() {
+    if (!fs.existsSync(NODE_PTY_SRC)) return [];
+    const plat = `${process.platform}-${process.arch}`;
+    const prebuildDir = path.join(NODE_PTY_SRC, "prebuilds", plat);
+    const patterns = [
+        // JS 层(入口 lib/index.js → lib/utils.js 按上述顺序找 .node)
+        {from: path.join(NODE_PTY_SRC, "package.json"), to: `${NODE_PTY_DEST}/`},
+        {from: path.join(NODE_PTY_SRC, "lib"), to: `${NODE_PTY_DEST}/lib`, globOptions: {ignore: ["**/*.test.js", "**/*.test.js.map", "**/*.map"]}},
+        {from: path.join(NODE_PTY_SRC, "typings"), to: `${NODE_PTY_DEST}/typings`},
+    ];
+    if (fs.existsSync(prebuildDir)) {
+        patterns.push({
+            from: prebuildDir,
+            to: `${NODE_PTY_DEST}/prebuilds/${plat}`,
+            // pdb 是调试符号,运行时不需要
+            globOptions: {ignore: ["**/*.pdb"]},
+        });
+    }
+    return patterns;
+}
+
 module.exports = (env, argv) => {
     const production = argv.mode === "production";
     // 生产模式输出到 dist/ 子目录(完整插件目录)
@@ -56,6 +90,8 @@ module.exports = (env, argv) => {
                     {from: "src/i18n/", to: "./i18n/"},
                     // Vditor(Markdown 所见即所得)的静态资源:运行时按 cdn 路径懒加载
                     {from: "node_modules/vditor/dist", to: "./vditor/dist"},
+                    // node-pty:终端真 PTY 的原生模块(按当前平台复制)
+                    ...nodePtyPatterns(),
                 ],
             }),
         );
@@ -68,6 +104,8 @@ module.exports = (env, argv) => {
                     {from: "plugin.json", to: "./"},
                     {from: "icon.png", to: "./", noErrorOnMissing: true},
                     {from: "node_modules/vditor/dist", to: "./vditor/dist"},
+                    // node-pty:终端真 PTY 的原生模块(按当前平台复制)
+                    ...nodePtyPatterns(),
                 ],
             }),
         );

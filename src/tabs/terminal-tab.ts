@@ -6,7 +6,8 @@ import {TERMINAL_TAB_TYPE, DEFAULT_TERMINAL_SERVER_URL} from "../constants";
 import {EditorConfig} from "../types";
 import {basename} from "../utils/path";
 import {toSystemPath} from "../utils/system-path";
-import {spawnBuiltinTerminal, isBuiltinTerminalAvailable, BuiltinTerminalSession} from "../utils/builtin-terminal";
+import {getNativeRequire} from "../utils/native-require";
+import {spawnBuiltinTerminal, isBuiltinTerminalAvailable, isPtyAvailable, BuiltinTerminalSession} from "../utils/builtin-terminal";
 
 // 终端 Tab 所需的插件接口
 export interface IPluginForTerminalTab {
@@ -39,6 +40,25 @@ interface TerminalTabInstance {
 
 function escapeHTML(s: string): string {
     return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+// 推断插件在磁盘上的目录,供 node-pty 定位其预构建二进制。
+// 思源插件位于 <工作空间>/data/plugins/<插件名>/,而工作空间目录能从
+// window.siyuan.config.system.workspaceDir 拿到(真实文件系统路径),据此拼接。
+// 拿不到时返回空串,node-pty 加载失败会自动回退管道模式。
+function guessPluginDir(): string {
+    try {
+        const ws = (window as any).siyuan?.config?.system?.workspaceDir;
+        if (ws) {
+            const req = getNativeRequire();
+            const p = req ? (req("path") as typeof import("path")) : null;
+            const join = (a: string, b: string) => (p ? p.join(a, b) : `${a}/${b}`);
+            return join(ws, join("data", join("plugins", "siyuan-file-editor")));
+        }
+    } catch {
+        // ignore
+    }
+    return "";
 }
 
 // 注:路径转换已抽取到 ../utils/system-path 的 toSystemPath,此处直接复用
@@ -89,7 +109,16 @@ export function createTerminalTabConfig(plugin: IPluginForTerminalTab) {
             // 判断后端模式:auto 优先内置(若可用),否则用服务模式
             const backendPref = plugin.config.terminalBackend || "auto";
             const useBuiltin = backendPref === "builtin" || (backendPref === "auto" && isBuiltinTerminalAvailable());
-            const backendLabel = useBuiltin ? "内置" : "服务";
+            // 内置模式下再分真 PTY(node-pty)与管道(child_process)两种
+            const ptyAvailable = useBuiltin && isPtyAvailable();
+            const backendLabel = useBuiltin ? (ptyAvailable ? "PTY" : "管道") : "服务";
+            // 注入插件目录,供 node-pty 运行时定位预构建二进制(见 utils/builtin-terminal)
+            try {
+                (window as any).__SIYUAN_FILE_EDITOR_DIR__ = (window as any).__SIYUAN_FILE_EDITOR_DIR__
+                    || guessPluginDir();
+            } catch {
+                // ignore
+            }
 
             this.element.innerHTML = `
                 <div class="syfe-terminal">
@@ -113,7 +142,9 @@ export function createTerminalTabConfig(plugin: IPluginForTerminalTab) {
                 fontSize: plugin.config.fontSize || 14,
                 fontFamily: "Menlo, Consolas, 'Courier New', monospace",
                 cursorBlink: true,
-                convertEol: true, // 自动把 \n 转换为 \r\n(内置模式非 PTY,shell 输出为 \n)
+                // 仅管道模式需要:shell 输出为 \n,xterm 需要补 \r;
+                // 真 PTY 输出自带 \r\n,再补会变成 \r\r\n 产生空行
+                convertEol: !ptyAvailable,
                 theme: {
                     background: "#1e1e1e",
                     foreground: "#d4d4d4",
@@ -151,19 +182,27 @@ export function createTerminalTabConfig(plugin: IPluginForTerminalTab) {
             }
 
             const self = this;
+            // 本地引用,避免 self._disposables 的可选属性窄化报错
+            const disposables: Array<() => void> = self._disposables || [];
+            self._disposables = disposables;
 
             // 用户输入 → 后端
             const onDataDisp = term.onData(data => {
                 if (useBuiltin) {
-                    // Windows shell(cmd/powershell)期望 \r\n 作为换行
-                    // xterm 按回车发送 \r,需要转换为 \r\n
-                    const normalized = data.replace(/\r/g, "\r\n");
-                    self._builtinSession?.write(normalized);
+                    if (self._builtinSession?.backend === "pty") {
+                        // 真 PTY:原样发送即可,回车就是 \r(转成 \r\n 会多出空行)
+                        self._builtinSession.write(data);
+                    } else {
+                        // 管道模式:Windows shell(cmd/powershell)按行读 stdin,
+                        // 需要把 xterm 的 \r 转成 \r\n 才认为是一次回车
+                        const normalized = data.replace(/\r/g, "\r\n");
+                        self._builtinSession?.write(normalized);
+                    }
                 } else if (self._ws && self._ws.readyState === WebSocket.OPEN) {
                     self._ws.send(JSON.stringify({type: "input", data}));
                 }
             });
-            self._disposables.push(() => onDataDisp.dispose());
+            disposables.push(() => onDataDisp.dispose());
 
             // 终端尺寸变化 → 通知后端
             const sendResize = () => {
@@ -184,7 +223,7 @@ export function createTerminalTabConfig(plugin: IPluginForTerminalTab) {
                 sendResize();
             });
             self._resizeObserver.observe(container);
-            self._disposables.push(() => {
+            disposables.push(() => {
                 self._resizeObserver?.disconnect();
                 self._resizeObserver = undefined;
             });
@@ -328,7 +367,10 @@ function connectBuiltin(self: TerminalTabInstance, restart: boolean): void {
 
         setStatus(self, "connected", "已连接");
         if (self._term) {
-            self._term.write(`\x1b[90m[内置终端已启动,shell: ${shell},cwd: ${systemCwd}]\x1b[0m\r\n`);
+            const kind = session.backend === "pty"
+                ? "真 PTY(支持行编辑/历史/真彩色)"
+                : "管道模式(无行编辑,建议启用 node-pty)";
+            self._term.write(`\x1b[90m[终端已启动 · ${kind} · shell: ${shell} · cwd: ${systemCwd}]\x1b[0m\r\n`);
         }
     } catch (e: any) {
         setStatus(self, "error", "错误");

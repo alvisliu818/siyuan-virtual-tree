@@ -41,6 +41,7 @@
     "docx": "^9.7.1",
     "jszip": "^3.10.1",
     "mammoth": "^1.12.2",
+    "node-pty": "^1.1.0",
     "quill": "^2.0.3",
     "vditor": "^4.0.0",
     "vscode-oniguruma": "^2.0.1",
