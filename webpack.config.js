@@ -7,9 +7,14 @@ const CopyPlugin = require("copy-webpack-plugin");
 const MonacoWebpackPlugin = require("monaco-editor-webpack-plugin");
 
 // Monaco 按需加载的语言与特性,控制打包体积
+// 注册进 monaco 的语言列表。**必须与 src/editor/monaco.ts 的 LANG_MAP 对齐** ——
+// LANG_MAP 里写了但这里没注册的语言,monaco 找不到语言包会静默按 plaintext 处理
+// (表现就是 .cs/.php/.rb 全是纯黑白文本,连注释颜色都没有,且没有任何报错)。
+// 两个列表都缺的才是真·不支持(会走 LANG_MAP 的默认值 plaintext)。
 const monacoLanguages = [
-    "typescript", "javascript", "json", "css", "html", "markdown",
+    "typescript", "javascript", "json", "css", "scss", "less", "html", "markdown",
     "xml", "python", "go", "rust", "sql", "yaml", "shell", "java", "c", "cpp",
+    "csharp", "php", "ruby",
 ];
 const monacoFeatures = [
     "coreCommands", "find", "format", "hover", "multiCursor", "suggest",
