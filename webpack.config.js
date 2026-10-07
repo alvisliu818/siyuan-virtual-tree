@@ -92,6 +92,8 @@ module.exports = (env, argv) => {
                     {from: "node_modules/vditor/dist", to: "./vditor/dist"},
                     // pty-helper:真 PTY 的承载进程(ELECTRON_RUN_AS_NODE 拉起,内部用 node-pty)
                     {from: "tools/pty-helper.js", to: "./pty-helper.js"},
+                    // syfe-kernel:Python 内核本体(由 pty-helper 以 raw 子进程拉起)
+                    {from: "tools/syfe-kernel.py", to: "./syfe-kernel.py"},
                     // node-pty:终端真 PTY 的原生模块(按当前平台复制)
                     ...nodePtyPatterns(),
                 ],
@@ -108,6 +110,8 @@ module.exports = (env, argv) => {
                     {from: "node_modules/vditor/dist", to: "./vditor/dist"},
                     // pty-helper:真 PTY 的承载进程
                     {from: "tools/pty-helper.js", to: "./pty-helper.js"},
+                    // syfe-kernel:Python 内核本体
+                    {from: "tools/syfe-kernel.py", to: "./syfe-kernel.py"},
                     // node-pty:终端真 PTY 的原生模块(按当前平台复制)
                     ...nodePtyPatterns(),
                 ],
