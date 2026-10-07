@@ -101,6 +101,11 @@ export default class FileEditorPlugin extends Plugin {
     onload(): void {
         setupMonaco(this.name);
 
+        // 挂上「按需补注册文件面板」的钩子。必须在这里(而不是 addFileTreeDock
+        // 内部)挂:面板默认不注册,那条路径在默认配置下根本不会走,
+        // 结果新标签页点文件夹时 openFileTab 找不到钩子,只能干等。
+        (window as any).__syfeAddFileTreeDock = () => this.addFileTreeDock();
+
         // 尽早注入插件磁盘目录,供终端的 node-pty 运行时定位预构建二进制
         // (目录 = 工作空间/data/plugins/<插件名>;PTY 检测依赖它,必须先于任何终端调用)
         try {
@@ -218,6 +223,7 @@ export default class FileEditorPlugin extends Plugin {
 
     // 注册「文件」侧边栏面板。
     // 该面板默认不注册(见 onload);用户在设置里打开时调用本方法即时生效。
+    // 也可以由 openFileTab 在打开文件夹时按需触发(钩子挂在 onload)。
     // 注:思源插件**没有 removeDock**,所以关闭开关后需要重启思源才真正隐藏。
     private addFileTreeDock(): void {
         if (this.fileTreeDockAdded) return;

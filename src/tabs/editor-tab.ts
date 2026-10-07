@@ -23,6 +23,40 @@ import {registerPythonEditor, unregisterPythonEditor} from "../utils/python-lsp-
 import {resolvePythonInterpreter} from "../utils/python-kernel";
 import {runCommandInTerminal} from "./terminal-tab";
 import {toSystemPath} from "../utils/system-path";
+import {isDirectory} from "../utils/path-kind";
+import {revealInFileTree} from "../components/file-tree";
+
+// 打开文件夹:在文件树里展开定位。
+//
+// 「文件」面板默认不注册(见 index.ts 的 addFileTreeDock),用户从新标签页点
+// 一个文件夹时如果不管这个,点了等于没点 —— revealInFileTree 找不到树根,
+// 只会弹一句"面板已关闭"的提示。所以先补注册面板再定位。
+//
+// 补注册只能调一次(思源插件没有 removeDock),所以要等 DOM 里出现
+// .syfe-tree__root 才继续,否则定位会在面板还没建出来时空转。
+function openFolderInTree(path: string): void {
+    const locate = () => {
+        // expandTarget:用户点文件夹是为了看里面的东西,定位后顺手展开
+        void revealInFileTree(path, {expandTarget: true});
+    };
+    if (document.querySelector(".syfe-tree__root")) {
+        locate();
+        return;
+    }
+    const ensure = (window as any).__syfeAddFileTreeDock;
+    if (typeof ensure !== "function") {
+        locate();
+        return;
+    }
+    ensure();
+    const deadline = Date.now() + 3000;
+    const timer = setInterval(() => {
+        if (document.querySelector(".syfe-tree__root") || Date.now() > deadline) {
+            clearInterval(timer);
+            locate();
+        }
+    }, 120);
+}
 
 // Python 文件的头部「▶ 运行」:把文件丢进终端里跑。
 //
@@ -164,7 +198,16 @@ export interface OpenTabOptions {
 
 // 打开文件编辑 Tab(同文件去重,聚焦已有 Tab)
 // opts.position 指定时,在指定方向以分栏方式打开(支持同时查看多个文件)
+//
+// 文件夹走 revealInFileTree(在文件树里展开定位),不开编辑器 Tab ——
+// 少了这个分支时,新标签页里固定的文件夹一点击就会开出编辑器 Tab,
+// 内容是内核返回的 {"code":409,"msg":"path is a directory"}。
 export function openFileTab(plugin: IPluginForTab, path: string, opts?: OpenTabOptions): void {
+    if (isDirectory(path)) {
+        void addRecent(plugin as any, path);
+        openFolderInTree(path);
+        return;
+    }
     // 记录最近打开(放到最前,去重),供斜杆命令文件选择器快速插入
     void addRecent(plugin as any, path);
     // 图片文件交由独立的图片查看 Tab 处理

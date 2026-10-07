@@ -381,7 +381,12 @@ export async function refreshPath(rootEl: HTMLElement | null, path: string, root
 // 而非按完整 data-path 字符串精确匹配——避免根前缀表示差异(系统↔虚拟路径、正反斜杠)
 // 导致"链算对了但 DOM data-path 对不上"。每级始终 fresh 重渲其子项,对抗 stale/半渲染。
 // 失败时 console.warn 列出实际存在的子项,便于一眼看出是名字差异还是 readDir 空/失败。
-export async function revealPath(rootEl: HTMLElement, targetPath: string, rootPath: string): Promise<boolean> {
+export async function revealPath(
+    rootEl: HTMLElement,
+    targetPath: string,
+    rootPath: string,
+    opts?: {expandTarget?: boolean},
+): Promise<boolean> {
     const norm = (p: string) => p.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
     const basenameNorm = (p: string) => {
         const n = norm(p);
@@ -427,6 +432,18 @@ export async function revealPath(rootEl: HTMLElement, targetPath: string, rootPa
                 row.scrollIntoView({block: "center", behavior: "smooth"});
                 row.classList.add("syfe-tree__row--reveal");
                 setTimeout(() => row.classList.remove("syfe-tree__row--reveal"), 1600);
+            }
+            // expandTarget:点文件夹时用户想看的是它的**内容**,不只是"这一行被选中了"。
+            // 定位+高亮只解决"找得到",不展开的话点完还是得再点一次展开箭头。
+            if (opts?.expandTarget && li.dataset.isDir === "true") {
+                const kids = li.querySelector(":scope > .syfe-tree__children") as HTMLElement | null;
+                if (kids) {
+                    await renderTree(kids, li.dataset.path!);
+                    li.dataset.loaded = "true";
+                    li.dataset.expanded = "true";
+                    kids.style.display = "";
+                    updateFolderIcon(li);
+                }
             }
             break;
         }
@@ -491,11 +508,11 @@ export function revealCandidates(path: string): string[] {
 // 在文件树中定位并高亮某路径(跨多个文件树 Dock 取第一个包含它的根)
 // 供搜索结果、思源正文 file:// 链接右键「在文件夹树中定位」共用。
 // 仅在当前树根下逐级展开父目录并高亮目标,不切换根目录。
-export async function revealInFileTree(path: string): Promise<boolean> {
+export async function revealInFileTree(path: string, opts?: {expandTarget?: boolean}): Promise<boolean> {
     for (const cand of revealCandidates(path)) {
         const rootEl = findTreeRootEl(cand);
         if (rootEl?.dataset.path) {
-            const ok = await revealPath(rootEl, cand, rootEl.dataset.path);
+            const ok = await revealPath(rootEl, cand, rootEl.dataset.path, opts);
             if (ok) return true;
             showMessage("文件树中未找到该路径", 3000, "info");
             return false;
