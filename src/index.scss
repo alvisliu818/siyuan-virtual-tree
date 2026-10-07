@@ -361,6 +361,98 @@
     opacity: 0.6;
 }
 
+// === 自定义「打开方式」的管理界面 ===
+.syfe-ow-field {
+    margin-bottom: 12px;
+
+    &__label {
+        font-size: 12px;
+        opacity: 0.75;
+        margin-bottom: 4px;
+    }
+
+    // 占位符、命令写法这类说明文字。放在输入框下面而不是 tooltip:
+    // 用户是在填表的过程中需要它,tooltip 要悬停才看得到。
+    &__hint {
+        font-size: 11px;
+        opacity: 0.6;
+        margin-top: 4px;
+        line-height: 1.5;
+
+        code {
+            background: var(--b3-theme-surface);
+            padding: 0 3px;
+            border-radius: 2px;
+        }
+    }
+}
+
+.syfe-ow-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 2px;
+    border-bottom: 1px solid var(--b3-border-color);
+    font-size: 13px;
+
+    &__name {
+     font-weight: 500;
+        // 内置标记:用户要能一眼看出哪几项不能删
+        .syfe-ow-row__tag {
+            font-size: 10px;
+      font-weight: normal;
+            opacity: 0.65;
+            border: 1px solid var(--b3-border-color);
+      border-radius: 3px;
+     padding: 0 3px;
+            margin-left: 5px;
+        }
+    }
+
+    // 命令原文。超长时省略而不是换行 —— 一条命令换行会把行高撑得很难看
+    &__cmd {
+        font-family: Consolas, "Cascadia Mono", "Courier New", monospace;
+        font-size: 12px;
+        opacity: 0.85;
+        max-width: 45%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    &__scope {
+        font-size: 11px;
+  opacity: 0.6;
+        white-space: nowrap;
+    }
+}
+
+.syfe-ow-empty {
+    padding: 16px;
+    text-align: center;
+    opacity: 0.6;
+}
+
+.syfe-ow-manager {
+    &__tip {
+        font-size: 12px;
+        opacity: 0.75;
+        line-height: 1.6;
+      margin-bottom: 10px;
+
+      code {
+   background: var(--b3-theme-surface);
+            padding: 0 3px;
+         border-radius: 2px;
+      }
+    }
+
+    &__list {
+        max-height: 100%;
+        overflow-y: auto;
+    }
+}
+
 .syfe-tree__root,
 .syfe-tree__children {
     list-style: none;
@@ -2867,21 +2959,25 @@
     border-radius: 4px;
 }
 
+// 单元格本体。
+//
+// 用户要求**去掉边框**,选中/执行中也不做颜色高亮。
+// 原来有 1px 边框 + 选中描主色 + 执行中描主色加 inset 阴影,三个问题:
+// 一是笔记本本来就靠空行分隔格子,再套框显得像表单;二是边框一变色,整格会
+// 跟着"跳"一下;三是主色描边和"执行中"语义混在一起,分不清当前是什么状态。
+// 现在靠留白和浅底色区分格子,选中/执行中用极轻的底色,不动边框。
 .syfe-nb__cell {
-    border: 1px solid var(--b3-border-color);
-    border-radius: 6px;
     margin-bottom: 10px;
     background: var(--b3-theme-background);
+    border-radius: 6px;
     overflow: hidden;
 
     &--active {
-        border-color: var(--b3-theme-primary);
+        background: var(--b3-theme-surface);
     }
 
-    // 执行中:整格描主色,和"选中"区分开(选中只是边框,这里是边框+底色)
     &--running {
-        border-color: var(--b3-theme-primary);
-        box-shadow: 0 0 0 1px var(--b3-theme-primary) inset;
+        background: var(--b3-theme-surface);
     }
 }
 
@@ -2964,16 +3060,71 @@
     }
 }
 
+// 代码单元格源码区。
+//
+// 这里的容器是**空的**,内容全部由 monaco 实例自己填 —— 编辑态是可编辑实例,
+// 阅读态是只读实例,两者都用 codeEditorOptions() 的同一份选项(见 notebook-tab.ts),
+// 所以字号/行高/内边距/换行天然一致,点进编辑时不会再「跳一下」。
+// 以前这里渲染的是 monaco.editor.colorize() 吐的静态 <pre>,与编辑态是两条
+// 独立的渲染路径,只能靠 CSS 去追 monaco 的度量,追不齐。
 .syfe-nb__src {
     cursor: text;
     min-height: 20px;
-    padding: 4px 0;
+    padding: 0;
 
-    // colorize 生成的高亮:铺满并吃掉外层 pre 的默认边距
-    .syfe-nb__hl,
-    .monaco-colorized {
-        padding: 4px 10px;
-        overflow-x: auto;
+    // monaco 自带的层叠上下文与外边距会额外撑高,统一压掉
+    .monaco-editor {
+        margin: 0;
+    }
+}
+
+// 只读态:屏蔽一切「可编辑」的视觉暗示,否则看起来像能直接敲字。
+// 具体是隐藏 cursor 层 —— 只读态仍允许拖选复制(阅读时选中复制很常用),
+// 但选中高亮用透明代替:一格格选中的色块在阅读视图里太吵。
+.syfe-nb__src--ro {
+    cursor: text;
+
+    .cursors-layer {
+        display: none;
+    }
+
+    .selected-text {
+        background-color: transparent;
+    }
+
+    .monaco-editor-background,
+    .margin {
+        background-color: transparent;
+    }
+}
+
+// 编辑态的 monaco 用同一套度量,保证切换时零跳动
+.syfe-nb__celledit {
+    .monaco-editor,
+    .monaco-editor .monaco-editor-background {
+        background-color: transparent;
+    }
+
+    // 关掉行号槽的悬停高亮,避免与单元格自身 hover 叠加
+    .margin:hover {
+        background: transparent;
+    }
+}
+
+// 行号槽:两态共用同一套处理。
+// 只保留数字本身,去掉行号列的背景/边框 —— 行号槽默认带一条竖分隔线,
+// 在这种无行框的笔记本视图里像多了一道多余的框线。
+.syfe-nb__src {
+    .monaco-editor .margin {
+        background-color: transparent;
+
+        .line-number {
+            opacity: .45;
+        }
+
+        .current-line ~ .line-numbers {
+            opacity: .7;
+        }
     }
 }
 
@@ -2993,7 +3144,11 @@
 .syfe-nb__outs {
     border-top: 1px dashed var(--b3-border-color);
     padding: 4px 10px;
-    font-size: 13px;
+    // 输出区不是 monaco 渲染的,拿不到 codeEditorOptions 的值,只能靠
+    // TS 侧注入的同名 CSS 变量跟代码区保持同一字号/行高。
+    // 这两个变量由 notebook-tab.ts 从同一份 config 算出,与 monaco 的一致。
+    font-size: var(--syfe-nb-code-font-size, 13px);
+    line-height: var(--syfe-nb-code-line-height, 20px);
 }
 
 .syfe-nb__outs-empty {

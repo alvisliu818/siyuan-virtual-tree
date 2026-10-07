@@ -65,6 +65,10 @@ interface NotebookTabInstance {
     _editIdx?: number | null;   // 正在就地编辑的单元格
     _editEditor?: monaco.editor.IStandaloneCodeEditor | null;
     _editModel?: monaco.editor.ITextModel | null;
+    /** 阅读态的只读编辑器:cell index → {editor, model}。与编辑态共用同一套 create 选项 */
+    _roEditors?: Map<number, {editor: monaco.editor.IStandaloneCodeEditor; model: monaco.editor.ITextModel}>;
+    /** 阅读态懒加载观察器:只有滚进视口(带余量)的单元格才建 monaco 实例 */
+    _roObserver?: IntersectionObserver | null;
     _onKey?: (e: KeyboardEvent) => void;
     _escHandler?: (e: KeyboardEvent) => void;
     _clickHandler?: (e: MouseEvent) => void;
@@ -124,6 +128,64 @@ function notebookLang(nb: Notebook | null | undefined): string {
 
 function monacoTheme(): string {
     return getActiveThemeName() ?? (getCurrentMode() === 1 ? "siyuan-dark" : "siyuan-light");
+}
+
+// 代码区的行高(px)。**固定 px 而非倍数**:倍数(如 1.5)会被 monaco 按字号
+// 向上取整,得到 20/21px 这种随字号跳变的实际行高,排版会轻微抖动。
+const CODE_LINE_HEIGHT = 20;
+
+/**
+ * 代码单元格 monaco 的**唯一**选项来源 —— 编辑态与阅读态共用,只差 readOnly。
+ *
+ * 为什么必须共用:阅读态以前是 `monaco.editor.colorize()` 生成的静态 `<pre>`,
+ * 和真编辑器是两条独立的渲染路径,字体/行高/padding/行号/背景任何一项对不上,
+ * 一点进编辑整块内容就「跳一下」。既然阅读态也用 monaco 实例了,就把选项收口到
+ * 一个函数里 —— 以后调样式只改这一处,两态不可能再漂移。
+ */
+function codeEditorOptions(cfg: EditorConfig | undefined, readonly: boolean): monaco.editor.IStandaloneEditorConstructionOptions {
+    return {
+        theme: monacoTheme(),
+        automaticLayout: true,
+        minimap: {enabled: false},
+        scrollBeyondLastLine: false,
+        // 行号:阅读态与编辑态都显示(用户要求)。因为两态现在共用同一份选项,
+        // 行号占位宽度天然一致,点进编辑不会再因为"多出行号槽"而整体右移。
+        lineNumbers: "on",
+        lineNumbersMinChars: 3,
+        glyphMargin: false,
+        wordWrap: "on",
+        fontSize: cfg?.fontSize ?? 13,
+        lineHeight: CODE_LINE_HEIGHT,
+        tabSize: cfg?.tabSize ?? 4,
+        renderLineHighlight: "none",
+        scrollbar: {alwaysConsumeMouseWheel: false},
+        padding: {top: 4, bottom: 4},
+        folding: true,
+        // 去掉编辑器的额外装饰,让两态观感一致
+        overviewRulerLanes: 0,
+        hideCursorInOverviewRuler: true,
+        readOnly: readonly,
+        // domReadOnly 让 DOM 上变成 contenteditable=false —— 只给 readOnly 的话
+        // 底层 textarea 仍可聚焦,用户能在阅读态里敲出内容却没处显示。
+        domReadOnly: readonly,
+        // 光标:阅读态不该有闪烁光标,避免看起来还能敲字
+        cursorBlinking: readonly ? "solid" : "smooth",
+        cursorStyle: "line",
+    };
+}
+
+/**
+ * 阅读态的高度计算。
+ *
+ * monaco 的高度由**容器**决定,而容器是 `height: auto` —— 所以必须显式回写高度,
+ * 否则格子会塌成 0。下限用「一行 + 上下 padding」,与单行单元格的高度一致。
+ */
+function fitEditorHeight(host: HTMLElement, editor: monaco.editor.IStandaloneCodeEditor): void {
+    try {
+        host.style.height = Math.max(CODE_LINE_HEIGHT + 8, editor.getContentHeight()) + "px";
+    } catch {
+        // 忽略:编辑器已 dispose
+    }
 }
 
 // 打开 Notebook Tab(同文件去重,聚焦已有 Tab)
@@ -345,6 +407,17 @@ export function createNotebookTabConfig(_plugin: IPluginForNotebookTab) {
             const metaEl = this.element.querySelector(".syfe-nb__meta") as HTMLElement;
             const self = this;
 
+            // 字号/行高以 CSS 变量的形式挂在 Tab 根上。两态都用 monaco 实例后
+            // 它们其实由 codeEditorOptions 直接传参决定了,但仍然挂出来 ——
+            // 输出的 <pre>(stream/JSON)不是 monaco 渲染的,得靠同一份变量
+            // 才能跟代码区视觉对齐。
+            this.element.style.setProperty(
+                "--syfe-nb-code-font-size", (_plugin.config?.fontSize ?? 13) + "px",
+            );
+            this.element.style.setProperty(
+                "--syfe-nb-code-line-height", CODE_LINE_HEIGHT + "px",
+            );
+
             const setDirty = (d: boolean) => {
                 self._dirty = d;
                 dirtyEl.style.display = d ? "" : "none";
@@ -355,10 +428,112 @@ export function createNotebookTabConfig(_plugin: IPluginForNotebookTab) {
                 }
             };
 
-            // 静默提交就地编辑(写回 source、销毁编辑器;不触发重绘)
-            const commitCellEditorSilent = () => {
-                if (self._editIdx === null || self._editIdx === undefined) return;
-                const cell = self._nb?.cells[self._editIdx];
+            // ===== 阅读态的只读 monaco 实例 =====
+            // 以前阅读态是 monaco.editor.colorize() 吐的静态 <pre>,与编辑态是两条
+            // 渲染路径,字体度量/内边距/背景/行号任一处对不上就会在切换时"跳"。
+            // 现在两态都用 monaco,差异从"两套渲染"降级为"一个 readOnly 开关"。
+
+            if (!self._roEditors) self._roEditors = new Map();
+
+            // 销毁某格的只读实例
+            const disposeRO = (idx: number) => {
+                const rec = self._roEditors?.get(idx);
+                if (!rec) return;
+                self._roEditors?.delete(idx);
+                try {
+                    rec.editor.dispose();
+                } catch {
+                    // 忽略
+                }
+                try {
+                    rec.model.dispose();
+                } catch {
+                    // 忽略
+                }
+            };
+
+            // 销毁全部只读实例(render 重建 DOM / 单元格结构变化 / Tab 关闭时都要走)
+            const disposeAllRO = () => {
+                if (!self._roEditors) return;
+                for (const idx of Array.from(self._roEditors.keys())) disposeRO(idx);
+            };
+
+            // 为第 idx 格创建只读实例。已在编辑态的那格跳过。
+            const mountRO = (idx: number) => {
+                if (!self._nb || !self._roEditors) return;
+                const cell = self._nb.cells[idx];
+                if (!cell || cell.cell_type === "markdown") return;
+                if (self._editIdx === idx) return;
+                const host = bodyEl.querySelector(`[data-src="${idx}"]`) as HTMLElement | null;
+                if (!host) return;
+                // 已有且代码没变 → 复用,避免重复 tokenize(重绘时很贵)
+                const exist = self._roEditors.get(idx);
+                const text = getSourceText(cell);
+                if (exist && exist.model.getValue() === text) return;
+                disposeRO(idx);
+                const model = monaco.editor.createModel(text, notebookLang(self._nb));
+                const editor = monaco.editor.create(host, codeEditorOptions(_plugin.config, true));
+                editor.setModel(model);
+                host.classList.add("syfe-nb__src--ro");
+                editor.onDidContentSizeChange(() => fitEditorHeight(host, editor));
+                fitEditorHeight(host, editor);
+                self._roEditors.set(idx, {editor, model});
+            };
+
+            // 视口懒加载:几百个单元格时不能一次建几百个 monaco 实例
+            // (每个都是一整套 DOM + tokenize)。用 IntersectionObserver 只为
+            // 滚进视口(带 400px 余量)的单元格建实例,离开视口则销毁,
+            // 这样内存与实例数都被压到跟"当前看得到多少格"同量级。
+            const RO_MARGIN = 400;
+            const setupROObserver = () => {
+                if (typeof IntersectionObserver === "undefined") {
+                    // 老环境没有 IO:退化成全部创建(小笔记本可接受)
+                    return false;
+                }
+                try {
+                    self._roObserver?.disconnect();
+                } catch {
+                    // 忽略
+                }
+                const io = new IntersectionObserver((entries) => {
+                    for (const en of entries) {
+                        const el = en.target as HTMLElement;
+                        const idx = Number(el.dataset.src);
+                        if (!Number.isInteger(idx)) continue;
+                        if (en.isIntersecting) mountRO(idx);
+                        else disposeRO(idx);
+                    }
+                }, {root: bodyEl, rootMargin: `${RO_MARGIN}px 0px`});
+                self._roObserver = io;
+                return true;
+            };
+
+            // 重建后重新挂观察 + 补一次 mount(IO 首帧是异步的,
+            // 不主动 mount 的话首屏会短暂显示空白)
+            const refreshRO = () => {
+                const hasIO = setupROObserver();
+                bodyEl.querySelectorAll<HTMLElement>("[data-src]").forEach(el => {
+                    self._roObserver?.observe(el);
+                    if (!hasIO) {
+                        const idx = Number(el.dataset.src);
+                        if (Number.isInteger(idx)) mountRO(idx);
+                    }
+                });
+            };
+
+            // 提交就地编辑并把该格恢复成阅读视图(静默,不触发整表重绘)。
+            //
+            // 返回被提交的单元格索引,没在编辑则返回 null。
+            //
+            // **恢复只读实例必须在这里做**,不能只交给调用方:退出编辑要把编辑
+            // 容器清空(否则只读实例建在带 .syfe-nb__celledit 的宿主上),清空之后
+            // 如果没人重挂只读实例,那一格就是一个空 div —— 表现为「保存时正在
+            // 编辑的单元格白屏」。save()/withCells()/load() 都走这个函数,
+            // 谁漏一步都是白屏,所以收口在这里。
+            const commitCellEditorSilent = (restore = true): number | null => {
+                if (self._editIdx === null || self._editIdx === undefined) return null;
+                const idx = self._editIdx;
+                const cell = self._nb?.cells[idx];
                 if (cell && self._editEditor) setSourceText(cell, self._editEditor.getValue());
                 try {
                     self._editEditor?.dispose();
@@ -373,13 +548,51 @@ export function createNotebookTabConfig(_plugin: IPluginForNotebookTab) {
                 self._editEditor = null;
                 self._editModel = null;
                 self._editIdx = null;
+                // 编辑实例 dispose 不会把 host 上的 class 清干净,不清会让只读
+                // 实例建在带 .syfe-nb__celledit 的容器上,样式互相污染。
+                const host = bodyEl.querySelector(`[data-src="${idx}"]`) as HTMLElement | null;
+                if (host) {
+                    host.classList.remove("syfe-nb__celledit");
+                    host.innerHTML = "";
+                    // 重挂只读实例。markdown 格这里什么都不做(它显示的是 Vditor
+                    // 视图,不是 monaco),它的视图恢复交给 restoreMarkdownView。
+                    // restore=false 用于调用方紧接着就要整表重建的场合(render/load),
+                    // 那时再挂一次纯属浪费。
+                    if (restore && cell && cell.cell_type !== "markdown") mountRO(idx);
+                }
+                return idx;
             };
 
-            // 提交并恢复单元格的渲染视图
+            // markdown 格退出编辑时把 Vditor 渲染视图放回去
+            const restoreMarkdownView = (idx: number) => {
+                const cell = self._nb?.cells[idx];
+                if (!cell || cell.cell_type !== "markdown") return;
+                const view = bodyEl.querySelector(`[data-mdview="${idx}"]`) as HTMLDivElement | null;
+                if (view) {
+                    view.style.display = "";
+                    try {
+                        const isDark = getCurrentMode() === 1;
+                        Vditor.preview(view, getSourceText(cell), {
+                            mode: isDark ? "dark" : "light",
+                            cdn: VDITOR_CDN,
+                            theme: {current: isDark ? "dark" : "light", path: `${VDITOR_CDN}/dist/css/content-theme`},
+                        });
+                    } catch {
+                        view.innerHTML = `<pre>${escapeHTML(getSourceText(cell))}</pre>`;
+                    }
+                }
+                const mh = bodyEl.querySelector(`[data-src="${idx}"]`) as HTMLElement | null;
+                if (mh) mh.style.display = "none";
+            };
+
+            // 提交并恢复单元格的渲染视图。
+            // **只重挂这一格,不走 render() 全量重绘** —— 全量重绘会连带 dispose
+            // 所有只读实例、重跑全部 Vditor 预览,滚动位置和其他格的实例生命周期
+            // 都被搅乱(几十格的笔记本会明显卡一下)。
             const commitCellEditor = () => {
-                if (self._editIdx === null || self._editIdx === undefined) return;
-                commitCellEditorSilent();
-                render();
+                const idx = commitCellEditorSilent();
+                if (idx === null) return;
+                restoreMarkdownView(idx);
             };
 
             const markChanged = () => setDirty(true);
@@ -402,23 +615,30 @@ export function createNotebookTabConfig(_plugin: IPluginForNotebookTab) {
                 metaEl.textContent = `${lang ? lang + (kernel ? " · " + kernel : "") : kernel} · ${self._nb.cells.length} 格`;
             };
 
-            // 渲染单元格列表(scrollTop 保持:局部重绘不跳动)
-            const render = () => {
-                commitCellEditorSilent();
+// 渲染单元格列表(scrollTop 保持:局部重绘不跳动)
+   const render = () => {
+        // restore=false:紧接着就要 innerHTML 整体重建,宿主节点会被换掉,
+        // 这里重挂的只读实例下一秒就被 dispose,不如省掉。
+    commitCellEditorSilent(false);
                 if (!self._nb) {
                     renderRawMode();
                     return;
                 }
                 const st = bodyEl.scrollTop;
-                const lang = notebookLang(self._nb);
                 const cells = self._nb.cells;
+                // innerHTML 整体重建会连宿主节点一起换掉,先前的只读实例
+                // 全部失去挂载点 —— 必须先 dispose,否则每次重绘都漏一批
+                // monaco 实例(编辑器本身不会因为 DOM 被移除而自毁)。
+                disposeAllRO();
                 bodyEl.innerHTML = cells.length === 0
                     ? `<div class="syfe-nb__empty">空笔记本,用顶部按钮添加单元格</div>`
                     : cells.map((cell, i) => {
-                        const src = escapeHTML(getSourceText(cell));
                         const srcBody = cell.cell_type === "markdown"
                             ? `<div class="syfe-nb__mdview" data-mdview="${i}" title="双击编辑源码"></div><div class="syfe-nb__src" data-src="${i}" style="display:none;"></div>`
-                            : `<div class="syfe-nb__src" data-src="${i}" title="点击编辑"><pre class="syfe-nb__hl" data-hl="${i}">${src}</pre></div>`;
+                            // 代码格的源码区是**空容器**,内容由只读 monaco 实例填。
+                            // 故意不放 <pre> 兜底:没有实例时(懒加载未命中)留空即可,
+                            // 放一份静态文本反而会在实例挂上来的一瞬替换闪烁。
+                            : `<div class="syfe-nb__src" data-src="${i}" title="点击编辑"></div>`;
                         const outs = cell.cell_type === "code"
                             ? `<div class="syfe-nb__outs">${renderOutputsHTML(cell, self._canRun)}</div>`
                             : "";
@@ -448,7 +668,7 @@ export function createNotebookTabConfig(_plugin: IPluginForNotebookTab) {
                 bodyEl.scrollTop = st;
                 renderMeta();
 
-                // 异步增强:md 渲染 + 代码高亮
+                // 异步增强:md 渲染 + 代码区只读实例
                 if (!self._nb) return;
                 const isDark = getCurrentMode() === 1;
                 cells.forEach((cell, i) => {
@@ -465,17 +685,10 @@ export function createNotebookTabConfig(_plugin: IPluginForNotebookTab) {
                                 view.innerHTML = `<pre>${escapeHTML(getSourceText(cell))}</pre>`;
                             }
                         }
-                    } else if (cell.cell_type === "code") {
-                        const hl = bodyEl.querySelector(`[data-hl="${i}"]`) as HTMLElement | null;
-                        if (hl) {
-                            monaco.editor.colorize(getSourceText(cell), lang, {}).then((html) => {
-                                hl.innerHTML = html;
-                            }).catch(() => {
-                                // colorize 失败保持转义文本
-                            });
-                        }
                     }
                 });
+                // 代码格:挂只读 monaco(视口内才建,见 refreshRO)
+                refreshRO();
                 // 输出里的 markdown 输出同样渲染
                 bodyEl.querySelectorAll<HTMLElement>("[data-md]").forEach(el => {
                     const md = decodeURIComponent(el.dataset.md || "");
@@ -502,36 +715,25 @@ export function createNotebookTabConfig(_plugin: IPluginForNotebookTab) {
                 commitCellEditor();
                 const host = bodyEl.querySelector(`[data-src="${idx}"]`) as HTMLElement | null;
                 if (!host) return;
+                // 这一格即将变成可编辑实例,先把它上面的只读实例拆掉 ——
+                // 同一块 DOM 上不能同时挂两个 monaco 实例。
+                disposeRO(idx);
                 const mdView = bodyEl.querySelector(`[data-mdview="${idx}"]`) as HTMLElement | null;
                 if (mdView) mdView.style.display = "none";
                 host.style.display = "";
+                host.classList.remove("syfe-nb__src--ro");
                 host.innerHTML = "";
                 const lang = cell.cell_type === "markdown" ? "markdown" : notebookLang(self._nb);
                 const model = monaco.editor.createModel(getSourceText(cell), lang);
+                host.classList.add("syfe-nb__celledit");
+                // 与阅读态共用同一份选项(见 codeEditorOptions),只差 readOnly。
+                // 两态字号/行高/padding/行号/换行天然一致,切换时不会跳。
                 const editor = monaco.editor.create(host, {
+                    ...codeEditorOptions(_plugin.config, false),
                     model,
-                    theme: monacoTheme(),
-                    automaticLayout: true,
-                    minimap: {enabled: false},
-                    scrollBeyondLastLine: false,
-                    lineNumbers: cell.cell_type === "code" ? "on" : "off",
-                    wordWrap: "on",
-                    fontSize: _plugin.config?.fontSize ?? 13,
-                    tabSize: _plugin.config?.tabSize ?? 4,
-                    renderLineHighlight: "none",
-                    scrollbar: {alwaysConsumeMouseWheel: false},
-                    padding: {top: 6, bottom: 6},
-                    folding: true,
                 });
-                const fit = () => {
-                    try {
-                        host.style.height = Math.max(46, editor.getContentHeight()) + "px";
-                    } catch {
-                        // 忽略
-                    }
-                };
-                editor.onDidContentSizeChange(fit);
-                fit();
+                editor.onDidContentSizeChange(() => fitEditorHeight(host, editor));
+                fitEditorHeight(host, editor);
                 // 有内容改动即标脏;失焦(点击其他位置)自动提交。Monaco 会吞 Escape 等按键,
                 // Esc 提交由 document 捕获阶段的 _escHandler 兜底。
                 editor.onDidChangeModelContent(() => markChanged());
@@ -564,10 +766,11 @@ export function createNotebookTabConfig(_plugin: IPluginForNotebookTab) {
                 bodyEl.querySelector(`.syfe-nb__cell[data-idx="${idx}"]`)?.classList.add("syfe-nb__cell--active");
             };
 
-            // 结构操作(先静默提交正在编辑的单元格)
+// 结构操作(先静默提交正在编辑的单元格)
             const withCells = (fn: (cells: NbCell[]) => void) => {
-                if (!self._nb) return;
-                commitCellEditorSilent();
+         if (!self._nb) return;
+       // 紧接着就是 render(),不用重挂只读实例
+   commitCellEditorSilent(false);
                 fn(self._nb.cells);
                 markChanged();
                 render();
@@ -631,6 +834,61 @@ export function createNotebookTabConfig(_plugin: IPluginForNotebookTab) {
                     btn.textContent = running ? "◌" : "▶";
                     btn.setAttribute("title", running ? "执行中…" : "运行此单元格(Shift+Enter)");
                     btn.classList.toggle("syfe-nb__cellbtn--busy", running);
+                }
+            };
+
+            /**
+             * 只重绘第 idx 格的输出区 + 执行序号,其余 DOM 一概不动。
+             *
+             * 为什么值得单独写一个:执行完如果走 render(),会 dispose 全部只读
+             * monaco 实例、重跑一遍所有 Vditor 预览 —— 有 Python LSP 在跑时
+             * 那个代价更明显(几十格的笔记本能卡到半秒),而且正在编辑的别格会被
+             * 重建,光标位置与滚动位置一起丢。
+             */
+            const refreshCellOutputs = (idx: number) => {
+                if (!self._nb) return;
+                const cell = self._nb.cells[idx];
+                if (!cell) return;
+                const cellEl = bodyEl.querySelector(`.syfe-nb__cell[data-idx="${idx}"]`);
+                if (!cellEl) {
+                    render();
+                    return;
+                }
+                // 输出区
+                const outsEl = cellEl.querySelector(".syfe-nb__outs") as HTMLElement | null;
+                if (outsEl) {
+                    outsEl.innerHTML = renderOutputsHTML(cell, self._canRun);
+                    // 输出里可能有 markdown(富输出),补一次渲染
+                    const isDark = getCurrentMode() === 1;
+                    outsEl.querySelectorAll<HTMLElement>("[data-md]").forEach(el => {
+                        const md = decodeURIComponent(el.dataset.md || "");
+                        if (!md) return;
+                        try {
+                            Vditor.preview(el as HTMLDivElement, md, {
+                                mode: isDark ? "dark" : "light",
+                                cdn: VDITOR_CDN,
+                                theme: {current: isDark ? "dark" : "light", path: `${VDITOR_CDN}/dist/css/content-theme`},
+                            });
+                        } catch {
+                            el.innerHTML = `<pre>${escapeHTML(md)}</pre>`;
+                        }
+                    });
+                }
+                // [n] 序号:原来没有结果时是空占位,现在才第一次出现
+                const bar = cellEl.querySelector(".syfe-nb__cellbar") as HTMLElement | null;
+                if (bar) {
+                    const old = bar.querySelector(".syfe-nb__exec");
+                    if (cell.execution_count != null) {
+                        if (old) old.textContent = `[${cell.execution_count}]`;
+                        else {
+                            const span = document.createElement("span");
+                            span.className = "syfe-nb__exec";
+                            span.textContent = `[${cell.execution_count}]`;
+                            bar.insertBefore(span, bar.querySelector(".fn__flex-1"));
+                        }
+                    } else if (old) {
+                        old.remove();
+                    }
                 }
             };
 
@@ -708,7 +966,10 @@ export function createNotebookTabConfig(_plugin: IPluginForNotebookTab) {
                     self._runningIdx = null;
                     setCellRunning(idx, false);
                     markChanged();
-                    render();
+                    // 只重绘这一格的输出区 —— 走 render() 会 dispose 全部只读
+                    // monaco 实例、重跑一遍 Vditor,几十格的笔记本能明显卡一下,
+                    // 而且正在编辑的别格也会被重建(光标/滚动位置丢失)。
+                    refreshCellOutputs(idx);
                 }
             };
 
@@ -744,11 +1005,20 @@ export function createNotebookTabConfig(_plugin: IPluginForNotebookTab) {
                 self._runningIdx = null;
                 setCellRunning(idx, false);
                 showMessage("已中断(内核会重建并重放之前执行过的代码)", 3000, "info");
-                render();
+                // 只补这一格的输出区(中断会把正在跑的那格标成错误输出)
+                refreshCellOutputs(idx);
             };
 
             // 加载文件
             const load = async () => {
+                // 重载会换掉整批宿主节点,先把只读实例与观察器收掉
+                try {
+                    self._roObserver?.disconnect();
+                    self._roObserver = null;
+                } catch {
+                    // 忽略
+                }
+                disposeAllRO();
                 bodyEl.innerHTML = `<div class="syfe-nb__loading">正在加载…</div>`;
                 try {
                     const text = await readTextFile(path);
@@ -786,7 +1056,21 @@ export function createNotebookTabConfig(_plugin: IPluginForNotebookTab) {
 
             // 原始 JSON 兜底编辑(解析失败 / nbformat 3)
             const renderRawMode = (err?: string) => {
+                // 没有单元格就没有可运行的东西。重载时必须一并清掉 ——
+                // 否则「Python 笔记本 → 保存成坏 JSON → 重载」之后,工具栏上
+                // 会留着一个点了必然无反应(甚至报空单元格)的「运行全部」。
+                self._canRun = false;
                 renderMeta();
+                // 切到 raw 模式 = 上一批单元格的宿主节点全被换掉,
+                // 只读实例与观察器必须先收掉,否则它们的宿主已不存在,
+                // IO 也还在 observe 着一批脱离文档的节点。
+                try {
+                    self._roObserver?.disconnect();
+                    self._roObserver = null;
+                } catch {
+                    // 忽略
+                }
+                disposeAllRO();
                 bodyEl.innerHTML = `
                     ${err ? `<div class="syfe-nb__banner">${escapeHTML(err)} — 已切换为原始 JSON 编辑,可修复后保存</div>` : ""}
                     <div class="syfe-nb__raw"></div>`;
@@ -809,25 +1093,32 @@ export function createNotebookTabConfig(_plugin: IPluginForNotebookTab) {
                 self._editModel = model;
             };
 
-            const save = async () => {
-                if (self._saving) return;
-                self._saving = true;
-                try {
-                    if (self._rawMode) {
-                        await writeFile(path, self._rawText ?? "");
-                    } else {
-                        if (!self._nb) return;
-                        commitCellEditorSilent();
-                        await writeFile(path, JSON.stringify(self._nb, null, 1));
-                    }
-                    setDirty(false);
-                    showMessage("已保存", 2000, "info");
-                } catch (e) {
-                    showMessage(`保存失败: ${e}`, 5000, "error");
-                } finally {
-                    self._saving = false;
-                }
-            };
+const save = async () => {
+      if (self._saving) return;
+      self._saving = true;
+     try {
+      if (self._rawMode) {
+                await writeFile(path, self._rawText ?? "");
+   } else {
+        if (!self._nb) return;
+   // 保存**不退出编辑态**。直接把当前编辑内容落到数据模型再写盘,
+        // 不走 commitCellEditorSilent —— 那会把用户正在编辑的那格换成只读视图,
+      // 光标与滚动位置一起丢,想接着改还得再点一次。
+      // 注意这里只能动 source,不能碰 _editEditor(编辑器还得留着给用户继续敲)。
+   if (self._editIdx !== null && self._editIdx !== undefined) {
+    const cell = self._nb.cells[self._editIdx];
+         if (cell && self._editEditor) setSourceText(cell, self._editEditor.getValue());
+          }
+            await writeFile(path, JSON.stringify(self._nb, null, 1));
+        }
+        setDirty(false);
+        showMessage("已保存", 2000, "info");
+    } catch (e) {
+        showMessage(`保存失败: ${e}`, 5000, "error");
+    } finally {
+        self._saving = false;
+    }
+};
 
             const reload = () => {
                 if (self._dirty) {
@@ -985,6 +1276,33 @@ export function createNotebookTabConfig(_plugin: IPluginForNotebookTab) {
             if (this._escHandler) {
                 document.removeEventListener("keydown", this._escHandler, true);
                 this._escHandler = undefined;
+            }
+            // 阅读态的只读实例必须在这里全部 dispose —— 关掉 Tab 后 DOM 节点会
+            // 脱离文档,但 monaco 实例不会自毁,漏掉就是每个 notebook Tab 泄漏
+            // 几十个编辑器(连同它们的 model 与 tokenize 结果)。
+            if (this._roObserver) {
+                try {
+                    this._roObserver.disconnect();
+                } catch {
+                    // 忽略
+                }
+                this._roObserver = null;
+            }
+            if (this._roEditors) {
+                for (const [, rec] of this._roEditors) {
+                    try {
+                        rec.editor.dispose();
+                    } catch {
+                        // 忽略
+                    }
+                    try {
+                        rec.model.dispose();
+                    } catch {
+                        // 忽略
+                    }
+                }
+                this._roEditors.clear();
+                this._roEditors = undefined;
             }
             try {
                 this._editEditor?.dispose();
