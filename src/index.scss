@@ -2610,11 +2610,8 @@
     padding: 4px 6px;
     font-size: 13px;
     cursor: pointer;
-    border-bottom: 1px solid var(--b3-border-color);
-
-    &:last-child {
-        border-bottom: none;
-    }
+    // 不要行间横线:与思源原生文档树一致,靠缩进表达层级,不靠分割线
+    border-bottom: none;
 
     &:hover {
         background: var(--b3-list-hover);
@@ -2631,8 +2628,10 @@
     }
 }
 
+// 展开的行不做任何背景/阴影处理:层级靠缩进和箭头表达,
+// 给展开行加背景会被误读成"阴影/变亮"(与思源原生文档树一致:无背景)
 .syfe-mtree__row--open {
-    background: var(--b3-theme-surface);
+    background: transparent;
 }
 
 .syfe-mtree__toggle {
@@ -2728,6 +2727,49 @@
 
 .syfe-mtree__row:hover .syfe-mtree__unmount {
     opacity: 0.85;
+}
+
+/* === 引用关系树(只读派生视图,移植自 siyuan-virtual-tree)=== */
+// 关系树不单独加标题栏,行样式与手动挂载保持一致
+
+// 当前文档所在行:左侧细高亮条
+// 当前文档所在行:只用字重 + 左侧细条表示,不用背景色(背景会被误读成阴影)
+.syfe-mtree__row--current {
+    box-shadow: inset 2px 0 0 var(--b3-theme-primary-lighter);
+
+    .syfe-mtree__name {
+        font-weight: 600;
+    }
+}
+
+// 「定位当前文档」的闪烁提示
+.syfe-mtree__row--flash {
+    animation: syfe-mtree-flash 0.5s ease-in-out 3;
+}
+
+@keyframes syfe-mtree-flash {
+    // 只闪左侧标记条,不闪整行背景(整行背景会显得像阴影/亮度变化)
+    0%, 100% {
+        box-shadow: inset 2px 0 0 transparent;
+    }
+
+    50% {
+        box-shadow: inset 2px 0 0 var(--b3-theme-primary);
+    }
+}
+
+// 拖拽排序:源行半透明,目标行高亮
+.syfe-mtree__row--dragging {
+    opacity: 0.4;
+}
+
+.syfe-mtree__row--dragover {
+    box-shadow: inset 0 2px 0 var(--b3-theme-primary);
+    background: var(--b3-theme-surface);
+}
+
+.syfe-mtree__row--relation {
+    cursor: pointer;
 }
 
 // 「聚焦」按钮:默认隐藏,鼠标移到标签行才出现

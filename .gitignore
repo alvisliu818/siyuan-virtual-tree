@@ -14,6 +14,13 @@ build/
 .workbuddy/
 !.workbuddy/memory/
 !.workbuddy/memory/**
+# 调试期的临时提交信息文件(git commit -F 用,提交后即删)
+tools/_msg.txt
+# 临时探测脚本(_cdp.mjs / pty-helper.js / start-siyuan-debug.ps1 除外,它们要入库)
+tools/_probe-*
+tools/_spawn-*
+tools/_verify-*
+tools/_pty-helper-test.js
 # Dev build outputs at root (legacy, now outputs to SiYuan plugin dir)
 /index.js
 /index.css

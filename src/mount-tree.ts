@@ -28,6 +28,8 @@ export interface MountItem {
 }
 
 export const MOUNT_TREE_CHANGED_EVENT = "syfe:mount-tree-changed";
+// 引用关系树内容变化(设置开关切换 / 文档增删改后重建完成)→ 面板重绘
+export const SYFE_RELATION_TREE_CHANGED_EVENT = "syfe:relation-tree-changed";
 export const STORAGE_VIRTUAL_TREE = "virtual-tree.json";
 
 let roots: MountItem[] = [];

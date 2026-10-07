@@ -29,7 +29,7 @@ import {openBaiduPanDialog} from "./components/baidu-pan-dialog";
 import {registerSlashCommands} from "./protyle/slash-commands";
 import {registerLinkReveal} from "./protyle/link-reveal";
 import {registerMountMenu} from "./protyle/mount-menu";
-import {initMountTree, migrateSyDocMounts} from "./mount-tree";
+import {initMountTree, migrateSyDocMounts, SYFE_RELATION_TREE_CHANGED_EVENT} from "./mount-tree";
 import {createMountTreeDockConfig} from "./dock/mount-tree-dock";
 import {openExtensionMarket} from "./extensions/market-ui";
 import {clearAllGrammars} from "./extensions/grammar-loader";
@@ -64,6 +64,15 @@ export default class FileEditorPlugin extends Plugin {
     private importMdSourceAssetInput?: HTMLInputElement;
     // 侧边栏「文件」面板开关(默认关,功能已由虚拟文档树承接)
     private showFileTreeDockInput?: HTMLInputElement;
+    // 引用关系树(移植自 siyuan-virtual-tree)
+    private mountTreeRelationEnabledInput?: HTMLInputElement;
+    private mountTreeRelationSortSelect?: HTMLSelectElement;
+    private mountTreeRelationWeightInput?: HTMLInputElement;
+    private mountTreeRelationPhysicalInput?: HTMLInputElement;
+    private mountTreeRelationCaseInput?: HTMLInputElement;
+    private mountTreeRelationDepthInput?: HTMLInputElement;
+    private mountTreeRelationNodesInput?: HTMLInputElement;
+    private mountTreeRelationExpandInput?: HTMLInputElement;
     private fileTreeDockAdded = false;
 
     onload(): void {
@@ -665,6 +674,87 @@ export default class FileEditorPlugin extends Plugin {
             actionElement: this.showFileTreeDockInput,
         });
 
+        // 「虚拟文档树」面板:引用关系树(移植自 siyuan-virtual-tree)
+        this.mountTreeRelationEnabledInput = document.createElement("input");
+        this.mountTreeRelationEnabledInput.type = "checkbox";
+        this.mountTreeRelationEnabledInput.className = "b3-switch";
+        this.setting!.addItem({
+            title: "虚拟文档树:引用关系树",
+            description: "在「虚拟文档树」面板顶部额外显示一棵按文档首块引用关系自动构建的树(被引用方为父,发起引用方为子,自动挑出没有上级的文档作为根)。它是只读的派生视图,不改动你手动挂载的内容",
+            actionElement: this.mountTreeRelationEnabledInput,
+        });
+
+        this.mountTreeRelationSortSelect = document.createElement("select");
+        this.mountTreeRelationSortSelect.className = "b3-select fn__size200";
+        this.mountTreeRelationSortSelect.innerHTML = `
+            <option value="name">按名称排序</option>
+            <option value="weight">按权重排序</option>
+            <option value="custom">自定义(拖拽排序)</option>`;
+        this.setting!.addItem({
+            title: "关系树:排序方式",
+            description: "子节点的排序方式。选「自定义」后可在关系树上直接拖拽调整顺序,顺序会被保存",
+            actionElement: this.mountTreeRelationSortSelect,
+        });
+
+        this.mountTreeRelationWeightInput = document.createElement("input");
+        this.mountTreeRelationWeightInput.className = "b3-text-field fn__flex1";
+        this.mountTreeRelationWeightInput.type = "text";
+        this.mountTreeRelationWeightInput.placeholder = "weight";
+        this.setting!.addItem({
+            title: "关系树:权重属性名",
+            description: "文档自定义属性中用于排序的权重字段名,缺失则权重为 0(仅「按权重排序」时生效)",
+            actionElement: this.mountTreeRelationWeightInput,
+        });
+
+        this.mountTreeRelationPhysicalInput = document.createElement("input");
+        this.mountTreeRelationPhysicalInput.type = "checkbox";
+        this.mountTreeRelationPhysicalInput.className = "b3-switch";
+        this.setting!.addItem({
+            title: "关系树:包含物理子树",
+            description: "开启后,文档在思源原生层级的物理子文档也会作为关系树的子节点显示",
+            actionElement: this.mountTreeRelationPhysicalInput,
+        });
+
+        this.mountTreeRelationCaseInput = document.createElement("input");
+        this.mountTreeRelationCaseInput.type = "checkbox";
+        this.mountTreeRelationCaseInput.className = "b3-switch";
+        this.setting!.addItem({
+            title: "关系树:排序区分大小写",
+            description: "按名称排序时是否区分大小写",
+            actionElement: this.mountTreeRelationCaseInput,
+        });
+
+        this.mountTreeRelationDepthInput = document.createElement("input");
+        this.mountTreeRelationDepthInput.className = "b3-text-field fn__size200";
+        this.mountTreeRelationDepthInput.type = "number";
+        this.mountTreeRelationDepthInput.min = "1";
+        this.mountTreeRelationDepthInput.placeholder = "8";
+        this.setting!.addItem({
+            title: "关系树:最大递归深度",
+            description: "构建子树时的最大层数,防止深层引用造成卡顿",
+            actionElement: this.mountTreeRelationDepthInput,
+        });
+
+        this.mountTreeRelationNodesInput = document.createElement("input");
+        this.mountTreeRelationNodesInput.className = "b3-text-field fn__size200";
+        this.mountTreeRelationNodesInput.type = "number";
+        this.mountTreeRelationNodesInput.placeholder = "500";
+        this.setting!.addItem({
+            title: "关系树:最大节点数",
+            description: "关系树最多显示多少个文档,超出则停止构建",
+            actionElement: this.mountTreeRelationNodesInput,
+        });
+
+        this.mountTreeRelationExpandInput = document.createElement("input");
+        this.mountTreeRelationExpandInput.className = "b3-text-field fn__size200";
+        this.mountTreeRelationExpandInput.type = "number";
+        this.mountTreeRelationExpandInput.placeholder = "1";
+        this.setting!.addItem({
+            title: "关系树:默认展开层级",
+            description: "0 = 全部折叠,-1 = 全部展开,N = 展开前 N 层(修改后点「刷新」生效)",
+            actionElement: this.mountTreeRelationExpandInput,
+        });
+
         // 导入 Markdown 到思源时,是否把源文件作为资源插入文档顶部的引述块
         this.importMdSourceAssetInput = document.createElement("input");
         this.importMdSourceAssetInput.type = "checkbox";
@@ -710,6 +800,16 @@ export default class FileEditorPlugin extends Plugin {
         if (this.newTabShowFavoritesInput) this.newTabShowFavoritesInput.checked = this.config.newTabShowFavorites !== false;
         if (this.importMdSourceAssetInput) this.importMdSourceAssetInput.checked = this.config.importMdSourceAsset === true;
         if (this.showFileTreeDockInput) this.showFileTreeDockInput.checked = this.config.showFileTreeDock === true;
+        // 关系树设置回填(只回填设置项;customOrder/collapsed 由面板维护,不在这里改)
+        const rel = this.config.mountTreeRelation || DEFAULT_CONFIG.mountTreeRelation;
+        if (this.mountTreeRelationEnabledInput) this.mountTreeRelationEnabledInput.checked = rel.enabled === true;
+        if (this.mountTreeRelationSortSelect) this.mountTreeRelationSortSelect.value = rel.sortMethod || "name";
+        if (this.mountTreeRelationWeightInput) this.mountTreeRelationWeightInput.value = rel.weightAttrName || "weight";
+        if (this.mountTreeRelationPhysicalInput) this.mountTreeRelationPhysicalInput.checked = rel.includePhysicalSubtree === true;
+        if (this.mountTreeRelationCaseInput) this.mountTreeRelationCaseInput.checked = rel.caseSensitive === true;
+        if (this.mountTreeRelationDepthInput) this.mountTreeRelationDepthInput.value = String(rel.maxDepth ?? 8);
+        if (this.mountTreeRelationNodesInput) this.mountTreeRelationNodesInput.value = String(rel.maxNodes ?? 500);
+        if (this.mountTreeRelationExpandInput) this.mountTreeRelationExpandInput.value = String(rel.defaultExpandLevel ?? 1);
         // 主题下拉的选项依赖扩展数据,此处仅同步值;选项在 onLayoutReady 后填充
         this.refreshThemeSettingUI();
     }
@@ -736,6 +836,18 @@ export default class FileEditorPlugin extends Plugin {
             newTabShowFavorites: this.newTabShowFavoritesInput?.checked ?? true,
             importMdSourceAsset: this.importMdSourceAssetInput?.checked ?? false,
             showFileTreeDock: this.showFileTreeDockInput?.checked ?? false,
+            mountTreeRelation: {
+                // 保留既有的 customOrder / collapsed(面板运行时维护,不在这里覆盖)
+                ...(this.config.mountTreeRelation || {}),
+                enabled: this.mountTreeRelationEnabledInput?.checked ?? false,
+                sortMethod: (this.mountTreeRelationSortSelect?.value as "name" | "weight" | "custom") || "name",
+                weightAttrName: (this.mountTreeRelationWeightInput?.value || "").trim() || "weight",
+                includePhysicalSubtree: this.mountTreeRelationPhysicalInput?.checked ?? false,
+                caseSensitive: this.mountTreeRelationCaseInput?.checked ?? false,
+                maxDepth: Math.max(1, parseInt(this.mountTreeRelationDepthInput?.value || "8", 10) || 8),
+                maxNodes: Math.max(10, parseInt(this.mountTreeRelationNodesInput?.value || "500", 10) || 500),
+                defaultExpandLevel: parseInt(this.mountTreeRelationExpandInput?.value || "1", 10) || 0,
+            },
         };
         // 打开开关时即时注册「文件」面板(关闭需重启思源,插件无 removeDock)
         if (this.config.showFileTreeDock === true) this.addFileTreeDock();
@@ -743,6 +855,8 @@ export default class FileEditorPlugin extends Plugin {
         // 主题设置立即生效
         this.applyConfiguredThemes();
         this.refreshFileTrees();
+        // 引用关系树开关影响「虚拟文档树」面板内容,通知面板重建(立即生效,无需重启)
+        window.dispatchEvent(new CustomEvent(SYFE_RELATION_TREE_CHANGED_EVENT));
         showMessage("设置已保存,主题立即生效;终端设置需重开终端 Tab", 3000, "info");
     }
 }

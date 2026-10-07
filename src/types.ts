@@ -45,6 +45,24 @@ export interface EditorConfig {
     // 侧边栏是否显示「文件」面板。文件浏览/重命名/删除等能力已由「虚拟文档树」面板承接,
     // 故**默认关闭**;打开后可恢复原来的文件树面板
     showFileTreeDock: boolean;
+    // 「虚拟文档树」面板顶部的**引用关系树**(按文档首块引用链接自动构建,与手动挂载共存)。
+    // 关系树结构是只读派生视图(不落盘,每次现查);这里只持久化用户的显式意图:
+    // 开关、排序设置、拖拽顺序(customOrder)、折叠状态(collapsed)。
+    mountTreeRelation: RelationTreeConfig;
+}
+
+/** 引用关系树配置(移植自独立插件 siyuan-virtual-tree) */
+export interface RelationTreeConfig {
+    enabled: boolean;
+    sortMethod: "name" | "weight" | "custom"; // 排序:name=名称 | weight=属性权重 | custom=拖拽自定义
+    weightAttrName: string;   // 权重属性名(文档自定义属性,缺失视为 0)
+    caseSensitive: boolean;   // 排序是否区分大小写
+    maxDepth: number;         // 最大递归深度(防无限递归)
+    maxNodes: number;         // 最大节点数(防失控)
+    includePhysicalSubtree: boolean; // 是否并入思源原生层级的物理子文档
+    defaultExpandLevel: number;      // 默认展开层级:0=全折叠 -1=全展开 N=展开前 N 层
+    customOrder: Record<string, string[]>; // 拖拽顺序:父 docId(或 "__root__") → 有序子 id 数组
+    collapsed: string[];             // 折叠的节点 docId
 }
 
 // === 标签 ===
@@ -104,4 +122,17 @@ export const DEFAULT_CONFIG: EditorConfig = {
     newTabShowFavorites: true,
     importMdSourceAsset: false,      // 默认不插入源文件资源引述块
     showFileTreeDock: false,         // 默认不显示「文件」面板(功能已由虚拟文档树承接)
+    // 引用关系树默认关闭(按需在设置里开启)
+    mountTreeRelation: {
+        enabled: false,
+        sortMethod: "name",
+        weightAttrName: "weight",
+        caseSensitive: false,
+        maxDepth: 10,
+        maxNodes: 500,
+        includePhysicalSubtree: false,
+        defaultExpandLevel: -1,
+        customOrder: {},
+        collapsed: [],
+    },
 };
