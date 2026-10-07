@@ -92,7 +92,8 @@ async function main() {
     const [cmd, ...rest] = process.argv.slice(2);
     const winIdx = rest.indexOf("--win");
     const win = winIdx >= 0 ? rest[winIdx + 1] : undefined;
-    const positional = rest.filter((_, i) => i !== winIdx && i !== winIdx + 1);
+    // 注意:winIdx 为 -1(未传 --win)时不能按 i !== winIdx+1 过滤,那会误删第一个位置参数
+    const positional = winIdx >= 0 ? rest.filter((_, i) => i !== winIdx && i !== winIdx + 1) : rest;
 
     const targets = await listTargets();
 
