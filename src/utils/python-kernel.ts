@@ -27,7 +27,9 @@ import {getNativeRequire} from "./native-require";
 /** 内核事件(与 syfe-kernel.py 发出的 JSON 一一对应) */
 export type KernelEvent =
     | {type: "kernel_ready"; version: string; executable: string; pid: number}
-    | {type: "stream"; name: "stdout" | "stderr"; text: string}
+    // stream 必须带 id:宿主按 pending[id] 分发事件,没有 id 的事件会被丢掉。
+// (这不是"可选字段" —— 内核侧每个请求处理完都会把 id 清空,见 _current_request_id)
+    | {type: "stream"; id: string; name: "stdout" | "stderr"; text: string}
     | {type: "status"; id: string; state: "busy" | "idle"; execution_count: number}
     | {
         type: "execute_result";
@@ -36,10 +38,14 @@ export type KernelEvent =
         data: Record<string, string>;
         metadata?: Record<string, any>;
     }
-    | {
-        type: "error";
-        id: string;
-        ename: string;
+| {
+      type: "error";
+      id: string;
+    // 执行期错误必带序号。协议层错误(未知的请求类型、内核自身崩了)没有序号概念,
+      // 所以它是可选的 —— 不能靠 status-idle 兜底,因为 error 本身就是终态,
+      // 请求在收到 error 时就 resolve 了,后到的 idle 已经没人接。
+      execution_count?: number;
+  ename: string;
         evalue: string;
         traceback: string[];
     }
@@ -408,20 +414,24 @@ export class PythonKernel {
                 break;
         }
 
-        // 把事件推给该 id 的请求(如果有)
-        if (typeof evId === "string") {
-            const entry = this.pending.get(evId);
-            if (entry) {
-                // 流式事件先累积(终态判定交给 isTerminal)
-                const e2 = ev as KernelEvent;
-                if (e2.type === "stream") {
-                    if (e2.name === "stdout") entry.agg.acc.stdout += e2.text;
-                    else entry.agg.acc.stderr += e2.text;
-                } else if (e2.type === "status" && e2.state === "idle") {
-                    if (typeof e2.execution_count === "number") {
-                        entry.agg.acc.executionCount = e2.execution_count;
-                    }
+// 把事件推给该 id 的请求(如果有)
+   if (typeof evId === "string") {
+     const entry = this.pending.get(evId);
+         if (entry) {
+    // 流式事件先累积(终态判定交给 isTerminal)。
+      // **stream 的累加只能在这里做**:它是宿主端唯一收到 stream 的地方 ——
+  // stream 不是终态事件,不会进 finish()。曾经漏了这个分支,
+    // 表现为「代码执行成功、execution_count 也涨了,但 print 的内容一行都不显示」。
+    // 内核侧有 80ms 节流,一次执行通常只来一两条,不会太碎。
+     const e2 = ev as KernelEvent;
+          if (e2.type === "stream") {
+                if (e2.name === "stdout") entry.agg.acc.stdout += e2.text || "";
+            else entry.agg.acc.stderr += e2.text || "";
+       } else if (e2.type === "status" && e2.state === "idle") {
+            if (typeof e2.execution_count === "number") {
+        entry.agg.acc.executionCount = e2.execution_count;
                 }
+       }
                 if (entry.agg.isTerminal(e2)) {
                     this.pending.delete(evId);
                     (window as any).clearTimeout(entry.timer);
@@ -505,17 +515,37 @@ export class PythonKernel {
             (ev) => ev.type === "execute_result" || ev.type === "error" ||
                 (ev.type === "status" && ev.state === "idle"),
             (ev, acc) => {
+                // 注意:这里**只处理终态事件**(execute_result / error / status-idle)。
+                // stream 的累加在 handleEvent() 里做 —— stream 不是终态,
+                // 不会走到这个函数,写在这里是死代码(曾经漏了 handleEvent 那边的
+                // 分支,导致 print 输出全丢:表现为「执行成功、序号也涨了,
+                // 但一行输出都没有」)。
                 if (ev.type === "execute_result") {
                     acc.ok = true;
                     acc.executionCount = ev.execution_count;
                     acc.result = ev.data?.["text/plain"];
                     acc.richData = ev.data;
-                } else if (ev.type === "error") {
-                    acc.ok = false;
-                    acc.error = {ename: ev.ename, evalue: ev.evalue, traceback: ev.traceback || []};
-                } else {
-                    // status idle 但没有结果:说明代码没有末表达式(如只有 print)
-                    acc.ok = true;
+} else if (ev.type === "error") {
+     acc.ok = false;
+   // 出错的执行同样占一个序号(Jupyter 行为:报错的格也显示 In[n])。
+        // 不取的话这一格会显示 In[0],而且序号会"卡住"不再递增 ——
+  // 后面几格接着跑时用的还是同一个 count,序号就跟真实执行历史脱节了。
+       if (typeof ev.execution_count === "number") {
+   acc.executionCount = ev.execution_count;
+    }
+        acc.error = {ename: ev.ename, evalue: ev.evalue, traceback: ev.traceback || []};
+   } else if (ev.type === "status") {
+                    // status(busy 和 idle 都带 execution_count)才是序号的权威来源:
+                    // execute_result 只在有末表达式时才有,整格只有 print 时就取不到号,
+                    // 会把 In[n] 写成 In[0]。
+                    if (typeof ev.execution_count === "number") {
+                        acc.executionCount = ev.execution_count;
+                    }
+                    if (ev.state === "idle") {
+                        // 本轮结束。没有 execute_result 说明没有末表达式
+                        // (如整格只有 print),这是正常路径,不是失败。
+                        acc.ok = acc.ok !== false;
+                    }
                 }
                 return acc;
             },

@@ -90,6 +90,14 @@ execution_count = 0
 _pending = {"stdout": [], "stderr": []}
 _last_flush = {"at": 0.0}
 
+# 当前正在执行的请求 id。
+#
+# **stream 事件必须带 id**,否则宿主无法把它归到对应的请求上:
+# 宿主侧是按 `pending[id]` 分发事件的,没有 id 的事件会被直接丢弃 ——
+# 表现就是「代码执行完了、序号也涨了,但 print 的内容一行都不显示」。
+# 记在模块级是因为 _StreamProxy.write() 只拿得到 self._name,拿不到请求上下文。
+_current_request_id = ""
+
 
 def _emit(event):
     """把一个事件写成一行 JSON 送回宿主。stdout 只能走**真实** stdout,
@@ -112,7 +120,9 @@ def _flush_streams(force=True):
         if not chunks:
             continue
         _pending[name] = []
-        _emit({"type": "stream", "name": name, "text": "".join(chunks)})
+        # id 带上当前请求,宿主才能把输出归到正确的单元格(见 _current_request_id 注释)
+        _emit({"type": "stream", "id": _current_request_id,
+               "name": name, "text": "".join(chunks)})
 
 
 class _StreamProxy(object):
@@ -276,10 +286,14 @@ def _has_top_level_await(tree):
 
 
 def do_execute(req):
-    global execution_count
+    global execution_count, _current_request_id
     code = req.get("code") or ""
     silent = bool(req.get("silent"))
     rid = req.get("id") or ""
+
+    # 先把请求 id 记到模块级:后面所有 stream 事件都要带上它,
+    # 否则宿主无法把输出归到本次执行(见 _current_request_id 的注释)。
+    _current_request_id = rid
 
     # 空单元格也要占 execution_count,和 Jupyter 行为一致(否则 In[n] 会错位)
     execution_count += 1
@@ -292,7 +306,7 @@ def do_execute(req):
         tree = ast.parse(code, filename=CELL_FILE, mode="exec")
         if _has_top_level_await(tree):
             _emit({
-                "type": "error", "id": rid,
+                "type": "error", "id": rid, "execution_count": count,
                 "ename": "SyntaxError",
                 "evalue": "顶层 await 不受支持。请改用普通循环,或把代码封装进 async def 后再调用。",
                 "traceback": ["顶层 await 不受支持"],
@@ -304,7 +318,7 @@ def do_execute(req):
     except SyntaxError as e:
         _flush_streams(force=True)
         _emit({
-            "type": "error", "id": rid,
+            "type": "error", "id": rid, "execution_count": count,
             "ename": "SyntaxError",
             "evalue": "%s (第 %s 行)" % (e.msg, e.lineno),
             "traceback": ["  File %s, line %s" % (CELL_FILE, e.lineno),
@@ -325,7 +339,7 @@ def do_execute(req):
         _restore_streams()
         code_val = e.code
         _emit({
-            "type": "error", "id": rid, "ename": "SystemExit",
+            "type": "error", "id": rid, "execution_count": count, "ename": "SystemExit",
             "evalue": "" if code_val is None else str(code_val),
             "traceback": ["SystemExit: %s" % ("无参数" if code_val is None else code_val)],
         })
@@ -336,7 +350,7 @@ def do_execute(req):
         _flush_streams(force=True)
         _restore_streams()
         _emit({
-            "type": "error", "id": rid,
+            "type": "error", "id": rid, "execution_count": count,
             "ename": getattr(exc_type, "__name__", str(exc_type)),
             "evalue": _safe_repr(exc_value, limit=2000),
             "traceback": _clean_traceback(exc_type, exc_value, exc_tb),
@@ -363,7 +377,7 @@ def do_execute(req):
             _restore_streams()
             code_val = e.code
             _emit({
-                "type": "error", "id": rid, "ename": "SystemExit",
+                "type": "error", "id": rid, "execution_count": count, "ename": "SystemExit",
                 "evalue": "" if code_val is None else str(code_val),
                 "traceback": ["SystemExit: %s" % ("无参数" if code_val is None else code_val)],
             })
@@ -376,7 +390,7 @@ def do_execute(req):
             _flush_streams(force=True)
             _restore_streams()
             _emit({
-                "type": "error", "id": rid,
+                "type": "error", "id": rid, "execution_count": count,
                 "ename": getattr(exc_type, "__name__", str(exc_type)),
                 "evalue": _safe_repr(exc_value, limit=2000),
                 "traceback": _clean_traceback(exc_type, exc_value, exc_tb),
@@ -925,8 +939,9 @@ HANDLERS = {
 
 
 def main():
+    global _current_request_id
     _emit({"type": "kernel_ready",
-           "version": "%d.%d.%d" % sys.version_info[:3],
+    "version": "%d.%d.%d" % sys.version_info[:3],
            "executable": sys.executable or "python",
            "pid": os.getpid()})
     while True:
@@ -968,6 +983,11 @@ def main():
                    "ename": "KernelError", "evalue": str(e), "traceback": tb})
             _emit({"type": "status", "id": req.get("id") or "", "state": "idle",
                    "execution_count": execution_count})
+        finally:
+            # 每个请求处理完就清掉当前 id。必须清:否则 handler 内部异常退出、
+            # 或下一个请求自己没设 id(如 info)时,stream 会挂到上一个已完成的
+            # 请求上,输出会显示到错误的单元格。
+            _current_request_id = ""
     try:
         _REAL_STDOUT.flush()
     except Exception:
