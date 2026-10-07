@@ -1,7 +1,7 @@
 import {openTab, confirm, showMessage} from "siyuan";
 import {OFFICE_TAB_TYPE, getOfficeKind} from "../constants";
 import {basename} from "../utils/path";
-import {openWithExternalApp} from "../utils/external-app";
+import {openTreeFileWithExternalApp} from "../utils/external-app";
 import {OfficeEngine} from "../office/types";
 import {createBacklinkPanel, BacklinkPanel} from "../components/backlink-panel";
 
@@ -217,7 +217,7 @@ export function createOfficeTabConfig(_plugin: IPluginForOfficeTab) {
                 if (act === "save") save();
                 else if (act === "reload") reload();
                 else if (act === "external") {
-                    openWithExternalApp(path).catch((err: any) => {
+                    openTreeFileWithExternalApp(path).catch((err: any) => {
                         showMessage(`打开失败: ${err}`, 5000, "error");
                     });
                 }

@@ -67,6 +67,53 @@
     font-size: 12px;
     color: var(--b3-theme-on-surface-light);
 }
+
+/* 百度网盘对话框(账号配置 + 挂载目标选择) */
+.syfe-bdpan__sec + .syfe-bdpan__sec {
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid var(--b3-border-color);
+}
+
+.syfe-bdpan__title {
+    font-size: 13px;
+    font-weight: 600;
+    margin-bottom: 6px;
+}
+
+.syfe-bdpan__hint {
+    font-size: 12px;
+    color: var(--b3-theme-on-surface-light);
+    line-height: 1.6;
+    margin-bottom: 8px;
+}
+
+.syfe-bdpan__field {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+    font-size: 13px;
+
+    > span {
+        flex-shrink: 0;
+        width: 56px;
+        color: var(--b3-theme-on-surface);
+    }
+}
+
+.syfe-bdpan__actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 4px;
+}
+
+.syfe-bdpan__status {
+    font-size: 12px;
+    color: var(--b3-theme-on-surface-light);
+}
+
 .syfe-file-tree-dock {
     height: 100%;
 }
@@ -475,6 +522,107 @@
 // ===== 阅读模式(类 Obsidian Reading):完整渲染 + 只读 =====
 // Vditor 以 toolbar:[] 创建时通常不渲染工具栏,这里兜底隐藏,
 // 并收窄正文宽度、去掉编辑态的聚焦轮廓,更像"阅读"而非"编辑"。
+// ===== 思源原生标签对话框(虚拟文档树右键「标签…」)=====
+.syfe-sytag__doc {
+    font-weight: 600;
+    margin-bottom: 8px;
+    word-break: break-all;
+}
+
+.syfe-sytag__current {
+    min-height: 24px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    align-items: center;
+}
+
+.syfe-sytag__suggest {
+    margin-top: 6px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    max-height: 88px;
+    overflow: auto;
+}
+
+.syfe-sytag__chip {
+    display: inline-block;
+    padding: 1px 8px;
+    font-size: 12px;
+    line-height: 18px;
+    border-radius: 9px;
+    color: var(--b3-theme-on-background);
+    background: var(--b3-theme-surface);
+    border: 1px solid var(--b3-border-color);
+    cursor: pointer;
+
+    &:hover {
+        color: #fff;
+        background: var(--b3-theme-primary);
+        border-color: var(--b3-theme-primary);
+    }
+}
+
+.syfe-sytag__none {
+    font-size: 12px;
+    opacity: 0.6;
+}
+
+// Markdown 文档内查找(实时预览 / 阅读模式)
+.syfe-md__findicon {
+    width: 14px;
+    height: 14px;
+}
+
+.syfe-md__find {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--b3-border-color);
+    background: var(--b3-theme-surface);
+}
+
+.syfe-md__findinput {
+    flex: 1;
+    min-width: 0;
+}
+
+.syfe-md__findcount {
+    flex-shrink: 0;
+    font-size: 12px;
+    opacity: 0.7;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.syfe-md__find-hit {
+    background: rgba(255, 214, 0, 0.45);
+    border-radius: 2px;
+}
+
+.syfe-md__find-hit--cur {
+    background: rgb(255, 150, 0);
+    color: #fff;
+}
+
+.syfe-md__bar .syfe-md__findbtn {
+    display: inline-flex;
+    align-items: center;
+    padding: 4px 8px;
+}
+
+.syfe-md__content--reading .syfe-md__find-hit {
+    // 阅读模式下同样可查找,保持高亮可见
+    background: rgba(255, 214, 0, 0.5);
+}
+
+.syfe-md__content--reading .syfe-md__find-hit--cur {
+    background: rgb(255, 150, 0);
+}
+
 .syfe-md__content--reading {
     .vditor-toolbar,
     .vditor-ir__marker,
@@ -2347,6 +2495,241 @@
     border-radius: 8px;
 }
 
+// ===== 侧边栏「虚拟文档树」面板 =====
+.syfe-mtree__toolbar {
+    flex-shrink: 0;
+    border-bottom: 1px solid var(--b3-border-color);
+    min-height: 0;
+    padding: 0 4px;
+    flex-wrap: nowrap;
+
+    .block__logo {
+        padding: 0 4px;
+        gap: 4px;
+        font-size: 12px;
+    }
+
+    .block__icon {
+        width: 20px;
+        height: 20px;
+        flex-shrink: 0;
+
+        svg {
+            width: 14px;
+            height: 14px;
+        }
+    }
+}
+
+.syfe-mtree__scroll {
+    overflow: auto;
+    min-height: 0;
+}
+
+// 标签筛选 chip 行(与文件面板 .syfe-tree__chip 视觉一致)
+.syfe-mtree__chips {
+    flex-shrink: 0;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 6px;
+    border-bottom: 1px solid var(--b3-border-color);
+    max-height: 96px;
+    overflow: auto;
+}
+
+.syfe-mtree__chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    padding: 1px 7px;
+    font-size: 12px;
+    line-height: 18px;
+    border-radius: 9px;
+    cursor: pointer;
+    white-space: nowrap;
+    color: var(--b3-theme-on-background);
+    background: var(--b3-theme-surface);
+    border: 1px solid var(--b3-border-color);
+
+    &:hover {
+        border-color: var(--b3-theme-primary);
+    }
+
+    svg {
+        width: 12px;
+        height: 12px;
+    }
+}
+
+.syfe-mtree__chip--on {
+    color: #fff;
+    background: var(--b3-theme-primary);
+    border-color: var(--b3-theme-primary);
+
+    &:hover {
+        color: #fff;
+    }
+}
+
+.syfe-mtree__chip--all {
+    font-weight: 600;
+}
+
+.syfe-mtree__chip--empty {
+    font-size: 11px;
+    opacity: 0.6;
+}
+
+.syfe-mtree__chip-text {
+    max-width: 96px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.syfe-mtree__list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.syfe-mtree__empty {
+    padding: 14px 12px;
+    font-size: 12px;
+    line-height: 1.7;
+    color: var(--b3-theme-on-surface);
+    // 空态提示是多行文案,保留换行
+    white-space: pre-line;
+}
+
+.syfe-mtree__row {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 6px;
+    font-size: 13px;
+    cursor: pointer;
+    border-bottom: 1px solid var(--b3-border-color);
+
+    &:last-child {
+        border-bottom: none;
+    }
+
+    &:hover {
+        background: var(--b3-list-hover);
+    }
+}
+
+.syfe-mtree__row--loading {
+    cursor: default;
+    font-size: 12px;
+    color: var(--b3-theme-on-surface);
+
+    &:hover {
+        background: transparent;
+    }
+}
+
+.syfe-mtree__row--open {
+    background: var(--b3-theme-surface);
+}
+
+.syfe-mtree__toggle {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    height: 14px;
+
+    svg {
+        width: 10px;
+        height: 10px;
+        fill: var(--b3-theme-on-surface);
+    }
+}
+
+.syfe-mtree__icon {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+
+    svg {
+        width: 15px;
+        height: 15px;
+        fill: var(--b3-theme-on-surface);
+    }
+}
+
+// 行首箭头:只负责展开/收起(名称区点击是"打开")
+.syfe-mtree__toggle--arrow {
+    cursor: pointer;
+    border-radius: 3px;
+
+    &:hover {
+        background: var(--b3-list-hover);
+
+        svg {
+            fill: var(--b3-theme-on-background);
+        }
+    }
+}
+
+.syfe-mtree__name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--b3-theme-on-background);
+}
+
+// 挂载节点:两行(名称 + 父目录),子项仍单行
+.syfe-mtree__text {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    line-height: 1.3;
+}
+
+.syfe-mtree__sub {
+    font-size: 11px;
+    color: var(--b3-theme-on-surface);
+    font-family: var(--b3-font-family-code);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+// 取消挂载按钮:hover 行时出现
+.syfe-mtree__unmount {
+    flex-shrink: 0;
+    width: 18px;
+    height: 18px;
+    line-height: 16px;
+    text-align: center;
+    font-size: 16px;
+    color: var(--b3-theme-on-surface);
+    border-radius: 50%;
+    opacity: 0;
+    cursor: pointer;
+    transition: opacity 0.15s, background 0.15s;
+
+    &:hover {
+        background: var(--b3-theme-error);
+        color: #fff;
+    }
+}
+
+.syfe-mtree__row:hover .syfe-mtree__unmount {
+    opacity: 0.85;
+}
+
 // 「聚焦」按钮:默认隐藏,鼠标移到标签行才出现
 // 只有点它才进入该标签的条目列表;点标签行本身仅选中/展开收起
 .syfe-tagdock__focus {
@@ -2394,6 +2777,210 @@
 
         svg {
             fill: var(--b3-theme-on-background);
+        }
+    }
+}
+
+// ===== Jupyter Notebook(.ipynb)查看与编辑 Tab =====
+.syfe-nb-tab {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+}
+
+.syfe-nb__bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 8px;
+    border-bottom: 1px solid var(--b3-border-color);
+    flex-shrink: 0;
+
+    .b3-button {
+        padding: 2px 6px;
+    }
+}
+
+.syfe-nb__kind {
+    font-weight: 600;
+    color: var(--b3-theme-primary);
+}
+
+.syfe-nb__meta {
+    color: var(--b3-theme-on-surface);
+    font-size: 12px;
+}
+
+.syfe-nb__dirty {
+    color: var(--b3-theme-primary);
+}
+
+.syfe-nb__actions {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.syfe-nb__body {
+    flex: 1;
+    overflow: auto;
+    padding: 10px 14px 40px;
+}
+
+.syfe-nb__loading,
+.syfe-nb__empty {
+    color: var(--b3-theme-on-surface);
+    padding: 20px;
+    text-align: center;
+}
+
+.syfe-nb__banner {
+    background: var(--b3-theme-surface);
+    border: 1px solid var(--b3-theme-warning);
+    border-radius: 4px;
+    padding: 6px 10px;
+    margin-bottom: 8px;
+}
+
+.syfe-nb__raw {
+    height: calc(100% - 40px);
+    border: 1px solid var(--b3-border-color);
+    border-radius: 4px;
+}
+
+.syfe-nb__cell {
+    border: 1px solid var(--b3-border-color);
+    border-radius: 6px;
+    margin-bottom: 10px;
+    background: var(--b3-theme-background);
+    overflow: hidden;
+
+    &--active {
+        border-color: var(--b3-theme-primary);
+    }
+}
+
+.syfe-nb__cellbar {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    background: var(--b3-theme-surface);
+    border-bottom: 1px solid var(--b3-border-color);
+    font-size: 12px;
+}
+
+.syfe-nb__badge {
+    color: var(--b3-theme-on-surface);
+    font-weight: 600;
+}
+
+.syfe-nb__exec {
+    color: var(--b3-theme-on-surface);
+    opacity: .7;
+}
+
+.syfe-nb__cellbtn {
+    cursor: pointer;
+    padding: 1px 6px;
+    border-radius: 3px;
+    color: var(--b3-theme-on-surface);
+    user-select: none;
+
+    &:hover {
+        background: var(--b3-list-hover);
+        color: var(--b3-theme-primary);
+    }
+
+    &--del:hover {
+        color: var(--b3-theme-error);
+    }
+}
+
+.syfe-nb__src {
+    cursor: text;
+    min-height: 20px;
+    padding: 4px 0;
+
+    // colorize 生成的高亮:铺满并吃掉外层 pre 的默认边距
+    .syfe-nb__hl,
+    .monaco-colorized {
+        padding: 4px 10px;
+        overflow-x: auto;
+    }
+}
+
+.syfe-nb__mdview {
+    padding: 8px 12px;
+    cursor: text;
+
+    p:first-child {
+        margin-top: 0;
+    }
+
+    p:last-child {
+        margin-bottom: 0;
+    }
+}
+
+.syfe-nb__outs {
+    border-top: 1px dashed var(--b3-border-color);
+    padding: 4px 10px;
+    font-size: 13px;
+}
+
+.syfe-nb__outs-empty {
+    color: var(--b3-theme-on-surface);
+    opacity: .6;
+    padding: 4px 0;
+}
+
+.syfe-nb__out {
+    margin: 4px 0;
+    overflow-x: auto;
+
+    pre {
+        margin: 0;
+        white-space: pre-wrap;
+        word-break: break-word;
+    }
+
+    img {
+        max-width: 100%;
+    }
+
+    &--stream {
+        white-space: pre-wrap;
+        word-break: break-word;
+    }
+
+    &--error {
+        border: 1px solid var(--b3-theme-error);
+        border-radius: 4px;
+        padding: 6px 8px;
+        color: var(--b3-theme-error);
+
+        pre {
+            color: var(--b3-theme-on-background);
+        }
+    }
+
+    &--img {
+        text-align: left;
+    }
+
+    &--html {
+        width: 100%;
+        min-height: 120px;
+        border: 1px solid var(--b3-border-color);
+        border-radius: 4px;
+        background: #fff;
+    }
+
+    &--md {
+        p:first-child {
+            margin-top: 0;
         }
     }
 }

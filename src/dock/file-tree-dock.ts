@@ -8,7 +8,6 @@ import {
     createNewFile,
     createNewFolder,
     promptDialog,
-    pickMountTargetDialog,
     syncDirToggleInParent,
     IFileTreeActions,
     setTagFilter,
@@ -21,13 +20,12 @@ import {nativeIsDirectory, isNativeFsAvailable} from "../api/native-fs";
 import {openTagMenu, tagIconHTML} from "../tags/tag-ui";
 import {sortTagsTree, tagDepth, tagFullName} from "../tags/tag-store";
 import {
-    isVirtualPath,
-    isNotebookRoot,
-    virtualRootLabel,
-    openDocInSiyuan,
     addMount,
     removeMount,
 } from "../utils/virtual-tree";
+import {isBaiduPath, baiduRootLabel} from "../utils/baidu-path";
+import {openBaiduPanDialog} from "../components/baidu-pan-dialog";
+import {clearBaiduListCache} from "../api/baidu-pan";
 
 // 文件树 Dock 所需的插件接口
 export interface IPluginForDock {
@@ -76,6 +74,7 @@ export function createFileTreeDockConfig(plugin: IPluginForDock) {
             // 优先使用插件配置中的根目录,其次使用 data.rootPath,最后回退到默认值
             this._rootPath = plugin.getFileTreeRoot() || this.data?.rootPath || WORKSPACE_ROOT;
             this._actions = {
+                plugin: plugin as any,
                 openFile: (path: string) => plugin.openFile(path),
                 openImage: (path: string) => plugin.openImage(path),
                 openOffice: (path: string) => plugin.openOffice(path),
@@ -87,10 +86,7 @@ export function createFileTreeDockConfig(plugin: IPluginForDock) {
                 // 新标签页:固定/收藏切换(数据存 start-page.json)
                 togglePin: (path: string) => (plugin as any).togglePin(path),
                 toggleFavorite: (path: string) => (plugin as any).toggleFavorite(path),
-                // 虚拟文档树:在思源中打开文档
-                openDoc: (docId: string) => openDocInSiyuan(docId),
-                // 挂载思源文档到真实目录下 / 取消挂载(文件树右键)
-                mountDocHere: (dir: string) => mountDocInto(dir),
+                // 挂载/取消挂载百度网盘(文件树右键)
                 unmountDoc: (parentDir: string, vPath: string) => unmountDocFrom(parentDir, vPath),
                 manageTags: (path: string, ev: MouseEvent, onChanged?: () => void) => {
                     void openTagMenu(plugin as any, path, ev, () => {
@@ -109,8 +105,8 @@ export function createFileTreeDockConfig(plugin: IPluginForDock) {
                         <span class="block__logotext">文件</span>
                     </div>
                     <span class="fn__flex-1 fn__space"></span>
-                    <span class="block__icon ariaLabel" data-action="mount-siyuan" aria-label="挂载思源文档树" data-position="north">
-                        <svg><use xlink:href="#iconNotebook"></use></svg>
+                    <span class="block__icon ariaLabel" data-action="mount-bdpan" aria-label="挂载百度网盘" data-position="north">
+                        <svg><use xlink:href="#iconCloud"></use></svg>
                     </span>
                     <span class="block__icon ariaLabel" data-action="change-root" aria-label="切换根目录" data-position="north">
                         <svg><use xlink:href="#iconFolder"></use></svg>
@@ -224,15 +220,12 @@ export function createFileTreeDockConfig(plugin: IPluginForDock) {
                 void applyFilter();
             });
 
-            // 应用新根目录(保存配置 + 更新 UI + 渲染;虚拟根显示友好名)
+            // 应用新根目录(保存配置 + 更新 UI + 渲染)
             const applyRoot = (newPath: string) => {
                 self._rootPath = newPath;
                 rootEl.dataset.path = newPath;
-                if (isVirtualPath(newPath)) {
-                    pathLabel.textContent = newPath;
-                    void virtualRootLabel(newPath).then(label => {
-                        if (self._rootPath === newPath) pathLabel.textContent = label;
-                    });
+                if (isBaiduPath(newPath)) {
+                    pathLabel.textContent = baiduRootLabel(newPath);
                 } else {
                     pathLabel.textContent = newPath;
                 }
@@ -240,20 +233,7 @@ export function createFileTreeDockConfig(plugin: IPluginForDock) {
                 renderTree(rootEl, newPath);
             };
 
-            // 把思源文档/笔记本挂载到指定真实目录下(与该目录下的真实文件并存,持久化保存)
-            // 供右键菜单「挂载思源文档…」与系统路径根目录的工具栏挂载按钮使用
-            const mountDocInto = (dir: string) => {
-                pickMountTargetDialog(`挂载思源文档到「${basename(dir) || dir}」`, (vPath, label) => {
-                    void (async () => {
-                        await addMount(dir, vPath, label);
-                        await refreshPath(rootEl, dir, self._rootPath!);
-                        await syncDirToggleInParent(rootEl, dir, self._rootPath!);
-                        showMessage("已挂载,点击展开子文档,双击在思源中打开", 3500, "info");
-                    })();
-                });
-            };
-
-            // 取消挂载:移除某真实目录下的思源文档挂载记录并刷新
+            // 取消挂载:移除某真实目录下的百度网盘挂载记录并刷新
             const unmountDocFrom = (parentDir: string, vPath: string) => {
                 void (async () => {
                     const removed = await removeMount(parentDir, vPath);
@@ -264,12 +244,29 @@ export function createFileTreeDockConfig(plugin: IPluginForDock) {
                 })();
             };
 
-            // 切换根目录:弹出输入框(支持 sydoc:// 虚拟路径),校验后保存到配置并重新渲染
+            // 把百度网盘目录挂载到指定真实目录下(与该目录下的真实文件并存,持久化保存)
+            const mountBdPanInto = (dir: string) => {
+                openBaiduPanDialog({
+                    title: `挂载百度网盘到「${basename(dir) || dir}」`,
+                    onPicked: (vPath, label) => {
+                        void (async () => {
+                            await addMount(dir, vPath, label);
+                            await refreshPath(rootEl, dir, self._rootPath!);
+                            await syncDirToggleInParent(rootEl, dir, self._rootPath!);
+                            showMessage(`已挂载「${label}」;单击展开目录,双击/单击文件打开`, 3500, "info");
+                        })();
+                    },
+                });
+            };
+
+            // 切换根目录:弹出输入框(支持 bdpan:// 虚拟路径),校验后保存到配置并重新渲染
             const changeRoot = async () => {
-                const input = await promptDialog("切换根目录(/data、系统路径或 sydoc://nb/笔记本ID、sydoc://文档ID)", self._rootPath || "/data");
+                const input = await promptDialog("切换根目录(/data、系统路径 或 bdpan:// 网盘路径)", self._rootPath || "/data");
                 if (!input) return;
-                if (isVirtualPath(input.trim())) {
-                    applyRoot(input.trim());
+                const trimmed = input.trim();
+                // 百度网盘虚拟路径:无需本地目录校验
+                if (isBaiduPath(trimmed)) {
+                    applyRoot(trimmed);
                     return;
                 }
                 const newPath = normalizePath(input);
@@ -304,12 +301,8 @@ export function createFileTreeDockConfig(plugin: IPluginForDock) {
                 }
                 rootEl.dataset.path = this._rootPath;
                 pathLabel.textContent = this._rootPath;
-            } else if (isVirtualPath(this._rootPath)) {
-                pathLabel.textContent = this._rootPath;
-                const p = this._rootPath;
-                void virtualRootLabel(p).then(label => {
-                    if (self._rootPath === p) pathLabel.textContent = label;
-                });
+            } else if (isBaiduPath(this._rootPath)) {
+                pathLabel.textContent = baiduRootLabel(this._rootPath);
             }
             renderTree(rootEl, this._rootPath);
 
@@ -319,48 +312,41 @@ export function createFileTreeDockConfig(plugin: IPluginForDock) {
                 // 工具栏按钮
                 const actionEl = target.closest("[data-action]") as HTMLElement;
                 if (actionEl) {
-                    const action = actionEl.dataset.action;
-                    const currentRoot = self._rootPath!;
-                    // 虚拟文档树根:文件系统相关操作不适用
-                    if (isVirtualPath(currentRoot) && (action === "new-file" || action === "new-folder" || action === "tag-filter")) {
-                        showMessage("虚拟文档树不支持此操作(文档增删请在思源中进行)", 2500, "info");
-                        return;
-                    }
-                    switch (action) {
-                        case "change-root":
-                            changeRoot();
-                            break;
-                        case "mount-siyuan":
-                            // 系统路径根目录:挂载到当前根目录下(不替换根,真实文件保留)
-                            // 思源 /data 根或虚拟根:沿用「挂载为根目录」的行为
-                            if (isExternalPath(currentRoot)) {
-                                mountDocInto(currentRoot);
-                            } else {
-                                pickMountTargetDialog("挂载思源文档树", (vPath) => {
+                const action = actionEl.dataset.action;
+                const currentRoot = self._rootPath!;
+                // 百度网盘根:标签/内容搜索不适用(新建文件/文件夹走网盘接口,可用)
+                if (isBaiduPath(currentRoot) && (action === "tag-filter" || action === "search")) {
+                    showMessage("百度网盘目录暂不支持标签筛选与内容搜索", 2500, "info");
+                    return;
+                }
+                switch (action) {
+                    case "change-root":
+                        changeRoot();
+                        break;
+                    case "mount-bdpan":
+                        // 系统路径根目录:挂载到当前根目录下(不替换根);其他根:直接切换到网盘目录
+                        if (isExternalPath(currentRoot)) {
+                            mountBdPanInto(currentRoot);
+                        } else {
+                            openBaiduPanDialog({
+                                title: "挂载百度网盘",
+                                onPicked: (vPath, label) => {
                                     applyRoot(vPath);
-                                    showMessage("已挂载,点击文档行展开子文档,双击在思源中打开", 3500, "info");
-                                });
-                            }
-                            break;
-                        case "refresh":
-                            if (isVirtualPath(currentRoot)) {
-                                pathLabel.textContent = currentRoot;
-                                void virtualRootLabel(currentRoot).then(label => {
-                                    if (self._rootPath === currentRoot) pathLabel.textContent = label;
-                                });
-                            }
-                            renderTree(rootEl, currentRoot);
-                            break;
+                                    showMessage(`已打开「${label}」;右键目录可挂载到其他真实目录下`, 3500, "info");
+                                },
+                            });
+                        }
+                        break;
+                    case "refresh":
+                        clearBaiduListCache();
+                        renderTree(rootEl, currentRoot);
+                        break;
                         case "collapse":
                             collapseAll(rootEl);
                             break;
-                        case "search":
-                            if (isVirtualPath(currentRoot)) {
-                                showMessage("虚拟文档树暂不支持内容搜索", 2500, "info");
-                                return;
-                            }
-                            plugin.openSearch(currentRoot);
-                            break;
+                    case "search":
+                        plugin.openSearch(currentRoot);
+                        break;
                         case "tag-filter":
                             void toggleFilterBar();
                             break;
@@ -381,26 +367,12 @@ export function createFileTreeDockConfig(plugin: IPluginForDock) {
                 const isDir = li.dataset.isDir === "true";
                 const path = li.dataset.path!;
                 if (isDir) {
-                    toggleFolder(li);
+                    void toggleFolder(li);
                 } else {
                     plugin.openFile(path);
                 }
             };
             this.element.addEventListener("click", this._clickHandler);
-
-            // 双击虚拟文档节点:在思源中打开该文档(单击仍是展开/折叠)
-            this._dblclickHandler = (e: MouseEvent) => {
-                const row = (e.target as HTMLElement).closest(".syfe-tree__row") as HTMLElement | null;
-                if (!row) return;
-                const li = row.parentElement as HTMLElement;
-                if (!li || !li.dataset.path) return;
-                const path = li.dataset.path!;
-                if (!isVirtualPath(path)) return;
-                e.preventDefault();
-                e.stopPropagation();
-                openDocInSiyuan(path.slice("sydoc://".length));
-            };
-            this.element.addEventListener("dblclick", this._dblclickHandler);
 
             // 右键菜单(委托)
             this._contextHandler = (e: MouseEvent) => {

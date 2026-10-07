@@ -6,6 +6,7 @@ const ICON_MAP: Record<string, string> = {
     ".md": "iconMarkdown",
     ".markdown": "iconMarkdown",
     ".json": "iconCode",
+    ".ipynb": "iconCode",
     ".js": "iconCode",
     ".jsx": "iconCode",
     ".ts": "iconCode",

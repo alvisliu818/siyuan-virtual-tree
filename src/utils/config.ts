@@ -2,6 +2,14 @@ import {EditorConfig, DEFAULT_CONFIG} from "../types";
 import {STORAGE_CONFIG} from "../constants";
 import type {Plugin} from "siyuan";
 
+// 内存里的配置缓存:供**无 plugin 参数**的深层模块读取设置
+// (如 components/file-tree.ts 的导入流程,拿不到 plugin 实例)
+let configCache: EditorConfig | null = null;
+
+export function isImportMdSourceAssetEnabled(): boolean {
+    return configCache?.importMdSourceAsset === true;
+}
+
 // 加载配置(合并默认值)
 export async function loadConfig(plugin: Plugin): Promise<EditorConfig> {
     try {
@@ -13,16 +21,20 @@ export async function loadConfig(plugin: Plugin): Promise<EditorConfig> {
             if ((merged.markdownDefaultMode as string) === "wysiwyg") {
                 merged.markdownDefaultMode = "live";
             }
+            configCache = merged;
             return merged;
         }
     } catch {
         // 忽略读取失败
     }
-    return {...DEFAULT_CONFIG};
+    const fallback = {...DEFAULT_CONFIG};
+    configCache = fallback;
+    return fallback;
 }
 
 // 保存配置
 export async function saveConfig(plugin: Plugin, config: EditorConfig): Promise<void> {
+    configCache = config;
     try {
         await plugin.saveData(STORAGE_CONFIG, JSON.stringify(config));
     } catch (e) {

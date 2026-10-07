@@ -39,6 +39,26 @@ const checks = [
   "syfe-tagdock__toggle--arrow", "syfe-tagdock__row--open", "点击展开/收起该标签的文件与文件夹",
   // Markdown 三态编辑器(对齐 Obsidian:实时预览 / 源码 / 阅读)
   "syfe-md__content--reading", "实时预览", "阅读", "syfe-md__modebtn",
+  // 虚拟文档树(初始空树,挂载文件/文件夹/思源文档/思源块,支持嵌套)
+  "siyuan-file-editor-mount-tree-dock", "syfe:mount-tree-changed", "syfe-mtree__row",
+  "挂载到虚拟文档树", "还没有挂载任何内容", "取消挂载", "已嵌套挂载", "open-menu-doctree",
+  // 虚拟文档树面板内右键添加(思源文档/笔记本选择器 + 路径输入)
+  "挂载思源文档/笔记本…", "挂载文件/文件夹…", "挂载到虚拟文档树", "文件或文件夹路径",
+  // 文件/文件夹右键复用文件树菜单(打开方式/重命名/删除/标签/固定收藏等),
+  // 操作后靠 syfe:files-changed 让虚拟文档树清缓存重绘
+  "syfe:files-changed", "在文件资源管理器中显示", "系统默认应用",
+  // 虚拟文档树工具栏:标签筛选 / 搜索 / 挂载百度网盘 / 更多(新建文件·文件夹)
+  "syfe-mtree__chip", "全部已打标签", "标签筛选", "挂载百度网盘到虚拟文档树",
+  "在当前目录新建文件", "在当前目录新建文件夹", "挂载百度网盘…",
+  // 「文件」面板默认不注册(能力已由虚拟文档树承接),设置可随时开回来
+  "侧边栏:显示「文件」面板", "showFileTreeDock", "「文件」面板已关闭",
+  // Markdown 实时预览/阅读模式的文档内查找
+  "syfe-md__find-hit", "syfe-md__findcount", "syfe-md__findcase", "在文档内查找", "区分大小写",
+  // 虚拟文档树:思源原生标签 + 固定/收藏(旧文件树文档树能力的承接)
+  "syfe-sytag__chip", "已有标签(点击移除)", "type = 't'", "/api/block/insertBlock", "/api/block/removeBlock",
+  // 设置项:导入 md 到思源时把源文件作为资源插入文档顶部引述块
+  "导入 Markdown:插入源文件资源引述块", "importMdSourceAsset", "/api/asset/upload", "源文件:",
+
 ];
 let ok = 0;
 for (const c of checks) {

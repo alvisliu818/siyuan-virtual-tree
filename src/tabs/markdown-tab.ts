@@ -7,6 +7,7 @@ import {createEditor, getCurrentMode} from "../editor/monaco";
 import {getModel, saveModel, markDirty, isDirty, consumePendingReveal} from "../editor/model-manager";
 import {readBinaryFile} from "../api/file";
 import {createBacklinkPanel, BacklinkPanel} from "../components/backlink-panel";
+import {highlightMatches, clearFindHighlights, setCurrentFindHit} from "../components/markdown-find";
 
 // Markdown 编辑 Tab:对齐 Obsidian 的三态编辑器
 // - live    实时预览:Vditor ir(即时渲染),光标所在行显示源码、其余实时渲染,可编辑
@@ -43,6 +44,11 @@ interface MarkdownTabInstance {
     _themeObserver?: MutationObserver;
     _keydownHandler?: (e: KeyboardEvent) => void;
     _backlink?: BacklinkPanel;
+    // ===== 文档内查找(渲染态)状态 =====
+    _findHits?: HTMLElement[];   // 当前所有命中元素(按文档顺序)
+    _findIndex?: number;         // 当前项下标,-1 = 无命中
+    _findQuery?: string;         // 上次搜索词(用于判断是否需要重新高亮)
+    _findCase?: boolean;         // 是否区分大小写
     // 图片本地化渲染(相对路径 → blob URL)
     _imgObserver?: MutationObserver;
     _imgDebounce?: number;
@@ -51,7 +57,43 @@ interface MarkdownTabInstance {
 }
 
 // Vditor 静态资源目录(webpack 已复制 vditor/dist 到插件目录)
-const VDITOR_CDN = "/plugins/siyuan-file-editor/vditor";
+// 导出供 Notebook Tab 复用(md 单元格渲染 / 样式)
+export const VDITOR_CDN = "/plugins/siyuan-file-editor/vditor";
+
+// ===== window.Lute 保护 =====
+// vditor 首次初始化会注入自己的 lute.min.js 并覆写 window.Lute——同名全局,但 vditor 的
+// 构建缺 SetTabs/SpinBlockDOM 等思源方法,覆写后思源原生文档的渲染全部报错。
+// vditor 只在构造后的 setLute 里读一次全局,之后持有自己的实例;因此把覆写窗口压到最小:
+// 创建前换上 vditor 构建(首次由脚本自己覆写),vditor.lute 一就绪立刻还原思源的 Lute。
+let syLute: any = null;   // 思源原生 Lute(首次创建 vditor 前快照)
+let vdLute: any = null;   // vditor 的 Lute 构建(首次脚本加载后捕获)
+let luteRestoreTimer: any = null;
+
+function armVditorLute(vditor: Vditor): void {
+    try {
+        if (!syLute) syLute = (window as any).Lute ?? null;
+        if (vdLute) (window as any).Lute = vdLute;
+        if (luteRestoreTimer) clearInterval(luteRestoreTimer);
+        luteRestoreTimer = setInterval(() => {
+            if ((vditor as any).lute) disarmVditorLute();
+        }, 3);
+    } catch {
+        // 忽略:保护失败不影响编辑器本身
+    }
+}
+
+function disarmVditorLute(): void {
+    if (luteRestoreTimer) {
+        clearInterval(luteRestoreTimer);
+        luteRestoreTimer = null;
+    }
+    try {
+        if (!vdLute && (window as any).Lute !== syLute) vdLute = (window as any).Lute;
+        if (syLute) (window as any).Lute = syLute;
+    } catch {
+        // 忽略
+    }
+}
 
 // 超过此大小(字节)的 Markdown 强制源码模式(Vditor 大内容性能差)
 const WYSIWYG_MAX_SIZE = 512 * 1024;
@@ -60,8 +102,8 @@ function escapeHTML(s: string): string {
     return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
-// 注入 Vditor 主样式(幂等)
-function ensureVditorCSS(): void {
+// 注入 Vditor 主样式(幂等;导出供 Notebook Tab 复用)
+export function ensureVditorCSS(): void {
     if (document.querySelector(`link[data-syfe-vditor]`)) return;
     const link = document.createElement("link");
     link.rel = "stylesheet";
@@ -279,10 +321,21 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                         <span class="syfe-md__dirty" style="display:none;">●</span>
                         <span class="syfe-md__path">${escapeHTML(path)}</span>
                         <span class="fn__flex-1"></span>
+                        <button class="b3-button b3-button--small b3-button--outline syfe-md__findbtn" title="在文档内查找(Ctrl+F)">
+                            <svg class="syfe-md__findicon"><use xlink:href="#iconSearch"></use></svg>
+                        </button>
                         <button class="b3-button b3-button--small syfe-md__modebtn" data-mode="live">实时预览</button>
                         <button class="b3-button b3-button--small syfe-md__modebtn" data-mode="source">源码</button>
                         <button class="b3-button b3-button--small syfe-md__modebtn" data-mode="reading">阅读</button>
                         <button class="b3-button b3-button--small b3-button--outline syfe-md__save">保存</button>
+                    </div>
+                    <div class="syfe-md__find" style="display:none;">
+                        <input class="b3-text-field syfe-md__findinput" placeholder="查找内容" />
+                        <span class="syfe-md__findcount">0/0</span>
+                        <button class="b3-button b3-button--small syfe-md__findcase" title="区分大小写">Aa</button>
+                        <button class="b3-button b3-button--small syfe-md__findprev" title="上一个(Shift+Enter)">↑</button>
+                        <button class="b3-button b3-button--small syfe-md__findnext" title="下一个(Enter)">↓</button>
+                        <button class="b3-button b3-button--small syfe-md__findclose" title="关闭(Esc)">✕</button>
                     </div>
                     <div class="syfe-md__backlink"></div>
                     <div class="syfe-md__content fn__flex-1"></div>
@@ -325,6 +378,12 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                     // live 模式先把 Vditor 内容同步回 model(含 blob 还原兜底);
                     // source 模式 Monaco 直接改 model、reading 模式不可编辑,都无需同步
                     if (self._mode === "live" && self._vditor && self._model) {
+                        // 取值走 lute.dom2md(读 DOM),先清掉查找高亮避免多余 span 参与序列化
+                        if (self._findHits && self._findHits.length > 0) {
+                            clearFindHighlights(self._contentEl);
+                            self._findHits = [];
+                            self._findIndex = -1;
+                        }
                         self._model.setValue(getVditorValue(self));
                     }
                     await saveModel(path);
@@ -345,8 +404,120 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                 });
             };
 
+            // ===== 文档内查找(实时预览 / 阅读模式)=====
+            // 源码模式直接用 Monaco 自带的查找(见 findbtn 点击分支)
+            const findBar = self.element.querySelector(".syfe-md__find") as HTMLElement;
+            const findInput = self.element.querySelector(".syfe-md__findinput") as HTMLInputElement;
+            const findCount = self.element.querySelector(".syfe-md__findcount") as HTMLElement;
+
+            const closeFind = () => {
+                findBar.style.display = "none";
+                self._findHits = [];
+                self._findIndex = -1;
+                clearFindHighlights(self._contentEl);
+            };
+
+            // 在渲染态里查一次并高亮;dir=1 下一个 / -1 上一个
+            const runFind = (dir: 1 | -1, fromStart = false) => {
+                if (self._mode === "source") {
+                    // 交给 Monaco
+                    try {
+                        self._editor?.focus();
+                        const action = self._editor?.getAction?.("actions.find");
+                        if (action) {
+                            void action.run();
+                            return;
+                        }
+                    } catch {
+                        // 忽略
+                    }
+                }
+                const q = findInput.value;
+                if (!q.trim()) {
+                    closeFind();
+                    return;
+                }
+                // 首次搜索(或查询词变了)重新高亮
+                if (fromStart || self._findQuery !== q) {
+                    self._findHits = highlightMatches(self._contentEl, q, self._findCase === true);
+                    self._findQuery = q;
+                    self._findIndex = self._findHits.length > 0 ? 0 : -1;
+                }
+                const hits = self._findHits || [];
+                if (hits.length === 0) {
+                    findCount.textContent = "0/0";
+                    self._findIndex = -1;
+                    return;
+                }
+                self._findIndex = setCurrentFindHit(
+                    hits,
+                    fromStart ? 0 : (self._findIndex ?? 0) + dir,
+                );
+                findCount.textContent = `${(self._findIndex ?? 0) + 1}/${hits.length}`;
+            };
+
+            const openFind = () => {
+                if (self._mode === "source") {
+                    try {
+                        self._editor?.focus();
+                        const action = self._editor?.getAction?.("actions.find");
+                        if (action) {
+                            void action.run();
+                            return;
+                        }
+                    } catch {
+                        // 忽略
+                    }
+                }
+                findBar.style.display = "";
+                findInput.focus();
+                findInput.select();
+            };
+
+            // 查找栏交互(事件委托)
+            findBar.addEventListener("click", (e: MouseEvent) => {
+                const t = e.target as HTMLElement;
+                if (t.closest(".syfe-md__findnext")) runFind(1);
+                else if (t.closest(".syfe-md__findprev")) runFind(-1);
+                else if (t.closest(".syfe-md__findcase")) {
+                    self._findCase = self._findCase !== true;
+                    (self.element.querySelector(".syfe-md__findcase") as HTMLElement)
+                        .classList.toggle("b3-button--primary", self._findCase === true);
+                    runFind(1, true);   // 切换后强制重新高亮
+                } else if (t.closest(".syfe-md__findclose")) {
+                    closeFind();
+                    self._contentEl?.focus();
+                }
+            });
+            findInput.addEventListener("input", () => runFind(1, true));
+            findInput.addEventListener("keydown", (e: KeyboardEvent) => {
+                if (e.key === "Enter") {
+                    e.preventDefault();
+                    runFind(e.shiftKey ? -1 : 1);
+                } else if (e.key === "Escape") {
+                    e.preventDefault();
+                    closeFind();
+                    self._contentEl?.focus();
+                }
+            });
+            (self.element.querySelector(".syfe-md__findbtn") as HTMLElement)
+                .addEventListener("click", () => {
+                    if (findBar.style.display === "none") openFind();
+                    else closeFind();
+                });
+
+            // Ctrl+F:源码模式留给 Monaco,渲染态打开查找栏
+            self.element.addEventListener("keydown", (e: KeyboardEvent) => {
+                if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
+                    if (self._mode === "source") return; // Monaco 自己处理
+                    e.preventDefault();
+                    openFind();
+                }
+            });
+
             // 切换到源码模式;reveal 指定跳转行号(搜索结果),未指定则尝试消费待跳转请求
             const enterSource = (reveal?: number) => {
+                closeFind();   // 离开渲染态:关掉查找栏并清高亮
                 // reading 模式不可编辑,内容以 model 为准;live 模式需先从 Vditor 同步最新内容
                 const content = self._mode === "live" ? getVditorValue(self) : (self._model?.getValue() ?? "");
                 destroyVditor(self);
@@ -381,6 +552,7 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
             // - live    : mode="ir" 即时渲染(光标所在行显示源码、其余实时渲染)+ 工具栏,可编辑
             // - reading : mode="wysiwyg" 完整渲染 + 无工具栏 + disabled(),只读
             const enterVditor = (vdMode: "ir" | "wysiwyg", readOnly: boolean) => {
+                closeFind();   // 离开源码态:关掉查找栏并清高亮
                 destroyMonaco(self);
                 // 同一容器上可能已有 Vditor(live ⇄ reading 切换),必须先销毁
                 destroyVditor(self);
@@ -408,6 +580,11 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                     ],
                     cache: {enable: false},
                     placeholder: "输入 Markdown 内容...",
+                    // 默认 800ms:撤销栈提交防抖期间 Ctrl+Z 会被 vditor 吞掉
+                    //(toolbar 热键分发 preventDefault 模拟点击 undo 按钮,按钮未启用时不执行撤销,
+                    // 原生撤销也被 preventDefault 挡住)→ 打字后立刻撤销无响应。调短消除死区,
+                    // 顺带让脏标记更及时。
+                    undoDelay: 100,
                     preview: {
                         theme: {
                             current: isDark ? "dark" : "light",
@@ -423,6 +600,8 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                         // vditor.lute 在异步 init 完成后才存在,必须在此 patch
                         // (构造函数返回时 lute 尚未赋值,立即 patch 会静默失败)
                         patchLuteDOM2Md(self, vditor);
+                        // vditor 已持有自己的 lute 实例,立刻还原思源的 window.Lute
+                        disarmVditorLute();
                         // 阅读模式:渲染完成后置为只读
                         if (readOnly) {
                             try {
@@ -439,6 +618,9 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                     },
                 });
                 self._vditor = vditor;
+                // vditor 初始化会注入自己的 lute 脚本覆写 window.Lute:先武装保护,
+                // vditor.lute 一就绪(轮询)或 after 回调时还原思源的 Lute
+                armVditorLute(vditor);
                 // 构造后立即尝试 patch(lute 可能已就绪;未就绪由 after 回调兜底)
                 patchLuteDOM2Md(self, vditor);
                 // 兜底扫描(after 可能早于图片 DOM 插入;观察器此时未启动需手动扫一次)
@@ -615,6 +797,8 @@ function destroyVditor(tab: MarkdownTabInstance): void {
             // 忽略
         }
         tab._vditor = undefined;
+        // 若该实例还在初始化(轮询未触发),销毁时停止轮询并还原思源 Lute
+        disarmVditorLute();
     }
     if (tab._contentEl) tab._contentEl.innerHTML = "";
 }

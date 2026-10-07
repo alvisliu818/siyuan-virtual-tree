@@ -5,6 +5,9 @@ export interface DirEntry {
     isDir: boolean;
     updated: string;
     path?: string; // 虚拟条目(思源文档树)自带完整虚拟路径,普通文件条目无此字段
+    // 以下仅虚拟条目(sydoc://)携带:文档自定义图标与子文档数(渲染思源文档树同款图标用)
+    icon?: string;
+    subFileCount?: number;
 }
 
 // 全局搜索命中结果
@@ -37,6 +40,11 @@ export interface EditorConfig {
     newTabShowPinned: boolean;       // 新标签页显示「固定」区
     newTabShowRecent: boolean;       // 新标签页显示「最近打开」区
     newTabShowFavorites: boolean;    // 新标签页显示「收藏」区
+    // 导入 Markdown 到思源时,是否把源文件作为资源插入到文档顶部的引述块(保留出处,便于回溯原文件)
+    importMdSourceAsset: boolean;
+    // 侧边栏是否显示「文件」面板。文件浏览/重命名/删除等能力已由「虚拟文档树」面板承接,
+    // 故**默认关闭**;打开后可恢复原来的文件树面板
+    showFileTreeDock: boolean;
 }
 
 // === 标签 ===
@@ -94,4 +102,6 @@ export const DEFAULT_CONFIG: EditorConfig = {
     newTabShowPinned: true,
     newTabShowRecent: true,
     newTabShowFavorites: true,
+    importMdSourceAsset: false,      // 默认不插入源文件资源引述块
+    showFileTreeDock: false,         // 默认不显示「文件」面板(功能已由虚拟文档树承接)
 };

@@ -1,0 +1,703 @@
+// Jupyter Notebook(.ipynb)查看与编辑 Tab。
+// - 查看:代码/Markdown/Raw 单元格渲染,已保存的执行输出(文本/图片/HTML/JSON/错误)
+// - 编辑:点击单元格进入 Monaco 就地编辑;添加/删除/上移/下移/切换单元格类型;写回 nbformat JSON
+// - 不支持内核执行(无 Jupyter 内核),只展示文件里已保存的输出
+// 结构对齐 office-tab:独立 _dirty + 保存/重载 + beforeDestroy 确认。
+import {openTab, confirm, showMessage} from "siyuan";
+import * as monaco from "monaco-editor";
+import Vditor from "vditor";
+import {NOTEBOOK_TAB_TYPE} from "../constants";
+import {basename} from "../utils/path";
+import {readTextFile, writeFile} from "../api/file";
+import {getCurrentMode} from "../editor/monaco";
+import {getActiveThemeName} from "../extensions/theme-loader";
+import {EditorConfig} from "../types";
+import {VDITOR_CDN, ensureVditorCSS} from "./markdown-tab";
+
+// Tab 所需的插件接口
+export interface IPluginForNotebookTab {
+    app: any;
+    name: string;
+    config: EditorConfig;
+    getOpenedTab(): { [key: string]: any[] };
+}
+
+// nbformat 4 单元格/笔记本(宽松类型:源文件可能有各种形状)
+interface NbCell {
+    cell_type: string;
+    source?: any;
+    metadata?: any;
+    outputs?: any[];
+    execution_count?: number | null;
+    id?: string;
+}
+
+interface Notebook {
+    nbformat: number;
+    nbformat_minor: number;
+    metadata: any;
+    cells: NbCell[];
+}
+
+// Tab 实例附加字段
+interface NotebookTabInstance {
+    element: HTMLElement;
+    data: { path?: string };
+    parent?: { updateTitle?: (t: string) => void; headElement?: HTMLElement; close?: () => void };
+    _path?: string;
+    _nb?: Notebook | null;
+    _rawText?: string;          // 解析失败时的原始文本(JSON 兜底编辑)
+    _rawMode?: boolean;         // JSON 兜底编辑模式
+    _dirty?: boolean;
+    _saving?: boolean;
+    _closing?: boolean;
+    _activeIdx?: number | null; // 当前选中单元格(新单元格插入其后)
+    _editIdx?: number | null;   // 正在就地编辑的单元格
+    _editEditor?: monaco.editor.IStandaloneCodeEditor | null;
+    _editModel?: monaco.editor.ITextModel | null;
+    _onKey?: (e: KeyboardEvent) => void;
+    _escHandler?: (e: KeyboardEvent) => void;
+    _clickHandler?: (e: MouseEvent) => void;
+    _dblHandler?: (e: MouseEvent) => void;
+}
+
+function escapeHTML(s: string): string {
+    return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+// 去掉 ANSI 颜色转义(错误 traceback 用)
+function stripANSI(s: string): string {
+    return s.replace(/\x1b\[[0-9;]*m/g, "");
+}
+
+// 单元格 source 兼容 string / string[] 两种 nbformat 形态
+function getSourceText(cell: NbCell): string {
+    const src = cell.source;
+    if (Array.isArray(src)) return src.join("");
+    return String(src ?? "");
+}
+
+// 写回 source 时保留原有形态(数组按行拆分,保留除最后一行外的换行)
+function setSourceText(cell: NbCell, text: string): void {
+    if (Array.isArray(cell.source)) {
+        cell.source = text.length ? text.split(/(?<=\n)/) : [""];
+    } else {
+        cell.source = text;
+    }
+}
+
+// 输出 data 的值同样可能是 string 或 string[]
+function mimeText(v: any): string {
+    if (Array.isArray(v)) return v.join("");
+    return String(v ?? "");
+}
+
+// notebook 内核语言 → Monaco language id
+const NB_LANG_MAP: Record<string, string> = {
+    python: "python", r: "r", julia: "julia", bash: "shell", shell: "shell",
+    sh: "shell", zsh: "shell", javascript: "javascript", js: "javascript",
+    typescript: "typescript", ts: "typescript", c: "c", "c++": "cpp", cpp: "cpp",
+    java: "java", sql: "sql", go: "go", rust: "rust", ruby: "ruby", php: "php",
+};
+
+function notebookLang(nb: Notebook | null | undefined): string {
+    const raw = String(nb?.metadata?.language_info?.name || "").toLowerCase();
+    return NB_LANG_MAP[raw] || "plaintext";
+}
+
+function monacoTheme(): string {
+    return getActiveThemeName() ?? (getCurrentMode() === 1 ? "siyuan-dark" : "siyuan-light");
+}
+
+// 打开 Notebook Tab(同文件去重,聚焦已有 Tab)
+export function openNotebookTab(plugin: IPluginForNotebookTab, path: string, opts?: { position?: "right" | "bottom" }): void {
+    const opened = plugin.getOpenedTab()[NOTEBOOK_TAB_TYPE] || [];
+    const existing = opened.find((c: any) => c?.data?.path === path);
+    if (existing) {
+        const tab = (existing as any).parent;
+        if (tab?.headElement) {
+            (tab.headElement as HTMLElement).click();
+        }
+        return;
+    }
+    openTab({
+        app: plugin.app,
+        custom: {
+            id: plugin.name + NOTEBOOK_TAB_TYPE,
+            icon: "iconFile",
+            title: basename(path),
+            data: {path},
+        },
+        position: opts?.position,
+    } as any);
+}
+
+// 新建单元格(nbformat 4.5+ 的单元格带 id,与文件里现有单元格保持一致)
+function makeCell(type: "code" | "markdown", withId: boolean): NbCell {
+    const cell: NbCell = type === "code"
+        ? {cell_type: "code", execution_count: null, metadata: {}, outputs: [], source: ""}
+        : {cell_type: "markdown", metadata: {}, source: ""};
+    if (withId) cell.id = Math.random().toString(36).slice(2, 6) + Date.now().toString(36).slice(-4);
+    return cell;
+}
+
+// 单元格徽章文案
+function cellBadge(cell: NbCell): string {
+    if (cell.cell_type === "code") return "代码";
+    if (cell.cell_type === "markdown") return "MD";
+    return "RAW";
+}
+
+// 渲染输出区 HTML(流/错误/富输出)
+function renderOutputsHTML(cell: NbCell): string {
+    const outs = Array.isArray(cell.outputs) ? cell.outputs : [];
+    if (outs.length === 0) {
+        return `<div class="syfe-nb__outs-empty">无输出(本插件不支持运行代码,仅显示已保存的输出)</div>`;
+    }
+    const parts: string[] = [];
+    for (const out of outs) {
+        const type = String(out?.output_type || "");
+        if (type === "stream") {
+            parts.push(`<pre class="syfe-nb__out syfe-nb__out--stream">${escapeHTML(stripANSI(mimeText(out.text)))}</pre>`);
+            continue;
+        }
+        if (type === "error") {
+            const tb = Array.isArray(out.traceback) ? out.traceback.join("\n") : String(out.traceback ?? "");
+            parts.push(`<div class="syfe-nb__out syfe-nb__out--error"><div class="syfe-nb__err-name">${escapeHTML(String(out.ename || "Error"))}: ${escapeHTML(String(out.evalue || ""))}</div><pre>${escapeHTML(stripANSI(tb))}</pre></div>`);
+            continue;
+        }
+        const data = out?.data;
+        if ((type === "execute_result" || type === "display_data") && data) {
+            // 按显示优先级挑 MIME
+            const pick = (mime: string) => (data[mime] !== undefined ? mime : null);
+            const mime = pick("image/png") || pick("image/jpeg") || pick("image/gif")
+                || pick("image/svg+xml") || pick("text/markdown") || pick("text/html")
+                || pick("application/json") || pick("text/plain");
+            if (!mime) continue;
+            const value = data[mime];
+            if (mime.startsWith("image/")) {
+                const b64 = mimeText(value).replace(/\s/g, "");
+                parts.push(`<div class="syfe-nb__out syfe-nb__out--img"><img src="data:${mime};base64,${b64}" /></div>`);
+            } else if (mime === "text/markdown") {
+                parts.push(`<div class="syfe-nb__out syfe-nb__out--md" data-md="${encodeURIComponent(mimeText(value))}"></div>`);
+            } else if (mime === "text/html") {
+                // 沙箱 iframe(禁脚本),防恶意笔记本注入
+                parts.push(`<iframe class="syfe-nb__out syfe-nb__out--html" sandbox="" srcdoc="${escapeHTML(mimeText(value))}"></iframe>`);
+            } else if (mime === "application/json") {
+                let pretty: string;
+                try {
+                    pretty = JSON.stringify(typeof value === "string" ? JSON.parse(mimeText(value)) : value, null, 2);
+                } catch {
+                    pretty = mimeText(value);
+                }
+                parts.push(`<pre class="syfe-nb__out">${escapeHTML(pretty)}</pre>`);
+            } else {
+                parts.push(`<pre class="syfe-nb__out">${escapeHTML(mimeText(value))}</pre>`);
+            }
+            continue;
+        }
+        // 未知输出类型跳过
+    }
+    return parts.length ? parts.join("") : `<div class="syfe-nb__outs-empty">无可显示的输出</div>`;
+}
+
+// 创建 Notebook Tab 的 addTab 配置
+export function createNotebookTabConfig(_plugin: IPluginForNotebookTab) {
+    return {
+        type: NOTEBOOK_TAB_TYPE,
+        init(this: NotebookTabInstance) {
+            const path = this.data?.path;
+            if (!path) {
+                this.element.innerHTML = `<div class="syfe-empty">未指定文件路径</div>`;
+                return;
+            }
+            this._path = path;
+            this._dirty = false;
+            this._saving = false;
+            this._closing = false;
+            this._activeIdx = null;
+            this._editIdx = null;
+            this._nb = null;
+            this._rawMode = false;
+            this.element.classList.add("syfe-nb-tab");
+
+            const name = basename(path);
+            this.element.innerHTML = `
+                <div class="syfe-nb__bar">
+                    <span class="syfe-nb__kind">Notebook</span>
+                    <span class="syfe-nb__meta"></span>
+                    <span class="syfe-nb__dirty" style="display:none;">●</span>
+                    <span class="syfe-nb__actions">
+                        <button class="b3-button b3-button--text" data-act="add-code" title="在当前单元格后插入代码单元格">+ 代码</button>
+                        <button class="b3-button b3-button--text" data-act="add-md" title="在当前单元格后插入 Markdown 单元格">+ Markdown</button>
+                        <button class="b3-button b3-button--text" data-act="save">保存</button>
+                        <button class="b3-button b3-button--text" data-act="reload">重载</button>
+                    </span>
+                </div>
+                <div class="syfe-nb__body"><div class="syfe-nb__loading">正在加载…</div></div>`;
+
+            const barEl = this.element.querySelector(".syfe-nb__bar") as HTMLElement;
+            const bodyEl = this.element.querySelector(".syfe-nb__body") as HTMLElement;
+            const dirtyEl = this.element.querySelector(".syfe-nb__dirty") as HTMLElement;
+            const metaEl = this.element.querySelector(".syfe-nb__meta") as HTMLElement;
+            const self = this;
+
+            const setDirty = (d: boolean) => {
+                self._dirty = d;
+                dirtyEl.style.display = d ? "" : "none";
+                try {
+                    self.parent?.updateTitle?.((d ? "● " : "") + name);
+                } catch {
+                    // 忽略
+                }
+            };
+
+            // 静默提交就地编辑(写回 source、销毁编辑器;不触发重绘)
+            const commitCellEditorSilent = () => {
+                if (self._editIdx === null || self._editIdx === undefined) return;
+                const cell = self._nb?.cells[self._editIdx];
+                if (cell && self._editEditor) setSourceText(cell, self._editEditor.getValue());
+                try {
+                    self._editEditor?.dispose();
+                } catch {
+                    // 忽略
+                }
+                try {
+                    self._editModel?.dispose();
+                } catch {
+                    // 忽略
+                }
+                self._editEditor = null;
+                self._editModel = null;
+                self._editIdx = null;
+            };
+
+            // 提交并恢复单元格的渲染视图
+            const commitCellEditor = () => {
+                if (self._editIdx === null || self._editIdx === undefined) return;
+                commitCellEditorSilent();
+                render();
+            };
+
+            const markChanged = () => setDirty(true);
+
+            // 顶部元信息
+            const renderMeta = () => {
+                if (!self._nb) {
+                    metaEl.textContent = "原始 JSON";
+                    return;
+                }
+                const kernel = self._nb.metadata?.kernelspec?.display_name || self._nb.metadata?.language_info?.display_name || "";
+                const lang = self._nb.metadata?.language_info?.name || "";
+                metaEl.textContent = `${lang ? lang + (kernel ? " · " + kernel : "") : kernel} · ${self._nb.cells.length} 格`;
+            };
+
+            // 渲染单元格列表(scrollTop 保持:局部重绘不跳动)
+            const render = () => {
+                commitCellEditorSilent();
+                if (!self._nb) {
+                    renderRawMode();
+                    return;
+                }
+                const st = bodyEl.scrollTop;
+                const lang = notebookLang(self._nb);
+                const cells = self._nb.cells;
+                bodyEl.innerHTML = cells.length === 0
+                    ? `<div class="syfe-nb__empty">空笔记本,用顶部按钮添加单元格</div>`
+                    : cells.map((cell, i) => {
+                        const src = escapeHTML(getSourceText(cell));
+                        const srcBody = cell.cell_type === "markdown"
+                            ? `<div class="syfe-nb__mdview" data-mdview="${i}" title="双击编辑源码"></div><div class="syfe-nb__src" data-src="${i}" style="display:none;"></div>`
+                            : `<div class="syfe-nb__src" data-src="${i}" title="点击编辑"><pre class="syfe-nb__hl" data-hl="${i}">${src}</pre></div>`;
+                        const outs = cell.cell_type === "code"
+                            ? `<div class="syfe-nb__outs">${renderOutputsHTML(cell)}</div>`
+                            : "";
+                        const exec = cell.cell_type === "code" && cell.execution_count != null
+                            ? `<span class="syfe-nb__exec">[${cell.execution_count}]</span>` : "";
+                        const toggle = cell.cell_type === "code" ? "MD" : "⌨";
+                        return `
+                        <div class="syfe-nb__cell syfe-nb__cell--${escapeHTML(cell.cell_type)}${self._activeIdx === i ? " syfe-nb__cell--active" : ""}" data-idx="${i}">
+                            <div class="syfe-nb__cellbar">
+                                <span class="syfe-nb__badge">${cellBadge(cell)}</span>${exec}
+                                <span class="fn__flex-1"></span>
+                                <span class="syfe-nb__cellbtn" data-act="up" data-idx="${i}" title="上移">↑</span>
+                                <span class="syfe-nb__cellbtn" data-act="down" data-idx="${i}" title="下移">↓</span>
+                                <span class="syfe-nb__cellbtn" data-act="type" data-idx="${i}" title="切换为 ${toggle === "MD" ? "Markdown" : "代码"}">${toggle}</span>
+                                <span class="syfe-nb__cellbtn" data-act="edit" data-idx="${i}" title="编辑源码">✎</span>
+                                <span class="syfe-nb__cellbtn syfe-nb__cellbtn--del" data-act="del" data-idx="${i}" title="删除单元格">×</span>
+                            </div>
+                            ${srcBody}${outs}
+                        </div>`;
+                    }).join("");
+                bodyEl.scrollTop = st;
+                renderMeta();
+
+                // 异步增强:md 渲染 + 代码高亮
+                if (!self._nb) return;
+                const isDark = getCurrentMode() === 1;
+                cells.forEach((cell, i) => {
+                    if (cell.cell_type === "markdown") {
+                        const view = bodyEl.querySelector(`[data-mdview="${i}"]`) as HTMLDivElement | null;
+                        if (view) {
+                            try {
+                                Vditor.preview(view, getSourceText(cell), {
+                                    mode: isDark ? "dark" : "light",
+                                    cdn: VDITOR_CDN,
+                                    theme: {current: isDark ? "dark" : "light", path: `${VDITOR_CDN}/dist/css/content-theme`},
+                                });
+                            } catch (e) {
+                                view.innerHTML = `<pre>${escapeHTML(getSourceText(cell))}</pre>`;
+                            }
+                        }
+                    } else if (cell.cell_type === "code") {
+                        const hl = bodyEl.querySelector(`[data-hl="${i}"]`) as HTMLElement | null;
+                        if (hl) {
+                            monaco.editor.colorize(getSourceText(cell), lang, {}).then((html) => {
+                                hl.innerHTML = html;
+                            }).catch(() => {
+                                // colorize 失败保持转义文本
+                            });
+                        }
+                    }
+                });
+                // 输出里的 markdown 输出同样渲染
+                bodyEl.querySelectorAll<HTMLElement>("[data-md]").forEach(el => {
+                    const md = decodeURIComponent(el.dataset.md || "");
+                    if (md) {
+                        try {
+                            Vditor.preview(el as HTMLDivElement, md, {
+                                mode: isDark ? "dark" : "light",
+                                cdn: VDITOR_CDN,
+                                theme: {current: isDark ? "dark" : "light", path: `${VDITOR_CDN}/dist/css/content-theme`},
+                            });
+                        } catch {
+                            el.innerHTML = `<pre>${escapeHTML(md)}</pre>`;
+                        }
+                    }
+                });
+            };
+
+            // 就地编辑某单元格(Monaco)
+            const openCellEditor = (idx: number) => {
+                if (!self._nb) return;
+                const cell = self._nb.cells[idx];
+                if (!cell) return;
+                if (self._editIdx === idx) return;
+                commitCellEditor();
+                const host = bodyEl.querySelector(`[data-src="${idx}"]`) as HTMLElement | null;
+                if (!host) return;
+                const mdView = bodyEl.querySelector(`[data-mdview="${idx}"]`) as HTMLElement | null;
+                if (mdView) mdView.style.display = "none";
+                host.style.display = "";
+                host.innerHTML = "";
+                const lang = cell.cell_type === "markdown" ? "markdown" : notebookLang(self._nb);
+                const model = monaco.editor.createModel(getSourceText(cell), lang);
+                const editor = monaco.editor.create(host, {
+                    model,
+                    theme: monacoTheme(),
+                    automaticLayout: true,
+                    minimap: {enabled: false},
+                    scrollBeyondLastLine: false,
+                    lineNumbers: cell.cell_type === "code" ? "on" : "off",
+                    wordWrap: "on",
+                    fontSize: _plugin.config?.fontSize ?? 13,
+                    tabSize: _plugin.config?.tabSize ?? 4,
+                    renderLineHighlight: "none",
+                    scrollbar: {alwaysConsumeMouseWheel: false},
+                    padding: {top: 6, bottom: 6},
+                    folding: true,
+                });
+                const fit = () => {
+                    try {
+                        host.style.height = Math.max(46, editor.getContentHeight()) + "px";
+                    } catch {
+                        // 忽略
+                    }
+                };
+                editor.onDidContentSizeChange(fit);
+                fit();
+                // 有内容改动即标脏;失焦(点击其他位置)自动提交。Monaco 会吞 Escape 等按键,
+                // Esc 提交由 document 捕获阶段的 _escHandler 兜底。
+                editor.onDidChangeModelContent(() => markChanged());
+                editor.onDidBlurEditorWidget(() => {
+                    if (self._editIdx === idx) commitCellEditor();
+                });
+                editor.focus();
+                self._editIdx = idx;
+                self._editEditor = editor;
+                self._editModel = model;
+                self._activeIdx = idx;
+                bodyEl.querySelectorAll(".syfe-nb__cell--active").forEach(el => el.classList.remove("syfe-nb__cell--active"));
+                bodyEl.querySelector(`.syfe-nb__cell[data-idx="${idx}"]`)?.classList.add("syfe-nb__cell--active");
+            };
+
+            // 结构操作(先静默提交正在编辑的单元格)
+            const withCells = (fn: (cells: NbCell[]) => void) => {
+                if (!self._nb) return;
+                commitCellEditorSilent();
+                fn(self._nb.cells);
+                markChanged();
+                render();
+            };
+
+            const addCell = (type: "code" | "markdown") => {
+                withCells(cells => {
+                    const at = self._activeIdx != null && self._activeIdx >= 0 && self._activeIdx < cells.length
+                        ? self._activeIdx + 1 : cells.length;
+                    const withId = cells.some(c => c.id) || (self._nb?.nbformat_minor ?? 0) >= 5;
+                    cells.splice(at, 0, makeCell(type, withId));
+                    self._activeIdx = at;
+                });
+                // 新建后直接进入编辑
+                if (self._activeIdx != null) openCellEditor(self._activeIdx);
+            };
+
+            const moveCell = (idx: number, delta: number) => {
+                withCells(cells => {
+                    const to = idx + delta;
+                    if (to < 0 || to >= cells.length) return;
+                    const [c] = cells.splice(idx, 1);
+                    cells.splice(to, 0, c);
+                    if (self._activeIdx === idx) self._activeIdx = to;
+                });
+            };
+
+            const deleteCell = (idx: number) => {
+                withCells(cells => {
+                    cells.splice(idx, 1);
+                    if (self._activeIdx === idx) self._activeIdx = null;
+                });
+            };
+
+            const toggleCellType = (idx: number) => {
+                withCells(cells => {
+                    const cell = cells[idx];
+                    if (!cell) return;
+                    if (cell.cell_type === "code") {
+                        cell.cell_type = "markdown";
+                        delete cell.outputs;
+                        delete cell.execution_count;
+                    } else {
+                        cell.cell_type = "code";
+                        cell.outputs = [];
+                        cell.execution_count = null;
+                    }
+                });
+            };
+
+            // 加载文件
+            const load = async () => {
+                bodyEl.innerHTML = `<div class="syfe-nb__loading">正在加载…</div>`;
+                try {
+                    const text = await readTextFile(path);
+                    let nb: Notebook | null = null;
+                    let parseError = "";
+                    try {
+                        const parsed = JSON.parse(text);
+                        if (parsed && Array.isArray(parsed.cells) && Number(parsed.nbformat) >= 4) {
+                            nb = parsed as Notebook;
+                        } else if (parsed && Array.isArray(parsed?.worksheets)) {
+                            parseError = "检测到旧版 nbformat 3 笔记本,暂不支持,请用 Jupyter 转换为 nbformat 4";
+                        } else {
+                            parseError = "不是有效的 nbformat 4 笔记本";
+                        }
+                    } catch (e) {
+                        parseError = `JSON 解析失败: ${e}`;
+                    }
+                    if (nb) {
+                        self._nb = nb;
+                        self._rawMode = false;
+                        render();
+                    } else {
+                        // 兜底:原始 JSON 编辑
+                        self._nb = null;
+                        self._rawText = text;
+                        self._rawMode = true;
+                        renderRawMode(parseError);
+                    }
+                } catch (e) {
+                    bodyEl.innerHTML = `<div class="syfe-nb__loading">读取失败: ${escapeHTML(String(e))}</div>`;
+                }
+            };
+
+            // 原始 JSON 兜底编辑(解析失败 / nbformat 3)
+            const renderRawMode = (err?: string) => {
+                renderMeta();
+                bodyEl.innerHTML = `
+                    ${err ? `<div class="syfe-nb__banner">${escapeHTML(err)} — 已切换为原始 JSON 编辑,可修复后保存</div>` : ""}
+                    <div class="syfe-nb__raw"></div>`;
+                const host = bodyEl.querySelector(".syfe-nb__raw") as HTMLElement;
+                const model = monaco.editor.createModel(self._rawText ?? "", "json");
+                const editor = monaco.editor.create(host, {
+                    model,
+                    theme: monacoTheme(),
+                    automaticLayout: true,
+                    minimap: {enabled: true},
+                    scrollBeyondLastLine: false,
+                    fontSize: _plugin.config?.fontSize ?? 13,
+                });
+                model.onDidChangeContent(() => {
+                    self._rawText = editor.getValue();
+                    markChanged();
+                });
+                // 记录引用供保存/销毁使用
+                self._editEditor = editor;
+                self._editModel = model;
+            };
+
+            const save = async () => {
+                if (self._saving) return;
+                self._saving = true;
+                try {
+                    if (self._rawMode) {
+                        await writeFile(path, self._rawText ?? "");
+                    } else {
+                        if (!self._nb) return;
+                        commitCellEditorSilent();
+                        await writeFile(path, JSON.stringify(self._nb, null, 1));
+                    }
+                    setDirty(false);
+                    showMessage("已保存", 2000, "info");
+                } catch (e) {
+                    showMessage(`保存失败: ${e}`, 5000, "error");
+                } finally {
+                    self._saving = false;
+                }
+            };
+
+            const reload = () => {
+                if (self._dirty) {
+                    confirm("未保存的修改", "重载会丢弃当前修改,确定重载吗?", () => {
+                        setDirty(false);
+                        commitCellEditor();
+                        void load();
+                    }, () => {});
+                    return;
+                }
+                void load();
+            };
+
+            // 交互:工具栏 + 单元格按钮(事件委托在 body 上)
+            bodyEl.addEventListener("click", (e: MouseEvent) => {
+                const actEl = (e.target as HTMLElement).closest("[data-act]") as HTMLElement | null;
+                if (actEl) {
+                    const act = actEl.dataset.act!;
+                    const idx = actEl.dataset.idx !== undefined ? Number(actEl.dataset.idx) : null;
+                    if (act === "up" && idx !== null) moveCell(idx, -1);
+                    else if (act === "down" && idx !== null) moveCell(idx, 1);
+                    else if (act === "del" && idx !== null) deleteCell(idx);
+                    else if (act === "type" && idx !== null) toggleCellType(idx);
+                    else if (act === "edit" && idx !== null) openCellEditor(idx);
+                    return;
+                }
+                // 点击单元格:选中;点代码源码区进入编辑
+                const cellEl = (e.target as HTMLElement).closest(".syfe-nb__cell") as HTMLElement | null;
+                if (!cellEl) {
+                    commitCellEditor();
+                    return;
+                }
+                const idx = Number(cellEl.dataset.idx);
+                if (e.target instanceof HTMLElement && e.target.closest(`[data-src="${idx}"]`) && self._nb?.cells[idx]?.cell_type !== "markdown") {
+                    openCellEditor(idx);
+                    return;
+                }
+                if (self._activeIdx !== idx) {
+                    self._activeIdx = idx;
+                    bodyEl.querySelectorAll(".syfe-nb__cell--active").forEach(el => el.classList.remove("syfe-nb__cell--active"));
+                    cellEl.classList.add("syfe-nb__cell--active");
+                }
+            });
+            // Markdown 单元格双击进入编辑
+            bodyEl.addEventListener("dblclick", (e: MouseEvent) => {
+                const cellEl = (e.target as HTMLElement).closest(".syfe-nb__cell") as HTMLElement | null;
+                if (!cellEl || !self._nb) return;
+                const idx = Number(cellEl.dataset.idx);
+                if (self._nb.cells[idx]?.cell_type === "markdown") openCellEditor(idx);
+            });
+
+            barEl.addEventListener("click", (e: MouseEvent) => {
+                const btn = (e.target as HTMLElement).closest("[data-act]") as HTMLElement | null;
+                if (!btn) return;
+                const act = btn.dataset.act;
+                if (act === "add-code") addCell("code");
+                else if (act === "add-md") addCell("markdown");
+                else if (act === "save") void save();
+                else if (act === "reload") reload();
+            });
+
+            // Ctrl/Cmd + S 保存;Esc 提交就地编辑
+            this._onKey = (e: KeyboardEvent) => {
+                if ((e.ctrlKey || e.metaKey) && (e.key === "s" || e.key === "S")) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    void save();
+                } else if (e.key === "Escape" && self._editIdx !== null) {
+                    e.stopPropagation();
+                    commitCellEditor();
+                }
+            };
+            this.element.addEventListener("keydown", this._onKey);
+            // Monaco 会吞掉编辑器内按键的冒泡,Esc 提交挂在 document 捕获阶段兜底
+            this._escHandler = (e: KeyboardEvent) => {
+                if (e.key === "Escape" && self._editIdx !== null && self.element.contains(e.target as Node)) {
+                    commitCellEditor();
+                }
+            };
+            document.addEventListener("keydown", this._escHandler, true);
+
+            void load();
+        },
+        resize(this: NotebookTabInstance) {
+            // Monaco automaticLayout 自适应,无需处理
+        },
+        beforeDestroy(this: NotebookTabInstance): boolean | void {
+            if (!this._dirty || this._closing) return;
+            const self = this;
+            const doClose = () => {
+                self._closing = true;
+                try {
+                    self.parent?.close?.();
+                } catch {
+                    // 已关闭
+                }
+            };
+            confirm("未保存的修改", `「${basename(this._path || "")}」有未保存的修改,是否保存?`, () => {
+                const doSave = async () => {
+                    if (self._rawMode) {
+                        await writeFile(self._path || "", self._rawText ?? "");
+                    } else if (self._nb) {
+                        if (self._editIdx !== null && self._editEditor) {
+                            setSourceText(self._nb.cells[self._editIdx!], self._editEditor.getValue());
+                        }
+                        await writeFile(self._path || "", JSON.stringify(self._nb, null, 1));
+                    }
+                };
+                doSave().then(doClose).catch(() => showMessage("保存失败", 3000, "error"));
+            }, doClose);
+            return false; // 阻止本次关闭,等待用户选择
+        },
+        destroy(this: NotebookTabInstance) {
+            if (this._onKey) {
+                this.element.removeEventListener("keydown", this._onKey);
+                this._onKey = undefined;
+            }
+            if (this._escHandler) {
+                document.removeEventListener("keydown", this._escHandler, true);
+                this._escHandler = undefined;
+            }
+            try {
+                this._editEditor?.dispose();
+            } catch {
+                // 忽略
+            }
+            try {
+                this._editModel?.dispose();
+            } catch {
+                // 忽略
+            }
+            this._editEditor = null;
+            this._editModel = null;
+            this._nb = null;
+        },
+    };
+}

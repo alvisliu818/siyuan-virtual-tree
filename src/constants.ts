@@ -12,11 +12,15 @@ export const MARKDOWN_TAB_TYPE = "siyuan-file-editor-markdown";
 export const MEDIA_TAB_TYPE = "siyuan-file-editor-media";
 // 新标签页(接管顶部「+」后打开的启动台:搜索 + 固定 + 最近打开 + 收藏)
 export const START_TAB_TYPE = "siyuan-file-editor-start";
+// Jupyter Notebook(.ipynb)查看与编辑 Tab
+export const NOTEBOOK_TAB_TYPE = "siyuan-file-editor-notebook";
 export const DOCK_TYPE = "siyuan-file-editor-dock";
 // 侧边栏「最近使用」面板(展示最近打开的文件)
 export const RECENT_DOCK_TYPE = "siyuan-file-editor-recent-dock";
 // 侧边栏「标签」面板(按标签聚合文件/文件夹,文件夹可就地展开)
 export const TAG_DOCK_TYPE = "siyuan-file-editor-tag-dock";
+// 侧边栏「虚拟文档树」面板(用户自建树,初始为空,可挂载文件/文件夹/思源文档/思源块)
+export const MOUNT_TREE_DOCK_TYPE = "siyuan-file-editor-mount-tree-dock";
 
 // Markdown 扩展名(由独立的 Markdown Tab 打开,支持所见即所得/源码双模式)
 export const MARKDOWN_EXTENSIONS = new Set([".md", ".markdown"]);
@@ -33,6 +37,8 @@ export const DEFAULT_TERMINAL_SERVER_URL = "ws://127.0.0.1:9800";
 export const STORAGE_CONFIG = "config.json";
 // 思源文档挂载记录(挂到真实目录下的 sydoc:// 虚拟条目)
 export const STORAGE_SY_MOUNTS = "sy-mounts.json";
+// 百度网盘配置(Cookie 凭据与同步空间目录,bdpan:// 虚拟条目依赖)
+export const STORAGE_BD_CONFIG = "baidu-pan.json";
 
 // 文件浏览根目录(思源工作空间 data 目录)
 export const WORKSPACE_ROOT = SIYUAN_ROOT;
@@ -60,6 +66,12 @@ export const IMAGE_EXTENSIONS = new Set([
     ".png", ".jpg", ".jpeg", ".jfif", ".pjpeg", ".gif", ".bmp", ".ico",
     ".webp", ".tif", ".tiff", ".svg", ".apng", ".avif",
 ]);
+
+// ===== Jupyter Notebook 支持 =====
+// .ipynb 由独立的 Notebook Tab 打开(单元格渲染/编辑;不支持内核执行,仅显示已保存的输出)
+export function isNotebookFile(path: string): boolean {
+    return getExt(path) === ".ipynb";
+}
 
 // ===== Office 文档支持 =====
 // 电子表格:可在内嵌表格编辑器中编辑

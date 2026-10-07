@@ -12,7 +12,7 @@ import {readBinaryFile, readDir} from "../api/file";
 import {createBacklinkPanel, BacklinkPanel} from "../components/backlink-panel";
 import {copyText} from "../components/file-tree";
 import {toFileLink} from "../utils/system-path";
-import {openWithExternalApp} from "../utils/external-app";
+import {openTreeFileWithExternalApp} from "../utils/external-app";
 
 // 音视频播放器 Tab 所需的插件接口(结构化类型,避免循环依赖)
 export interface IPluginForMediaTab {
@@ -380,7 +380,7 @@ function createPlayer(dom: PlayerDOM, plugin: IPluginForMediaTab, tab: MediaTabI
     // 用系统默认应用打开(浏览器解码失败时的兜底)
     async function openExternal(target: string): Promise<void> {
         try {
-            await openWithExternalApp(target);
+            await openTreeFileWithExternalApp(target);
         } catch (e) {
             showMessage(`打开失败: ${e}`, 3000, "error");
         }

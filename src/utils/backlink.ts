@@ -4,6 +4,7 @@
 // 2. 文件树挂载根下的 Markdown 文件(相对链接 ![..](../img.png)、<img src=..> 等)
 import {readDir, readTextFile, querySQL} from "../api/file";
 import {basename, dirname, joinPath, sepFor, isSiyuanPath} from "./path";
+import {isBaiduPath} from "./baidu-path";
 
 // 反向链接条目
 export interface BacklinkItem {
@@ -248,12 +249,12 @@ async function collectMdFiles(dir: string, out: MdFileInfo[], isDataRoot: boolea
 // 内容引用缓存:mdPath → {key(size:updated), refs},避免重复读取解析
 const refCache = new Map<string, {key: string; refs: ExtractedRef[]}>();
 
-// 收集文件树挂载根(多个树去重;虚拟文档树根不参与文件扫描)
+// 收集文件树挂载根(多个树去重;虚拟文档树/百度网盘根不参与文件扫描)
 function collectScanRoots(): string[] {
     const roots = new Set<string>();
     document.querySelectorAll<HTMLElement>(".syfe-tree__root[data-path]").forEach(el => {
         const p = el.dataset.path;
-        if (p && !p.startsWith("sydoc://")) roots.add(p);
+        if (p && !p.startsWith("sydoc://") && !isBaiduPath(p)) roots.add(p);
     });
     return Array.from(roots);
 }

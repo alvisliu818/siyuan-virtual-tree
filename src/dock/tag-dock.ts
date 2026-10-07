@@ -9,6 +9,8 @@ import {readDir} from "../api/file";
 import {DirEntry} from "../types";
 import {basename, dirname, joinPath} from "../utils/path";
 import {fileIconHTML, folderIconHTML} from "../utils/icons";
+import {docTreeIconHTML, cachedDocIcon, ensureDocIcons} from "../utils/siyuan-icon";
+import {isVirtualPath, virtualId, cachedDocTitle, ensureDocTitles} from "../utils/virtual-tree";
 import {
     getChildTags,
     tagFullName,
@@ -23,7 +25,13 @@ import {
     TAGS_CHANGED_EVENT,
 } from "../tags/tag-store";
 import {tagIconHTML, openTagMenu, openTagManagerDialog} from "../tags/tag-ui";
-import {openEntry, showEntryMenu} from "../components/entry-menu";
+import {openEntry} from "../components/entry-menu";
+import {showFileTreeMenu, findTreeRootEl, IFileTreeActions} from "../components/file-tree";
+import {showDocMenu} from "../components/doc-menu";
+import {openFileTab} from "../tabs/editor-tab";
+import {openImageTab} from "../tabs/image-tab";
+import {openOfficeTab} from "../tabs/office-tab";
+import {openMediaTab} from "../tabs/media-tab";
 
 // 面板所需的插件接口
 export interface IPluginForTagDock {
@@ -57,6 +65,7 @@ interface TagDockInstance {
     _contextHandler?: (e: MouseEvent) => void;
     _actionHandler?: (e: MouseEvent) => void;
     _changedHandler?: () => void;
+    _filesChangedHandler?: () => void;
     _mode?: ViewMode;
     _tagIds?: string[];        // 当前查看的标签 id(单选)
     _anyMode?: boolean;        // 「全部已打标签」
@@ -352,13 +361,18 @@ export function createTagDockConfig(plugin: IPluginForTagDock) {
                     const toggle = r.isDir
                         ? `<span class="syfe-tagdock__toggle"><svg><use xlink:href="#${r.expanded ? "iconDown" : "iconRight"}"></use></svg></span>`
                         : `<span class="syfe-tagdock__toggle"></span>`;
-                    const icon = r.isDir ? folderIconHTML(name, r.expanded) : fileIconHTML(name);
+                    // 思源文档条目(sydoc://)显示与思源文档树一致的文档图标和文档标题
+                    const isDoc = isVirtualPath(r.path);
+                    const icon = isDoc
+                        ? docTreeIconHTML(cachedDocIcon(virtualId(r.path)) || "", "file")
+                        : (r.isDir ? folderIconHTML(name, r.expanded) : fileIconHTML(name));
+                    const showName = isDoc ? (cachedDocTitle(virtualId(r.path)) || name) : name;
                     return `
                         <li class="syfe-tagdock__row syfe-tagdock__row--entry${r.isDir ? " syfe-tagdock__row--dir" : ""}"
                             data-idx="${i}" data-path="${escapeHTML(r.path)}" style="padding-left:${pad}px" title="${escapeHTML(r.path)}">
                             ${toggle}
                             <span class="syfe-tagdock__icon">${icon}</span>
-                            <span class="syfe-tagdock__name">${escapeHTML(name)}</span>
+                            <span class="syfe-tagdock__name">${escapeHTML(showName)}</span>
                         </li>`;
                 }).join("");
 
@@ -373,6 +387,13 @@ export function createTagDockConfig(plugin: IPluginForTagDock) {
                         });
                     }
                 }
+
+                // 思源文档条目的自定义图标与标题:先按缓存画,后台补齐后重绘一次(内部去重)
+                const docIds = rows
+                    .filter((r): r is Extract<Row, {kind: "entry"}> => r.kind === "entry" && isVirtualPath(r.path))
+                    .map(r => virtualId(r.path));
+                ensureDocIcons(docIds, () => render());
+                ensureDocTitles(docIds, () => render());
             };
             render();
 
@@ -443,7 +464,28 @@ export function createTagDockConfig(plugin: IPluginForTagDock) {
             this._clickHandler = clickHandler;
             listEl.addEventListener("click", clickHandler);
 
-            // 右键:复用统一条目菜单(打开/分栏/复制/定位/固定/收藏),并补上标签相关操作
+            // 文件操作回调:与虚拟文档树面板一致,复用文件树完整右键菜单(一份实现两处用)
+            const fileTreeActions: IFileTreeActions = {
+                plugin,
+                openFile: (p) => openFileTab(plugin as any, p),
+                openImage: (p) => openImageTab(plugin as any, p),
+                openOffice: (p) => openOfficeTab(plugin as any, p),
+                openMedia: (p) => openMediaTab(plugin as any, p),
+                openMarkdown: (p, mode) => (plugin as any).openMarkdown(p, mode),
+                openSearch: (rp) => (plugin as any).openSearch(rp),
+                openTerminal: (cwd) => (plugin as any).openTerminal(cwd),
+                openFileSplit: (p, pos) => openFileTab(plugin as any, p, {position: pos}),
+                togglePin: (p) => (plugin as any).togglePin(p),
+                toggleFavorite: (p) => (plugin as any).toggleFavorite(p),
+                manageTags: (p, ev) => {
+                    void openTagMenu(plugin as any, p, ev, () => render());
+                },
+            };
+
+            // 右键:文件/文件夹复用**文件树完整菜单**(与虚拟文档树面板同款,含打开方式/新建/
+            // 搜索/标签/固定收藏/挂载/重命名/删除/复制等);思源文档条目(sydoc://)给「原生」
+            // 文档菜单(打开/新建子文档/复制/导出/重命名/删除,对齐思源文档树)。
+            // 两种菜单都会在末尾追加标签相关项。
             const contextHandler = (e: MouseEvent) => {
                 const el = (e.target as HTMLElement).closest(".syfe-tagdock__row") as HTMLElement | null;
                 const row = rowOf(el);
@@ -451,15 +493,8 @@ export function createTagDockConfig(plugin: IPluginForTagDock) {
                 e.preventDefault();
                 e.stopPropagation();
                 const path = row.path;
-                const extra: Array<{icon?: string; label: string; click: () => void}> = [
-                    {
-                        icon: "iconTags",
-                        label: "标签…",
-                        click: () => {
-                            void openTagMenu(plugin as any, path, e, () => render());
-                        },
-                    },
-                ];
+                // 标签相关追加项:「从此标签中移除 / 清除此条目的全部标签」(聚焦视图才有"当前标签"语义)
+                const extra: Array<{icon?: string; label: string; click: () => void}> = [];
                 if (self._mode === "entries") {
                     extra.push({
                         icon: "iconTrashcan",
@@ -486,13 +521,30 @@ export function createTagDockConfig(plugin: IPluginForTagDock) {
                         },
                     });
                 }
-                showEntryMenu({
-                    x: e.clientX,
-                    y: e.clientY,
-                    target: {kind: "file", path},
-                    plugin: plugin as any,
-                    extra,
-                });
+                if (isVirtualPath(path)) {
+                    showDocMenu({
+                        x: e.clientX,
+                        y: e.clientY,
+                        plugin: plugin as any,
+                        docId: virtualId(path),
+                        name: cachedDocTitle(virtualId(path)) || basename(path),
+                        extra: [
+                            {
+                                icon: "iconTags",
+                                label: "标签…",
+                                click: () => {
+                                    void openTagMenu(plugin as any, path, e, () => render());
+                                },
+                            },
+                            ...extra,
+                        ],
+                        onAfter: () => render(),
+                    });
+                    return;
+                }
+                const isDir = self._kindCache!.get(path) ?? false;
+                const rootEl = findTreeRootEl(path);
+                showFileTreeMenu(e, path, isDir, rootEl, rootEl?.dataset.path || "", fileTreeActions, undefined, extra as any);
             };
             this._contextHandler = contextHandler;
             listEl.addEventListener("contextmenu", contextHandler);
@@ -527,6 +579,17 @@ export function createTagDockConfig(plugin: IPluginForTagDock) {
             const changedHandler = () => render();
             this._changedHandler = changedHandler;
             window.addEventListener(TAGS_CHANGED_EVENT, changedHandler);
+
+            // 文件系统变动(重命名/删除/新建/粘贴等,来自 refreshFileTrees;右键菜单里 rootEl
+            // 传 null,操作本身不刷新文件树)→ 清缓存并重绘,让条目列表同步最新状态
+            const filesChangedHandler = () => {
+                self._children = new Map<string, DirEntry[]>();
+                self._parentCache = new Map<string, DirEntry[]>();
+                self._kindCache = new Map<string, boolean>();
+                render();
+            };
+            this._filesChangedHandler = filesChangedHandler;
+            window.addEventListener("syfe:files-changed", filesChangedHandler);
         },
         resize() {
             // 无需特殊处理
@@ -540,6 +603,10 @@ export function createTagDockConfig(plugin: IPluginForTagDock) {
             }
             if (this._changedHandler) {
                 window.removeEventListener(TAGS_CHANGED_EVENT, this._changedHandler);
+            }
+            if (this._filesChangedHandler) {
+                window.removeEventListener("syfe:files-changed", this._filesChangedHandler);
+                this._filesChangedHandler = undefined;
             }
             this._listEl = undefined;
             this._crumbEl = undefined;

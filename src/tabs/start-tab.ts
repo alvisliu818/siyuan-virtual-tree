@@ -80,8 +80,18 @@ function escapeHTML(s: string): string {
 // 点击后在 Wnd 的冒泡监听里调 newFile()。这里在**捕获阶段**拦截,改为打开新标签页。
 // 注意:文件树 Dock 的「新建子文档」按钮也有 data-type="new",但 class 是 b3-list-item__action,
 // 用 .block__icon 限定即可避免误伤。
+// 分屏:每个分屏的标签栏都有自己的 + 按钮。思源自己的处理(setPanelFocus → 聚焦所点分屏)
+// 在冒泡阶段,会被这里的 stopPropagation 拦掉,因此必须手动把**所点分屏**置为焦点分屏,
+// 否则 openTab 永远把新页签开到之前聚焦的那个分屏(其余分屏的 + 看起来"没反应")。
 let hijackInstalled = false;
 let hijackBypass = false;
+let startTabSeq = 0; // 每个起始页实例的唯一 data;否则思源按 type+data 去重,永远只会有一个起始页
+
+// 生成起始页的实例标识。带时间戳:布局恢复会把旧实例的 data 带回来,
+// 纯递增计数器重启后归零会与旧值撞车,又被思源去重合并。
+function nextStartTabData(): {instance: string} {
+    return {instance: `${Date.now().toString(36)}-${(++startTabSeq).toString(36)}`};
+}
 
 export function installNewTabHijack(plugin: IPluginForStartTab, isEnabled: () => boolean): void {
     if (hijackInstalled) return;
@@ -93,13 +103,30 @@ export function installNewTabHijack(plugin: IPluginForStartTab, isEnabled: () =>
         if (!btn) return;
         e.preventDefault();
         e.stopPropagation();
-        openStartTab(plugin);
+        const wndId = btn.closest('[data-type="wnd"]')?.getAttribute("data-id") || undefined;
+        openStartTab(plugin, {wndId, newTab: true});
     }, true);
 }
 
-// 触发思源原生「新建文档」(本次穿透拦截):新标签页内的入口仍要能建文档
-export function triggerNativeNewDoc(): boolean {
-    const btn = document.querySelector('.block__icon[data-type="new"]') as HTMLElement | null;
+// 把焦点分屏切换到指定 wnd(复刻思源 setPanelFocus 的核心:layout__wnd--active 类切换)
+function focusWnd(wndId: string): boolean {
+    const wndEl = document.querySelector(`[data-type="wnd"][data-id="${wndId}"]`);
+    if (!wndEl) return false;
+    document.querySelectorAll(".layout__wnd--active").forEach(item => {
+        item.classList.remove("layout__wnd--active");
+    });
+    wndEl.classList.add("layout__wnd--active");
+    wndEl.querySelector(".layout-tab-bar .item--focus")?.setAttribute("data-activetime", Date.now().toString());
+    return true;
+}
+
+// 触发思源原生「新建文档」(本次穿透拦截):新标签页内的入口仍要能建文档。
+// scope 传起始页自身元素:优先用它所在分屏的 + 按钮,保证文档建在同一个分屏(思源原生
+// 处理会先 setPanelFocus 该分屏);否则退回全局第一个 +。
+export function triggerNativeNewDoc(scope?: HTMLElement | null): boolean {
+    const scopeWnd = scope?.closest?.('[data-type="wnd"]');
+    const btn = (scopeWnd?.querySelector('.block__icon[data-type="new"]')
+        || document.querySelector('.block__icon[data-type="new"]')) as HTMLElement | null;
     if (!btn) return false;
     hijackBypass = true;
     try {
@@ -110,15 +137,29 @@ export function triggerNativeNewDoc(): boolean {
     return true;
 }
 
-// 打开新标签页(同类型只开一个,已存在则聚焦)
-export function openStartTab(plugin: IPluginForStartTab, opts?: { position?: "right" | "bottom" }): void {
+// 打开新标签页。
+// - 分屏 + 接管(opts.wndId):先聚焦所点分屏再打开,新页签落在所点分屏;newTab=true 时每次
+//   都新建一个起始页(data 唯一,绕过思源 openFile 按 type+data 的同类合并)
+// - 其余调用(命令等):全局同类型只开一个,已存在则聚焦
+export function openStartTab(plugin: IPluginForStartTab, opts?: {position?: "right" | "bottom"; wndId?: string; newTab?: boolean}): void {
     const opened = plugin.getOpenedTab()[START_TAB_TYPE] || [];
-    const existing = opened[0];
-    if (existing && !opts?.position) {
-        const tab = (existing as any).parent;
-        if (tab?.headElement) {
-            (tab.headElement as HTMLElement).click();
-            return;
+    if (opts?.wndId) {
+        focusWnd(opts.wndId);
+        if (!opts.newTab) {
+            const mine = opened.find((t: any) => (t.parent?.parent as any)?.id === opts.wndId);
+            if (mine && (mine as any).parent?.headElement) {
+                ((mine as any).parent.headElement as HTMLElement).click();
+                return;
+            }
+        }
+    } else if (!opts?.position) {
+        const existing = opened[0];
+        if (existing) {
+            const tab = (existing as any).parent;
+            if (tab?.headElement) {
+                (tab.headElement as HTMLElement).click();
+                return;
+            }
         }
     }
     openTab({
@@ -127,7 +168,7 @@ export function openStartTab(plugin: IPluginForStartTab, opts?: { position?: "ri
             id: plugin.name + START_TAB_TYPE,
             icon: "iconAdd",
             title: "新标签页",
-            data: {},
+            data: nextStartTabData(),
         },
         position: opts?.position,
     } as any);
@@ -311,8 +352,9 @@ export function createStartTabConfig(plugin: IPluginForStartTab) {
                 if (!el) return;
                 const action = el.dataset.action;
                 if (action === "new-doc") {
-                    // 走思源原生新建文档(穿透 + 按钮的拦截),不复制内核逻辑
-                    if (!triggerNativeNewDoc()) {
+                    // 走思源原生新建文档(穿透 + 按钮的拦截),不复制内核逻辑;
+                    // 优先点起始页所在分屏的 +,文档才会建在同一个分屏
+                    if (!triggerNativeNewDoc(self.element)) {
                         showMessage("未找到思源新建文档按钮", 3000, "error");
                     }
                 } else if (action === "refresh") {

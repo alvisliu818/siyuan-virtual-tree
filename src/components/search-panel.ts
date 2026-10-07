@@ -3,6 +3,7 @@ import {SEARCH_TAB_TYPE, TEXT_EXTENSIONS} from "../constants";
 import {EditorConfig, SearchResult} from "../types";
 import {readDir, readTextFile} from "../api/file";
 import {joinPath, extname, dirname} from "../utils/path";
+import {isBaiduPath} from "../utils/baidu-path";
 import {openFileTab, IPluginForTab} from "../tabs/editor-tab";
 import {openImageTab} from "../tabs/image-tab";
 import {openOfficeTab} from "../tabs/office-tab";
@@ -76,7 +77,8 @@ export async function enumerateAll(rootPath: string, maxFileSize: number): Promi
                 await walk(fullPath);
             } else {
                 const ext = extname(entry.name);
-                if (TEXT_EXTENSIONS.has(ext) && entry.size <= maxFileSize) {
+                // 网盘文件不参与内容搜索(逐个下载代价过高),保留名称搜索
+                if (!isBaiduPath(fullPath) && TEXT_EXTENSIONS.has(ext) && entry.size <= maxFileSize) {
                     textFiles.push(fullPath);
                 }
             }
@@ -333,6 +335,7 @@ export function createSearchTabConfig(plugin: IPluginForSearch) {
                 // 找到包含该路径的文件树,操作后就地刷新;找不到时菜单仍可用,仅跳过树刷新
                 const rootEl = findTreeRootEl(path);
                 const actions: IFileTreeActions = {
+                    plugin: plugin as any,
                     openFile: (p: string) => openFileTab(plugin as IPluginForTab, p),
                     openImage: (p: string) => openImageTab(plugin as any, p),
                     openOffice: (p: string) => openOfficeTab(plugin as any, p),

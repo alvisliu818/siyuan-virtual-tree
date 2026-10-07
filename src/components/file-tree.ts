@@ -1,20 +1,26 @@
 import {Menu, Dialog, confirm, showMessage, IMenu} from "siyuan";
-import {readDir, renameFile, removeFile, mkdir, writeFile, lsNotebooks, listDocsByPath, importStdMd} from "../api/file";
+import {readDir, renameFile, removeFile, mkdir, writeFile, lsNotebooks, listDocsByPath, importStdMd, readBinaryFile, uploadAsset, insertBlockAtDocTop} from "../api/file";
+import {isImportMdSourceAssetEnabled} from "../utils/config";
 import {joinPath, basename, dirname, pathDepth, extname, isSiyuanPath} from "../utils/path";
 import {toFileLink, toMarkdownFileLink, getWorkspacePath, toSystemPath} from "../utils/system-path";
-import {openWithExternalApp, revealInSystemExplorer} from "../utils/external-app";
+import {openWithExternalApp, revealInSystemExplorer, openTreeFileWithExternalApp} from "../utils/external-app";
 import {BINARY_EXTENSIONS, isImageFile, isOfficeFile, isMarkdownFile, isMediaFile, getMediaKind} from "../constants";
-import {isVirtualPath, isNotebookRoot, virtualListDir, virtualId, getMountsUnder, getMountList, normDirKey} from "../utils/virtual-tree";
-import {nativeCopyToTemp} from "../api/native-fs";
+import {isVirtualPath, getMountsUnder, getMountList, normDirKey} from "../utils/virtual-tree";
+import {isBaiduPath} from "../utils/baidu-path";
+import {baiduCloudPath} from "../api/baidu-pan";
+import {nativeCopyToTemp, nativeWriteTempFile, isNativeFsAvailable} from "../api/native-fs";
 // 新标签页的固定/收藏:菜单里按当前状态显示「固定 / 取消固定」
-import {isPinned, isFavorite, itemFromPath, itemFromDoc} from "../start-page";
+import {isPinned, isFavorite, itemFromPath} from "../start-page";
 import {fileIconHTML, folderIconHTML} from "../utils/icons";
+import {addMountMenuItem} from "./mount-menu";
 import {tagBadgesHTML} from "../tags/tag-ui";
 import {expandWithDescendants, pathMatchesFilter, pathHasAnyTag} from "../tags/tag-store";
 import {DirEntry} from "../types";
 
 // 文件树操作接口(由插件入口提供)
 export interface IFileTreeActions {
+    // 插件实例(虚拟文档树挂载菜单需要,拿到才能持久化)
+    plugin?: any;
     openFile(path: string): void;
     openImage(path: string): void;
     openOffice(path: string): void;
@@ -30,11 +36,7 @@ export interface IFileTreeActions {
     // 新标签页:切换固定/收藏(由 Dock 提供,内部调 src/start-page.ts)
     togglePin?(path: string): void;
     toggleFavorite?(path: string): void;
-    // 虚拟文档树:在思源中打开文档(定位到该文档)
-    openDoc?(docId: string): void;
-    // 把思源文档/笔记本挂载到指定真实目录下(文件树右键「挂载思源文档…」)
-    mountDocHere?(dir: string): void;
-    // 取消挂载:移除某真实目录下的思源文档挂载记录
+    // 取消挂载:移除某真实目录下的百度网盘挂载记录
     unmountDoc?(parentDir: string, vPath: string): void;
 }
 
@@ -123,6 +125,8 @@ export async function computeTagFilterAllowed(
                 allowed.add(full);
                 markAncestors(full);
             }
+            // 挂载的虚拟条目(bdpan://)不递归:云盘子树不参与标签筛选,也避免逐目录请求网盘
+            if (entry.path && isBaiduPath(entry.path)) continue;
             if (entry.isDir) await walk(full, depth + 1);
         }
     };
@@ -169,11 +173,7 @@ function createEntryHTML(entry: DirEntry, parentPath: string, isEmpty = false): 
     // 虚拟条目(思源文档)自带完整路径;普通条目由父路径拼接
     const fullPath = entry.path || joinPath(parentPath, entry.name);
     if (entry.isDir) {
-        // 虚拟文档节点:可展开子文档,双击/右键可在思源中打开;笔记本挂载用笔记本图标
-        const isDoc = isVirtualPath(fullPath);
-        const icon = isDoc
-            ? `<svg><use xlink:href="#${isNotebookRoot(fullPath) ? "iconNotebook" : "iconFile"}"></use></svg>`
-            : folderIconHTML(entry.name, false);
+        const icon = folderIconHTML(entry.name, false);
         // 空目录不显示折叠图标(与文件行的空 toggle 保持一致,保证对齐)
         const toggle = isEmpty
             ? `<span class="syfe-tree__toggle"></span>`
@@ -201,24 +201,15 @@ function createEntryHTML(entry: DirEntry, parentPath: string, isEmpty = false): 
 // 渲染目录内容到容器
 export async function renderTree(container: HTMLElement, dirPath: string): Promise<void> {
     try {
-        // 虚拟文档树:走思源文档 API(标签筛选/空目录预检仅适用于真实文件系统)
-        if (isVirtualPath(dirPath)) {
-            const docs = await virtualListDir(dirPath);
-            const sorted = sortEntries(docs);
-            container.innerHTML = sorted.length === 0
-                ? `<li class="syfe-tree__empty">没有子文档</li>`
-                : sorted.map(e => createEntryHTML(e, dirPath)).join("");
-            return;
-        }
         const raw = await readDir(dirPath);
         let all: DirEntry[] = Array.isArray(raw) ? raw : [];
-        // 合并挂载到该目录下的思源文档/笔记本(虚拟条目,与真实文件并存)
+        // 合并挂载到该目录下的百度网盘虚拟条目(与真实文件并存)
+        // 注:思源文档树的挂载能力已迁到「虚拟文档树」面板,这里只剩 bdpan://
         const mounts = getMountsUnder(dirPath);
         if (mounts.length > 0) {
             all = all.concat(mounts.map(m => ({name: m.name, isDir: true, size: 0, updated: "", path: m.vPath})));
         }
         // 标签筛选:仅显示命中标签的条目,以及通向它们的祖先目录
-        // (挂载条目按其虚拟路径参与筛选;子文档树不受筛选影响)
         if (tagFilterAllowed) {
             all = all.filter(e => tagFilterAllowed!.has(e.path || joinPath(dirPath, e.name)));
         }
@@ -509,6 +500,11 @@ export async function revealInFileTree(path: string): Promise<boolean> {
             return false;
         }
     }
+    // 「文件」面板默认不注册(DOCK_TYPE 不存在)→ 给可操作的提示
+    if (!document.querySelector(".syfe-tree__root")) {
+        showMessage("「文件」面板已关闭,可在设置里打开「侧边栏:显示「文件」面板」后重试,或在「虚拟文档树」中挂载该目录查看", 5000, "info");
+        return false;
+    }
     showMessage("文件树根目录不包含该路径,请将根目录切换到包含该文件的目录后再试", 3000, "info");
     return false;
 }
@@ -746,6 +742,28 @@ function pickImportTargetDialog(title: string, onPicked: (target: {nbId: string;
     void render();
 }
 
+// 导入完成后:把源文件上传为资源,并在新建文档顶部插入一个引述块链接到它
+// 步骤:① 记录导入前的文档列表 ② 上传源文件为资源 ③ 再列一次找出新文档 ④ 顶部插入引述块
+async function attachSourceAsset(
+    nbId: string,
+    toPath: string,
+    srcPath: string,
+    name: string,
+): Promise<void> {
+    // toPath 形如 "/" 或 "/xxx.sy"(导入为某文档的子文档)
+    const before = new Set((await listDocsByPath(nbId, toPath) || []).map(d => String(d.path || "")));
+    const assetUrl = await uploadAsset(name, await readBinaryFile(srcPath));
+    const after = await listDocsByPath(nbId, toPath) || [];
+    const created = after.find(d => !before.has(String(d.path || "")));
+    if (!created) return; // 没找到新文档(理论上不会发生),静默跳过
+    const docId = String(created.path || "").split("/").pop()?.replace(/\.sy$/i, "") || "";
+    if (!docId) return;
+    // 引述块里放资源链接:> [源文件:xxx.md](assets/xxx.md)
+    const label = `源文件:${name}`;
+    await insertBlockAtDocTop(docId, `> [${label}](${assetUrl})`);
+    showMessage(`已在文档顶部插入源文件资源引述块:${assetUrl}`, 3500, "info");
+}
+
 // 执行导入:准备 localPath(工作空间内文件先复制到临时目录)→ 调用思源导入接口
 // isDir:导入目标是文件夹(markdown 文件夹导入,保留文件夹名层级;非 md 文件作为资源)
 async function doImportToSiyuan(treePath: string, isDir: boolean): Promise<void> {
@@ -756,7 +774,19 @@ async function doImportToSiyuan(treePath: string, isDir: boolean): Promise<void>
             let temp: {tempPath: string; cleanup: () => Promise<void>} | null = null;
             try {
                 let localPath = treePath;
-                if (isSiyuanPath(treePath)) {
+                if (isBaiduPath(treePath)) {
+                    // 网盘文件先下载到系统临时目录(仅支持文件;文件夹需整树下载,代价过高)
+                    if (isDir) {
+                        showMessage("网盘文件夹暂不支持导入思源,请先同步到本地后再导入", 4000, "error");
+                        return;
+                    }
+                    if (!isNativeFsAvailable()) {
+                        showMessage("下载网盘文件需要思源桌面端(原生 fs)", 4000, "error");
+                        return;
+                    }
+                    temp = await nativeWriteTempFile(name, await readBinaryFile(treePath));
+                    localPath = temp.tempPath;
+                } else if (isSiyuanPath(treePath)) {
                     // 内核拒绝导入工作空间子路径,先复制到系统临时目录(需桌面端原生 fs)
                     if (!getWorkspacePath()) {
                         showMessage("无法获取工作空间路径,导入失败", 4000, "error");
@@ -771,6 +801,19 @@ async function doImportToSiyuan(treePath: string, isDir: boolean): Promise<void>
                     }
                 }
                 await importStdMd(target.nbId, localPath, target.toPath, false);
+
+                // 设置开启时:把源文件作为资源插入到新文档顶部的引述块
+                // 仅单个 Markdown 文件;文件夹导入不适用(一个目录会变成 N 个文档,无法确定挂哪个)
+                if (!isDir && isMarkdownFile(treePath) && isImportMdSourceAssetEnabled()) {
+                    try {
+                        await attachSourceAsset(target.nbId, target.toPath, treePath, name);
+                    } catch (e) {
+                        // 资源引述块插入失败**不影响导入结果**,只提示
+                        showMessage(`已导入,但插入源文件资源引述块失败:${(e as any)?.message || e}`, 5000, "error");
+                        return;
+                    }
+                }
+
                 showMessage(`已导入到「${target.label}」${isDir ? ",文件夹将作为一个文档层级,非 Markdown 文件自动作为资源" : ""}`, 4000, "info");
             } catch (e) {
                 showMessage(`导入失败: ${(e as any)?.message || e}`, 6000, "error");
@@ -779,6 +822,11 @@ async function doImportToSiyuan(treePath: string, isDir: boolean): Promise<void>
             }
         },
     );
+}
+
+// 下载网盘文件到临时目录并用系统默认应用打开(桌面端)
+function downloadBaiduAndOpen(path: string): void {
+    runExternal(() => openTreeFileWithExternalApp(path));
 }
 
 // 从虚拟条目 <li> 向上查找其挂载父目录(最近的真实目录;顶层挂载则取树根)
@@ -931,63 +979,117 @@ export function showFileTreeMenu(
     rootPath: string,
     actions: IFileTreeActions,
     li?: HTMLElement,
+    extra?: IMenu[],
 ): void {
     const menu = new Menu();
 
-    // 虚拟文档树节点:专用菜单(在思源中打开/复制链接/标签/固定收藏;不提供文件系统操作)
-    if (isVirtualPath(path)) {
-        const docId = virtualId(path);
-        const label = (rootEl?.querySelector(`li[data-path="${escapeSelector(path)}"] .syfe-tree__label`) as HTMLElement)?.textContent?.trim() || docId;
-        menu.addItem({
-            icon: "iconOpen",
-            label: "在思源中打开",
-            click: () => actions.openDoc?.(docId),
-        });
-        menu.addSeparator();
-        menu.addItem({
-            icon: "iconTags",
-            label: "标签",
-            click: () => actions.manageTags?.(path, e),
-        });
-        const docItem = itemFromDoc(docId, label);
-        if (actions.togglePin) {
+    // 注:思源文档(sydoc://)的文件树菜单与挂载能力已整体迁到侧边栏「虚拟文档树」面板,
+    // 文件树不再渲染/挂载思源文档,这里只剩百度网盘(bdpan://)。
+
+    // 百度网盘节点(bdpan://):云盘专用菜单(打开/下载/改名/删除/取消挂载;无系统路径类操作)
+    if (isBaiduPath(path)) {
+        const cloud = baiduCloudPath(path);
+        const openWith: IMenu[] = [];
+        if (isDir) {
+            openWith.push({
+                icon: "iconFile",
+                label: "新建文件",
+                click: () => createNewFile(path, rootEl, rootPath),
+            });
+            openWith.push({
+                icon: "iconFolder",
+                label: "新建文件夹",
+                click: () => createNewFolder(path, rootEl, rootPath),
+            });
+        } else {
+            // 与真实文件一致的打开方式(内容经网盘接口下载),但无系统路径类项
+            if (isMarkdownFile(path)) {
+                openWith.push({
+                    icon: "iconMarkdown",
+                    label: "实时预览编辑",
+                    click: () => actions.openMarkdown?.(path, "live"),
+                });
+                openWith.push({
+                    icon: "iconCode",
+                    label: "文本编辑器",
+                    click: () => actions.openMarkdown?.(path, "source"),
+                });
+            } else if (!BINARY_EXTENSIONS.has(extname(path)) && !isOfficeFile(path) && !isMediaFile(path)) {
+                openWith.push({
+                    icon: "iconCode",
+                    label: "文本编辑器",
+                    click: () => actions.openFile(path),
+                });
+            }
+            if (isMediaFile(path)) {
+                openWith.push({
+                    icon: getMediaKind(path) === "audio" ? "iconRecord" : "iconVideo",
+                    label: "音视频播放器",
+                    click: () => {
+                        if (actions.openMedia) actions.openMedia(path);
+                        else actions.openFile(path);
+                    },
+                });
+            }
+            if (isImageFile(path)) {
+                openWith.push({
+                    icon: "iconImage",
+                    label: "图片查看器",
+                    click: () => actions.openImage(path),
+                });
+            }
+            if (isOfficeFile(path)) {
+                openWith.push({
+                    icon: "iconFile",
+                    label: "Office 查看器",
+                    click: () => actions.openOffice(path),
+                });
+            }
+            // 下载到系统临时目录后交给系统默认应用(仅桌面端)
+            if (isNativeFsAvailable()) {
+                openWith.push({
+                    icon: "iconDownload",
+                    label: "下载副本并用系统应用打开",
+                    click: () => downloadBaiduAndOpen(path),
+                });
+            }
+        }
+        if (openWith.length > 0) {
             menu.addItem({
-                icon: "iconPin",
-                label: isPinned(docItem) ? "取消固定到新标签页" : "固定到新标签页",
-                click: () => actions.togglePin!(path),
+                icon: "iconOpen",
+                label: "打开方式",
+                submenu: openWith,
             });
         }
-        if (actions.toggleFavorite) {
+        // Markdown 文件可直接导入思源(下载到临时目录后走标准导入)
+        if (!isDir && isMarkdownFile(path)) {
             menu.addItem({
-                icon: "iconStar",
-                label: isFavorite(docItem) ? "取消收藏" : "收藏",
-                click: () => actions.toggleFavorite!(path),
+                icon: "iconDownload",
+                label: "导入到思源…",
+                click: () => void doImportToSiyuan(path, false),
+            });
+        }
+        if (!isDir && actions.openFileSplit) {
+            menu.addItem({
+                label: "分栏打开",
+                submenu: [
+                    {label: "在右侧分栏打开", click: () => actions.openFileSplit!(path, "right")},
+                    {label: "在下方分栏打开", click: () => actions.openFileSplit!(path, "bottom")},
+                ],
             });
         }
         menu.addSeparator();
         menu.addItem({
-            icon: "iconLink",
-            label: "复制文档链接",
-            click: () => {
-                copyText(`siyuan://blocks/${docId}`).then(
-                    ok => ok
-                        ? showMessage("文档链接已复制", 2000, "info")
-                        : showMessage("复制失败", 2000, "error"),
-                );
-            },
+            icon: "iconEdit",
+            label: "重命名",
+            click: () => renameEntry(path, rootEl, rootPath),
         });
         menu.addItem({
-            icon: "iconCopy",
-            label: "复制文档 ID",
-            click: () => {
-                copyText(docId).then(
-                    ok => ok
-                        ? showMessage("文档 ID 已复制", 2000, "info")
-                        : showMessage("复制失败", 2000, "error"),
-                );
-            },
+            icon: "iconTrashcan",
+            label: "删除",
+            click: () => deleteEntry(path, isDir, rootEl, rootPath),
         });
-        // 挂载在真实目录下的虚拟条目:可取消挂载(条目本身是树根/虚拟根时不适用)
+        // 挂载在真实目录下的网盘条目:可取消挂载(条目本身是树根/挂载根时不适用)
         const mountParentDir = li ? findMountParentDir(li, rootEl, path) : null;
         if (mountParentDir !== null && actions.unmountDoc) {
             menu.addSeparator();
@@ -996,6 +1098,34 @@ export function showFileTreeMenu(
                 label: "取消挂载",
                 click: () => actions.unmountDoc!(mountParentDir!, path),
             });
+        }
+        menu.addSeparator();
+        menu.addItem({
+            icon: "iconCopy",
+            label: "复制路径",
+            click: () => {
+                copyText(path).then(
+                    ok => ok
+                        ? showMessage("路径已复制", 2000, "info")
+                        : showMessage("复制失败", 2000, "error"),
+                );
+            },
+        });
+        menu.addItem({
+            icon: "iconLink",
+            label: "复制网盘路径",
+            click: () => {
+                copyText(cloud).then(
+                    ok => ok
+                        ? showMessage("网盘路径已复制", 2000, "info")
+                        : showMessage("复制失败", 2000, "error"),
+                );
+            },
+        });
+        // 调用方追加项(如标签面板的「从此标签中移除」)
+        if (extra && extra.length > 0) {
+            menu.addSeparator();
+            for (const it of extra) menu.addItem(it);
         }
         menu.open({x: e.clientX, y: e.clientY});
         return;
@@ -1108,14 +1238,6 @@ export function showFileTreeMenu(
             label: "新建文件夹",
             click: () => createNewFolder(path, rootEl, rootPath),
         });
-        // 挂载思源文档/笔记本到该目录下(与真实文件并存的虚拟条目)
-        if (actions.mountDocHere) {
-            menu.addItem({
-                icon: "iconNotebook",
-                label: "挂载思源文档…",
-                click: () => actions.mountDocHere!(path),
-            });
-        }
         menu.addSeparator();
         menu.addItem({
             icon: "iconSearch",
@@ -1152,6 +1274,15 @@ export function showFileTreeMenu(
                 click: () => actions.toggleFavorite!(path),
             });
         }
+    }
+    // 虚拟文档树:把文件/文件夹挂到自建树上(支持挂到顶层或嵌套到已有挂载点)
+    if (actions.plugin) {
+        addMountMenuItem(menu, actions.plugin, {
+            kind: "file",
+            name: basename(path),
+            path,
+            isDir,
+        });
     }
     menu.addSeparator();
     menu.addItem({
@@ -1218,6 +1349,11 @@ export function showFileTreeMenu(
             label: "在集成终端中打开",
             click: () => actions.openTerminal(dirname(path)),
         });
+    }
+    // 调用方追加项(如标签面板的「从此标签中移除」)
+    if (extra && extra.length > 0) {
+        menu.addSeparator();
+        for (const it of extra) menu.addItem(it);
     }
     menu.open({x: e.clientX, y: e.clientY});
 }

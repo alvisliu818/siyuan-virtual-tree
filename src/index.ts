@@ -1,5 +1,5 @@
 import {Plugin, Setting, showMessage} from "siyuan";
-import {DOCK_TYPE, WORKSPACE_ROOT, DEFAULT_TERMINAL_SERVER_URL} from "./constants";
+import {DOCK_TYPE, WORKSPACE_ROOT, DEFAULT_TERMINAL_SERVER_URL, MOUNT_TREE_DOCK_TYPE} from "./constants";
 import {EditorConfig, DEFAULT_CONFIG} from "./types";
 import {setupMonaco, applyTheme, getCurrentMode, disposeMonaco} from "./editor/monaco";
 import {disposeAll} from "./editor/model-manager";
@@ -8,6 +8,7 @@ import {createImageTabConfig, openImageTab} from "./tabs/image-tab";
 import {createOfficeTabConfig, openOfficeTab} from "./tabs/office-tab";
 import {createMarkdownTabConfig, openMarkdownTab, MarkdownMode} from "./tabs/markdown-tab";
 import {createMediaTabConfig, openMediaTab} from "./tabs/media-tab";
+import {createNotebookTabConfig} from "./tabs/notebook-tab";
 import {createStartTabConfig, openStartTab, installNewTabHijack} from "./tabs/start-tab";
 import {createTerminalTabConfig, openTerminalTab} from "./tabs/terminal-tab";
 import {createFileTreeDockConfig} from "./dock/file-tree-dock";
@@ -22,9 +23,14 @@ import {loadTagData} from "./tags/tag-store";
 import {openTagManagerDialog} from "./tags/tag-ui";
 import {loadRecents, addRecent, addRecentDoc, flushRecents} from "./recent-files";
 import {loadStartPage, itemFromPath, itemFromDoc, toggleInGroup} from "./start-page";
-import {isVirtualPath, virtualId, initMountStore} from "./utils/virtual-tree";
+import {isVirtualPath, virtualId, initMountStore, getMountList, dropSyDocMounts} from "./utils/virtual-tree";
+import {initBaiduPanStore} from "./api/baidu-pan";
+import {openBaiduPanDialog} from "./components/baidu-pan-dialog";
 import {registerSlashCommands} from "./protyle/slash-commands";
 import {registerLinkReveal} from "./protyle/link-reveal";
+import {registerMountMenu} from "./protyle/mount-menu";
+import {initMountTree, migrateSyDocMounts} from "./mount-tree";
+import {createMountTreeDockConfig} from "./dock/mount-tree-dock";
 import {openExtensionMarket} from "./extensions/market-ui";
 import {clearAllGrammars} from "./extensions/grammar-loader";
 import {clearAllThemes, applyThemeByPreference, getLoadedThemes} from "./extensions/theme-loader";
@@ -54,6 +60,11 @@ export default class FileEditorPlugin extends Plugin {
     private newTabShowPinnedInput?: HTMLInputElement;
     private newTabShowRecentInput?: HTMLInputElement;
     private newTabShowFavoritesInput?: HTMLInputElement;
+    // 导入 md 到思源时,是否在文档顶部插入源文件资源引述块
+    private importMdSourceAssetInput?: HTMLInputElement;
+    // 侧边栏「文件」面板开关(默认关,功能已由虚拟文档树承接)
+    private showFileTreeDockInput?: HTMLInputElement;
+    private fileTreeDockAdded = false;
 
     onload(): void {
         setupMonaco(this.name);
@@ -64,17 +75,22 @@ export default class FileEditorPlugin extends Plugin {
         this.addTab(createOfficeTabConfig(this as any));
         this.addTab(createMarkdownTabConfig(this as any));
         this.addTab(createMediaTabConfig(this as any));
+        // Jupyter Notebook(.ipynb)查看与编辑
+        this.addTab(createNotebookTabConfig(this as any));
         // 新标签页(接管顶部「+」后打开的启动台:搜索 + 固定 + 最近打开 + 收藏)
         this.addTab(createStartTabConfig(this as any));
         this.addTab(createSearchTabConfig(this as any));
         this.addTab(createTerminalTabConfig(this as any));
 
         // 注册 Dock
-        this.addDock(createFileTreeDockConfig(this as any));
+        // 注:「文件」面板默认**不注册**(能力已由「虚拟文档树」面板承接);
+        // 若用户在设置里打开 showFileTreeDock,会在 onLayoutReady 补注册(见下)。
         // 侧边栏「最近使用」面板(展示最近打开的文件,点击打开/右键复制链接)
         this.addDock(createRecentDockConfig(this as any));
         // 侧边栏「标签」面板(按标签聚合文件/文件夹,文件夹可就地逐级展开)
         this.addDock(createTagDockConfig(this as any));
+        // 侧边栏「虚拟文档树」面板(初始为空,挂载文件/文件夹/思源文档/思源块,支持嵌套)
+        this.addDock(createMountTreeDockConfig(this as any));
 
         // 注册思源编辑器斜杆命令(输入 /file 或 /文件 插入文件链接)
         registerSlashCommands(this, () => this.getFileTreeRoot());
@@ -82,22 +98,25 @@ export default class FileEditorPlugin extends Plugin {
         // 思源正文 file:// 链接右键菜单:追加「在文件夹树中定位」等
         registerLinkReveal(this);
 
+        // 思源文档树 / 正文块右键菜单:追加「挂载到虚拟文档树」
+        registerMountMenu(this);
+
         // 接管思源顶部「+」:点击改为打开新标签页(设置里可关闭,恢复原生新建文档)
         installNewTabHijack(this as any, () => this.config.newTabReplacePlus !== false);
 
-        // 顶栏图标 → 切换 Dock
+        // 顶栏图标 → 切换 Dock「虚拟文档树」(原「文件」面板已默认关闭,文件浏览由虚拟文档树承接)
         this.addTopBar({
             icon: "iconFolder",
-            title: "文件管理器",
+            title: "文档树",
             position: "right",
             callback: () => {
                 const dockItem = document.querySelector(
-                    `.dock__item[data-type="${DOCK_TYPE}"]`,
+                    `.dock__item[data-type="${MOUNT_TREE_DOCK_TYPE}"]`,
                 ) as HTMLElement;
                 if (dockItem) {
                     dockItem.click();
                 } else {
-                    showMessage("请从侧边栏打开文件管理器", 3000, "info");
+                    showMessage("请从侧边栏打开「虚拟文档树」面板", 3000, "info");
                 }
             },
         });
@@ -141,10 +160,22 @@ export default class FileEditorPlugin extends Plugin {
         this.startThemeSync();
     }
 
+    // 注册「文件」侧边栏面板。
+    // 该面板默认不注册(见 onload);用户在设置里打开时调用本方法即时生效。
+    // 注:思源插件**没有 removeDock**,所以关闭开关后需要重启思源才真正隐藏。
+    private addFileTreeDock(): void {
+        if (this.fileTreeDockAdded) return;
+        this.fileTreeDockAdded = true;
+        this.addDock(createFileTreeDockConfig(this as any));
+    }
+
     async onLayoutReady(): Promise<void> {
         this.config = await loadConfig(this);
         // 设置面板控件同步当前值
         this.syncSettingUI();
+        // 设置里打开了「文件」面板 → 在此补注册(onload 是同步的,拿不到配置,只能延后到布局就绪)
+        if (this.config.showFileTreeDock === true) this.addFileTreeDock();
+
         // 加载标签数据(预设标签库 + 文件/文件夹打标记录)
         try {
             await loadTagData(this);
@@ -170,6 +201,31 @@ export default class FileEditorPlugin extends Plugin {
         } catch (e) {
             console.error("[siyuan-file-editor] 加载思源文档挂载记录失败:", e);
         }
+        // 加载虚拟文档树的挂载节点(初始为空树;面板已注册,加载后自动重绘)
+        try {
+            await initMountTree(this);
+        } catch (e) {
+            console.error("[siyuan-file-editor] 加载虚拟文档树失败:", e);
+        }
+        // 一次性迁移:文件树里的思源文档树挂载(sy-mounts.json 的 sydoc:// 条目)→ 虚拟文档树,
+        // 迁移后清掉旧记录(百度网盘 bdpan:// 条目保留,仍在文件树里)
+        try {
+            const legacy = getMountList();
+            if (legacy.some(m => m.vPath.startsWith("sydoc://"))) {
+                const moved = await migrateSyDocMounts(this, legacy);
+                await dropSyDocMounts();
+                this.refreshFileTrees();
+                if (moved > 0) showMessage(`已把 ${moved} 个思源文档挂载迁移到虚拟文档树`, 4000, "info");
+            }
+        } catch (e) {
+            console.error("[siyuan-file-editor] 迁移思源文档挂载失败:", e);
+        }
+        // 加载百度网盘配置(Cookie 与同步空间目录;失败不影响其他功能)
+        try {
+            await initBaiduPanStore(this as any);
+        } catch (e) {
+            console.error("[siyuan-file-editor] 加载百度网盘配置失败:", e);
+        }
         // 记录最近使用的思源文档(必须在 loadRecents 之后注册,否则会被加载结果覆盖)
         this.eventBus.on("switch-protyle", (e: any) => {
             const protyle = e?.detail?.protyle;
@@ -183,7 +239,8 @@ export default class FileEditorPlugin extends Plugin {
             const loaded = results.filter(r => r.status === "loaded");
             if (loaded.length > 0) {
                 const total = loaded.reduce((acc, r) => acc + r.loadedGrammars + r.loadedThemes + r.loadedSnippets + r.loadedIconThemes, 0);
-                showMessage(`已加载 ${loaded.length} 个扩展(${total} 项贡献)`, 3000, "info");
+                // 只写控制台不弹提示:启动和移到新窗口时 onLayoutReady 都会执行,弹窗很吵
+                console.info(`[siyuan-file-editor] 已加载 ${loaded.length} 个扩展(${total} 项贡献)`);
             }
             // 按用户偏好应用代码主题与图标主题(无偏好时自动)
             this.applyConfiguredThemes();
@@ -207,6 +264,12 @@ export default class FileEditorPlugin extends Plugin {
 
     // 刷新所有已打开的文件树 Dock,更新文件/文件夹图标
     private refreshFileTrees(): void {
+        // 通知其它面板(虚拟文档树):文件系统已变动,需清缓存并重绘
+        try {
+            window.dispatchEvent(new CustomEvent("syfe:files-changed"));
+        } catch {
+            // 非浏览器环境忽略
+        }
         const rootEls = document.querySelectorAll<HTMLElement>(".syfe-tree__root");
         if (rootEls.length === 0) {
             // 文件树可能还没渲染,延迟重试
@@ -440,6 +503,17 @@ export default class FileEditorPlugin extends Plugin {
             actionElement: tagManageBtn,
         });
 
+        // 百度网盘(接入方式配置 + 挂载入口说明)
+        const bdPanBtn = document.createElement("button");
+        bdPanBtn.className = "b3-button b3-button--outline fn__size200";
+        bdPanBtn.textContent = "百度网盘账号…";
+        bdPanBtn.addEventListener("click", () => openBaiduPanDialog());
+        this.setting!.addItem({
+            title: "百度网盘",
+            description: "接入方式:官方 API(推荐,开放平台 AppKey/SecretKey + 设备码授权,未过审仅能访问 /apps/应用名/ 目录)或网页 Cookie(全盘 + 同步空间,非官方)。配置后点击文件树工具栏云图标挂载网盘目录,支持浏览、编辑并保存回网盘",
+            actionElement: bdPanBtn,
+        });
+
         // 搜索最大文件大小
         this.searchMaxSizeInput = document.createElement("input");
         this.searchMaxSizeInput.className = "b3-text-field fn__size200";
@@ -570,6 +644,26 @@ export default class FileEditorPlugin extends Plugin {
             actionElement: this.newTabShowFavoritesInput,
         });
 
+        // 侧边栏「文件」面板:文件浏览能力已由「虚拟文档树」承接,默认隐藏
+        this.showFileTreeDockInput = document.createElement("input");
+        this.showFileTreeDockInput.type = "checkbox";
+        this.showFileTreeDockInput.className = "b3-switch";
+        this.setting!.addItem({
+            title: "侧边栏:显示「文件」面板",
+            description: "恢复传统的文件树面板(按根目录浏览真实文件)。文件浏览/重命名/删除/打开方式等已由「虚拟文档树」面板提供,一般不需要开启;关闭此项需重启思源后生效",
+            actionElement: this.showFileTreeDockInput,
+        });
+
+        // 导入 Markdown 到思源时,是否把源文件作为资源插入文档顶部的引述块
+        this.importMdSourceAssetInput = document.createElement("input");
+        this.importMdSourceAssetInput.type = "checkbox";
+        this.importMdSourceAssetInput.className = "b3-switch";
+        this.setting!.addItem({
+            title: "导入 Markdown:插入源文件资源引述块",
+            description: "导入 .md 到思源后,把源文件上传为资源,并在文档顶部插入一个引述块链接到它(保留出处,便于回溯原文件);仅对单个 Markdown 文件生效,导入文件夹时不处理",
+            actionElement: this.importMdSourceAssetInput,
+        });
+
         // Markdown 默认模式(对齐 Obsidian:实时预览 / 源码 / 阅读)
         this.markdownModeSelect = document.createElement("select");
         this.markdownModeSelect.className = "b3-select fn__size200";
@@ -603,6 +697,8 @@ export default class FileEditorPlugin extends Plugin {
         if (this.newTabShowPinnedInput) this.newTabShowPinnedInput.checked = this.config.newTabShowPinned !== false;
         if (this.newTabShowRecentInput) this.newTabShowRecentInput.checked = this.config.newTabShowRecent !== false;
         if (this.newTabShowFavoritesInput) this.newTabShowFavoritesInput.checked = this.config.newTabShowFavorites !== false;
+        if (this.importMdSourceAssetInput) this.importMdSourceAssetInput.checked = this.config.importMdSourceAsset === true;
+        if (this.showFileTreeDockInput) this.showFileTreeDockInput.checked = this.config.showFileTreeDock === true;
         // 主题下拉的选项依赖扩展数据,此处仅同步值;选项在 onLayoutReady 后填充
         this.refreshThemeSettingUI();
     }
@@ -627,7 +723,11 @@ export default class FileEditorPlugin extends Plugin {
             newTabShowPinned: this.newTabShowPinnedInput?.checked ?? true,
             newTabShowRecent: this.newTabShowRecentInput?.checked ?? true,
             newTabShowFavorites: this.newTabShowFavoritesInput?.checked ?? true,
+            importMdSourceAsset: this.importMdSourceAssetInput?.checked ?? false,
+            showFileTreeDock: this.showFileTreeDockInput?.checked ?? false,
         };
+        // 打开开关时即时注册「文件」面板(关闭需重启思源,插件无 removeDock)
+        if (this.config.showFileTreeDock === true) this.addFileTreeDock();
         await saveConfig(this, this.config);
         // 主题设置立即生效
         this.applyConfiguredThemes();

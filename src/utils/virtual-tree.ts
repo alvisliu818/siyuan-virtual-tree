@@ -12,9 +12,11 @@
 import {DirEntry} from "../types";
 import {STORAGE_SY_MOUNTS} from "../constants";
 import {querySQL, lsNotebooks, listDocsByPath} from "../api/file";
+import {isBaiduPath} from "./baidu-path";
+import {parseStoredData} from "./stored-data";
 
 export const VIRTUAL_PREFIX = "sydoc://";
-const NOTEBOOK_PREFIX = "sydoc://nb/";
+export const NOTEBOOK_PREFIX = "sydoc://nb/";
 
 // 是否虚拟文档树路径
 export function isVirtualPath(p: string): boolean {
@@ -64,8 +66,45 @@ export function clearDocInfoCache(): void {
     docInfoCache.clear();
 }
 
+// ===== 文档标题(docId → 人类可读标题) =====
+// 标签面板等处以 sydoc://<id> 为键的条目,显示名用文档标题而不是裸 ID;
+// 与文档图标一样走"先按缓存画、后台补齐后重绘一次"的模式。
+const docTitleCache = new Map<string, string>();
+
+export function cachedDocTitle(docId: string): string | undefined {
+    return docTitleCache.get(docId);
+}
+
+export async function getDocTitle(docId: string): Promise<string> {
+    if (docTitleCache.has(docId)) return docTitleCache.get(docId)!;
+    const info = await getDocInfo(docId);
+    // 文档已删除/查询失败时回退 docId(仍可点击尝试打开)
+    const title = info?.hpath ? info.hpath.split("/").pop() || docId : docId;
+    docTitleCache.set(docId, title);
+    return title;
+}
+
+const pendingTitles = new Set<string>();
+
+// 批量确保文档标题已缓存(并发去重),取到后 onChange 一次(用于同步渲染后补绘)
+export function ensureDocTitles(docIds: string[], onChange: () => void): void {
+    const todo = Array.from(new Set(docIds.filter(id => id && !docTitleCache.has(id) && !pendingTitles.has(id))));
+    if (todo.length === 0) return;
+    todo.forEach(id => pendingTitles.add(id));
+    void (async () => {
+        for (const id of todo) {
+            try {
+                await getDocTitle(id);
+            } finally {
+                pendingTitles.delete(id);
+            }
+        }
+        onChange();
+    })();
+}
+
 // 从 listDocsByPath 返回项构造虚拟目录条目
-// item: {name(标题), path(/xxx/yyy.sy), ...}
+// item: {name(标题), path(/xxx/yyy.sy), icon(自定义图标), subFileCount(子文档数), ...}
 function toEntry(item: any): DirEntry {
     const syPath: string = String(item.path || "");
     const docId = syPath.split("/").pop()?.replace(/\.sy$/i, "") || "";
@@ -75,6 +114,9 @@ function toEntry(item: any): DirEntry {
         size: 0,
         updated: "",
         path: VIRTUAL_PREFIX + docId,
+        // 与思源文档树一致的图标渲染所需:自定义图标 + 子文档数(子文档数>0 用"文件夹"默认图标)
+        icon: String(item.icon || ""),
+        subFileCount: Number.isFinite(item?.subFileCount) ? Number(item.subFileCount) : undefined,
     };
 }
 
@@ -93,47 +135,22 @@ export async function virtualListDir(vPath: string): Promise<DirEntry[]> {
     return docs.map(toEntry);
 }
 
-// 虚拟根的显示名:笔记本名 / 文档标题(异步查询)
-export async function virtualRootLabel(vPath: string): Promise<string> {
-    try {
-        if (isNotebookRoot(vPath)) {
-            const nbId = virtualId(vPath);
-            const notebooks = await lsNotebooks();
-            const nb = notebooks.find(n => n && n.id === nbId);
-            if (nb && nb.name) return `[笔记本] ${nb.name}`;
-            return vPath;
-        }
-        const docId = virtualId(vPath);
-        const info = await getDocInfo(docId);
-        if (info && info.hpath) {
-            const segs = info.hpath.split("/").filter(Boolean);
-            if (segs.length > 0) return `[文档] ${segs[segs.length - 1]}`;
-        }
-    } catch {
-        // 查询失败回退原始路径
-    }
-    return vPath;
-}
 
-// 用 siyuan:// 协议在思源中打开文档(定位到该文档)
-export function openDocInSiyuan(docId: string): void {
-    const a = document.createElement("a");
-    a.href = `siyuan://blocks/${docId}`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-}
-
-// === 真实目录下的文档挂载 ===
-// 把思源笔记本 / 文档挂到文件树的真实目录(系统路径或 /data 子目录)下,
-// 渲染为该目录下的虚拟条目,与真实文件并存;子文档展开等行为与虚拟根一致。
+// === 真实目录下的虚拟条目挂载 ===
+// 把思源笔记本 / 文档(sydoc://)或百度网盘目录(bdpan://)挂到文件树的真实目录下,
+// 渲染为该目录下的虚拟条目,与真实文件并存。
 // 挂载只是元数据(不写文件系统),持久化到插件存储 sy-mounts.json。
 
-// 挂载记录:parent = 挂载到的真实目录;vPath = sydoc:// 虚拟路径;name = 显示名
+// 挂载记录:parent = 挂载到的真实目录;vPath = 虚拟路径(sydoc:// 或 bdpan://);name = 显示名
 export interface SyMount {
     parent: string;
     vPath: string;
     name: string;
+}
+
+// 可挂载的虚拟路径:sydoc://(思源文档树)或 bdpan://(百度网盘)
+function isMountablePath(p: string): boolean {
+    return isVirtualPath(p) || isBaiduPath(p);
 }
 
 let mountList: SyMount[] = [];
@@ -154,10 +171,11 @@ export async function initMountStore(
     mountList = [];
     try {
         const raw = await plugin.loadData(STORAGE_SY_MOUNTS);
-        const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+        // 首次使用文件不存在时 loadData 返回空串,必须安全解析
+        const parsed = parseStoredData(raw);
         if (Array.isArray(parsed)) {
             mountList = parsed
-                .filter((m: any) => m && typeof m.parent === "string" && typeof m.vPath === "string" && isVirtualPath(m.vPath))
+                .filter((m: any) => m && typeof m.parent === "string" && typeof m.vPath === "string" && isMountablePath(m.vPath))
                 .map((m: any) => ({parent: String(m.parent), vPath: String(m.vPath), name: String(m.name || "")}));
         }
     } catch (e) {
@@ -187,9 +205,9 @@ async function persistMounts(): Promise<void> {
     }
 }
 
-// 挂载思源文档/笔记本到真实目录(同目录同文档只保留一条,显示名更新为最新)
+// 挂载虚拟条目到真实目录(同目录同路径只保留一条,显示名更新为最新)
 export async function addMount(parent: string, vPath: string, name: string): Promise<void> {
-    if (!isVirtualPath(vPath)) return;
+    if (!isMountablePath(vPath)) return;
     const key = normDirKey(parent);
     mountList = mountList.filter(m => !(normDirKey(m.parent) === key && m.vPath === vPath));
     mountList.push({parent, vPath, name: name || virtualId(vPath)});
@@ -203,4 +221,13 @@ export async function removeMount(parent: string, vPath: string): Promise<boolea
     mountList = mountList.filter(m => !(normDirKey(m.parent) === key && m.vPath === vPath));
     if (mountList.length !== before) await persistMounts();
     return mountList.length !== before;
+}
+
+// 迁移到虚拟文档树后,清掉旧的思源文档挂载记录(只删 sydoc://,百度网盘 bdpan:// 保留)
+export async function dropSyDocMounts(): Promise<number> {
+    const before = mountList.length;
+    mountList = mountList.filter(m => !m.vPath.startsWith(VIRTUAL_PREFIX));
+    const removed = before - mountList.length;
+    if (removed > 0) await persistMounts();
+    return removed;
 }

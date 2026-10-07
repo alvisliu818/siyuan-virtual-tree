@@ -129,6 +129,31 @@ export async function nativeCopyToTemp(src: string): Promise<{tempPath: string; 
     return {tempPath, cleanup};
 }
 
+// 把内存中的字节写入系统临时目录(网盘等远程文件落地用),返回临时路径与清理回调
+export async function nativeWriteTempFile(
+    name: string,
+    data: ArrayBuffer | Uint8Array,
+): Promise<{tempPath: string; cleanup: () => Promise<void>}> {
+    getFs(); // 确保原生环境可用
+    const req = getNativeRequire();
+    if (!req) throw new Error("当前环境不支持访问工作空间外的文件(Node 集成不可用)");
+    const f = cachedFs;
+    const osMod = req("os");
+    const tmpBase = await f.promises.mkdtemp(await f.promises.join(osMod.tmpdir(), "syfe-download-"));
+    const safeName = (name || "download").replace(/[\\/:*?"<>|]/g, "_");
+    const tempPath = await f.promises.join(tmpBase, safeName);
+    const bytes = data instanceof Uint8Array ? new Uint8Array(data) : new Uint8Array(data);
+    await f.promises.writeFile(tempPath, bytes);
+    const cleanup = async () => {
+        try {
+            await f.promises.rm(tmpBase, {recursive: true, force: true});
+        } catch {
+            // 清理失败交给系统临时目录机制,不影响主流程
+        }
+    };
+    return {tempPath, cleanup};
+}
+
 // 确保父目录存在(写入前的兜底)
 async function ensureParentDir(f: any, path: string): Promise<void> {
     const idx = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));

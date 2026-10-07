@@ -1,5 +1,9 @@
 import {getNativeRequire} from "./native-require";
 import {toSystemPath} from "./system-path";
+import {basename} from "./path";
+import {isBaiduPath} from "./baidu-path";
+import {bdDownloadFile} from "../api/baidu-pan";
+import {nativeWriteTempFile} from "../api/native-fs";
 
 // 用系统默认(关联)应用打开指定文件 / 在系统资源管理器中定位文件
 // 用于"打开方式"菜单与旧版 Office 二进制格式(doc/xls/ppt 等)的外部打开。
@@ -101,6 +105,22 @@ export async function openWithExternalApp(siyuanPath: string): Promise<void> {
     } catch (e: any) {
         throw new Error(`${e?.message || e} (${sysPath})`);
     }
+}
+
+// 文件树路径统一的外部打开入口:网盘文件(bdpan://)先下载到系统临时目录再交给系统应用,
+// 其余路径直接透传 openWithExternalApp。供 Office/Media Tab 的「外部打开」与文件树菜单共用。
+export async function openTreeFileWithExternalApp(path: string): Promise<void> {
+    if (isBaiduPath(path)) {
+        const temp = await nativeWriteTempFile(basename(path), await bdDownloadFile(path));
+        try {
+            await openWithExternalApp(temp.tempPath);
+        } finally {
+            // 打开是异步启动外部进程,延迟清理临时副本
+            setTimeout(() => void temp.cleanup(), 30 * 1000);
+        }
+        return;
+    }
+    await openWithExternalApp(path);
 }
 
 // 在系统文件资源管理器中打开/定位

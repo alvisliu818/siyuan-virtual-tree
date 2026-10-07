@@ -1,6 +1,6 @@
 import {showMessage} from "siyuan";
 import {basename} from "../utils/path";
-import {openWithExternalApp} from "../utils/external-app";
+import {openTreeFileWithExternalApp} from "../utils/external-app";
 import {toSystemPath} from "../utils/system-path";
 import {OfficeEngine} from "./types";
 
@@ -35,7 +35,7 @@ export async function createLegacyEngine(
     const handler = async () => {
         btn.disabled = true;
         try {
-            await openWithExternalApp(path);
+            await openTreeFileWithExternalApp(path);
         } catch (e) {
             showMessage(`打开失败: ${e}`, 5000, "error");
         } finally {

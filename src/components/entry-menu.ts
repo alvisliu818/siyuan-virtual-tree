@@ -1,11 +1,12 @@
 // 条目(文件 / 思源文档)的右键菜单,「最近使用」面板与新标签页共用。
 // 统一提供:打开 / 分栏打开 / 复制各类链接 / 在文件夹树中定位 / 固定到新标签页 / 收藏。
-import {Menu, showMessage} from "siyuan";
+import {Menu, showMessage, openTab} from "siyuan";
 import {openFileTab} from "../tabs/editor-tab";
 import {toFileLink, toMarkdownFileLink} from "../utils/system-path";
 import {copyText, revealInFileTree} from "./file-tree";
 import {removeRecent} from "../recent-files";
 import {isPinned, isFavorite, itemFromPath, itemFromDoc, toggleInGroup} from "../start-page";
+import {isVirtualPath, virtualId} from "../utils/virtual-tree";
 
 // 菜单目标:兼容 recent-files 的 RecentEntry 与 start-page 的 StartPageItem
 export interface EntryTarget {
@@ -33,8 +34,8 @@ function copyWithToast(text: string | null, okMsg: string, failMsg: string): voi
     );
 }
 
-// 打开思源文档(思源协议链接跳转并定位)
-export function openSiyuanDoc(id: string): void {
+// 思源协议链接跳转并定位(兜底:不依赖 app 实例,但需系统已注册 siyuan:// 协议)
+function openDocByProtocol(id: string): void {
     const a = document.createElement("a");
     a.href = `siyuan://blocks/${id}`;
     document.body.appendChild(a);
@@ -42,10 +43,34 @@ export function openSiyuanDoc(id: string): void {
     a.remove();
 }
 
-// 打开条目:文档 → 思源协议;文件 → openFileTab 统一路由
+// 打开思源文档:优先 openTab 在当前应用内直接打开正文(挂载文档/最近文档等场景
+// 系统协议未注册或无法唤起时协议跳转会静默失败);失败再回退 siyuan:// 协议
+export function openSiyuanDoc(id: string, app?: any): void {
+    if (app) {
+        try {
+            void openTab({app, doc: {id}}).catch(() => openDocByProtocol(id));
+            return;
+        } catch {
+            // openTab 不可用时走协议跳转
+        }
+    }
+    openDocByProtocol(id);
+}
+
+// 打开条目:文档 → 应用内打开(回退协议);文件 → openFileTab 统一路由
+// 思源虚拟路径(sydoc://<id>,思源文档/块在标签面板、收藏等处以此作键)→ 走思源协议
 export function openEntry(plugin: IPluginForEntryMenu, target: EntryTarget): void {
-    if (target.kind === "doc" && target.id) openSiyuanDoc(target.id);
-    else if (target.path) openFileTab(plugin as any, target.path);
+    if (target.kind === "doc" && target.id) openSiyuanDoc(target.id, plugin.app);
+    else if (target.path) {
+        if (isVirtualPath(target.path)) {
+            const id = virtualId(target.path);
+            if (id) {
+                openSiyuanDoc(id, plugin.app);
+                return;
+            }
+        }
+        openFileTab(plugin as any, target.path);
+    }
 }
 
 // 弹出右键菜单

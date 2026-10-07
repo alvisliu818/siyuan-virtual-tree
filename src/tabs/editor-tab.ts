@@ -4,11 +4,12 @@ import {basename, extname, dirname, joinPath, sepFor} from "../utils/path";
 import {EditorConfig, DirEntry} from "../types";
 import {createEditor} from "../editor/monaco";
 import {readDir} from "../api/file";
-import {BINARY_EXTENSIONS, isImageFile, isOfficeFile, isMediaFile} from "../constants";
+import {BINARY_EXTENSIONS, isImageFile, isOfficeFile, isMediaFile, isNotebookFile} from "../constants";
 import {openMediaTab} from "./media-tab";
 import {openImageTab} from "./image-tab";
 import {openOfficeTab} from "./office-tab";
 import {openMarkdownTab} from "./markdown-tab";
+import {openNotebookTab} from "./notebook-tab";
 import {
     getModel,
     saveModel,
@@ -135,6 +136,11 @@ export function openFileTab(plugin: IPluginForTab, path: string, opts?: OpenTabO
     // 音视频文件交由独立的播放器 Tab 处理
     if (isMediaFile(path)) {
         openMediaTab(plugin as any, path, opts);
+        return;
+    }
+    // Jupyter Notebook(.ipynb)交由独立的 Notebook Tab 处理(单元格查看/编辑)
+    if (isNotebookFile(path)) {
+        openNotebookTab(plugin as any, path, opts);
         return;
     }
     // Office 文档(docx/xlsx/pptx、csv、旧版 doc/xls/ppt)交由独立的 Office Tab 处理

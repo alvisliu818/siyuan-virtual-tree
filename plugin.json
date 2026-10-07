@@ -30,8 +30,8 @@
     "zh-CN": "文件编辑器"
   },
   "description": {
-    "default": "VSCode-like file editor & Obsidian-like file manager for SiYuan, powered by Monaco Editor.",
-    "zh-CN": "类 VSCode 文件编辑器与类 Obsidian 文件管理器,基于 Monaco Editor。"
+    "default": "VSCode-like file editor & Obsidian-like file manager for SiYuan, powered by Monaco Editor. Supports mounting Baidu Netdisk (incl. sync space) into the file tree.",
+    "zh-CN": "类 VSCode 文件编辑器与类 Obsidian 文件管理器,基于 Monaco Editor;支持挂载百度网盘文件与文件夹(含同步空间)。"
   },
   "readme": {
     "default": "README.md",
@@ -43,6 +43,8 @@
     "monaco",
     "file manager",
     "editor",
-    "VSCode"
+    "VSCode",
+    "百度网盘",
+    "同步空间"
   ]
 }
