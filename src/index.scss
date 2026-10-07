@@ -788,6 +788,21 @@
     font-size: 14px;
 }
 
+// 头部「▶ 运行」(仅 Python 文件):推到路径行最右,点击丢进终端执行
+.syfe-editor__run {
+    margin-left: auto;
+    flex-shrink: 0;
+    cursor: pointer;
+    color: var(--b3-theme-primary);
+    padding: 1px 6px;
+    border-radius: 3px;
+    user-select: none;
+
+    &:hover {
+        background: var(--b3-list-hover);
+    }
+}
+
 .syfe-editor__container {
     flex: 1;
     min-height: 0;
@@ -3218,6 +3233,88 @@
     &--md {
         p:first-child {
             margin-top: 0;
+        }
+    }
+}
+
+// ===== 文档内 Python 代码块运行 =====
+.syfe-cb-run__btn {
+    color: var(--b3-theme-primary);
+    cursor: pointer;
+
+    &--stop {
+        color: var(--b3-theme-danger);
+    }
+}
+
+.syfe-cb-run {
+    // 面板挂在代码块外面(作为下一个兄弟),所以要缩进一点跟代码块对齐,
+    // 上边距略小于代码块的下边距,视觉上才像"贴着代码块"
+    margin: -2px 0 6px 24px;
+    border: 1px solid var(--b3-border-color);
+    border-radius: 4px;
+    background: var(--b3-theme-surface);
+    font-size: var(--b3-font-size-code, 13px);
+    line-height: var(--b3-line-height-code, 20px);
+    overflow: hidden;
+
+    &__head {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 2px 8px;
+        background: var(--b3-theme-surface-lighter);
+        border-bottom: 1px solid var(--b3-border-color);
+        font-size: 12px;
+        user-select: none;
+    }
+
+    &__title {
+        font-weight: 500;
+    }
+
+    &__head--err .syfe-cb-run__title {
+        color: var(--b3-theme-danger);
+    }
+
+    &__btn2 {
+        cursor: pointer;
+        padding: 0 5px;
+        border-radius: 3px;
+        color: var(--b3-theme-primary);
+
+        &:hover {
+            background: var(--b3-list-hover);
+        }
+    }
+
+    &__body {
+        // 输出不换行会横向撑破版心;保留换行但允许长行内部滚动之外的自然折行
+        white-space: pre-wrap;
+        word-break: break-word;
+        padding: 4px 10px;
+        max-height: 60vh;
+        overflow: auto;
+        font-family: var(--b3-font-family-code, Consolas, Monaco, monospace);
+    }
+
+    &__stdin {
+        display: flex;
+        padding: 3px 8px;
+        border-top: 1px dashed var(--b3-border-color);
+
+        input {
+            flex: 1;
+            border: none;
+            outline: none;
+            background: transparent;
+            color: var(--b3-theme-on-surface);
+            font-family: var(--b3-font-family-code, Consolas, Monaco, monospace);
+            font-size: inherit;
+
+            &::placeholder {
+                color: var(--b3-theme-on-surface-light);
+            }
         }
     }
 }

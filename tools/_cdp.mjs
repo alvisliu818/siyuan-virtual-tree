@@ -208,6 +208,62 @@ async function main() {
         return;
     }
 
+    if (cmd === "key") {
+        // 通用按键注入(Input.dispatchKeyEvent),**不碰焦点**。
+        //
+        // 为什么需要它:type 子命令会先去聚焦 .xterm-helper-textarea,
+        // 那是给终端用的;要操作编辑器正文里的内容时聚焦它反而会抢走选区,
+        // 按键全都落到终端上去了(实测 Backspace 删不掉代码块里的字符)。
+        //
+        // 用法:key <键名或字符> [--win X]
+        //   key Backspace / key Enter / key Escape / key abc
+        const t = pickTarget(targets, win);
+        const ws = new WebSocket(t.webSocketDebuggerUrl);
+        let msgId = 0;
+        const pending = new Map();
+        const send = (method, params) => new Promise((resolve, reject) => {
+            const id = ++msgId + Math.floor(Math.random() * 1e6);
+            pending.set(id, {resolve, reject});
+            ws.send(JSON.stringify({id, method, params}));
+        });
+        ws.addEventListener("message", (ev) => {
+            const m = JSON.parse(ev.data);
+            if (m.id && pending.has(m.id)) {
+                const p = pending.get(m.id);
+                pending.delete(m.id);
+                if (m.error) p.reject(new Error(m.error.message));
+                else p.resolve(m.result);
+            }
+        });
+        await new Promise((res, rej) => {
+            ws.addEventListener("open", res);
+            ws.addEventListener("error", () => rej(new Error("ws 连接失败")));
+        });
+        // 常见键 → Windows 虚拟键码;不在表里的按普通字符逐个打
+        const VK = {
+            Backspace: 8, Tab: 9, Enter: 13, Escape: 27, Delete: 46,
+            ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40,
+            Home: 36, End: 35, PageUp: 33, PageDown: 34,
+        };
+        for (const key of positional) {
+            const vk = VK[key];
+            if (vk) {
+                const common = {windowsVirtualKeyCode: vk, key, code: key.length === 1 ? "Key" + key.toUpperCase() : key};
+                await send("Input.dispatchKeyEvent", {type: "rawKeyDown", ...common});
+                await send("Input.dispatchKeyEvent", {type: "keyUp", ...common});
+            } else {
+                for (const ch of key) {
+                    await send("Input.dispatchKeyEvent", {type: "keyDown", text: ch, unmodifiedText: ch});
+                    await send("Input.dispatchKeyEvent", {type: "keyUp", text: ch, unmodifiedText: ch});
+                }
+            }
+            await wait(40);
+        }
+        ws.close();
+        console.log("已发送按键:", positional.join(" + "));
+        return;
+    }
+
     if (cmd === "front") {
         // 把窗口提到前台并取消最小化。
         // 最小化/后台的 Electron 窗口不绘制(requestAnimationFrame 不触发),
@@ -304,7 +360,7 @@ async function main() {
         return;
     }
 
-    console.log("用法: targets | eval '<js>' [--win X] | evalFile <path> [--win X] | type <text> [--win X] | openws [path] [--win X] | shot out.png [--win X] | reload [--win X] | mouse <x> <y> [--clicks N] [--win X]");
+    console.log("用法: targets | eval '<js>' [--win X] | evalFile <path> [--win X] | type <text> [--win X] | key <键名/字符> [--win X] | openws [path] [--win X] | shot out.png [--win X] | reload [--win X] | front [--win X] | mouse <x> <y> [--clicks N] [--win X]");
 }
 
 main().catch(e => {

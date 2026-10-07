@@ -31,6 +31,8 @@ import {openBaiduPanDialog} from "./components/baidu-pan-dialog";
 import {registerSlashCommands} from "./protyle/slash-commands";
 import {registerLinkReveal} from "./protyle/link-reveal";
 import {registerMountMenu} from "./protyle/mount-menu";
+import {registerCodeBlockRun, disposeCodeBlockRun} from "./protyle/code-block-run";
+import {loadCodeBlockRunData, flushCodeBlockRunData} from "./protyle/code-block-run-store";
 import {initMountTree, migrateSyDocMounts, SYFE_RELATION_TREE_CHANGED_EVENT} from "./mount-tree";
 import {createMountTreeDockConfig} from "./dock/mount-tree-dock";
 import {openExtensionMarket} from "./extensions/market-ui";
@@ -152,6 +154,9 @@ export default class FileEditorPlugin extends Plugin {
         // 思源文档树 / 正文块右键菜单:追加「挂载到虚拟文档树」
         registerMountMenu(this);
 
+        // 正文内 Python 代码块:注入运行按钮 + 代码块下方的输出面板
+        registerCodeBlockRun(this);
+
         // 接管思源顶部「+」:点击改为打开新标签页(设置里可关闭,恢复原生新建文档)
         installNewTabHijack(this as any, () => this.config.newTabReplacePlus !== false);
 
@@ -240,6 +245,13 @@ export default class FileEditorPlugin extends Plugin {
     await loadOpenWithData(this);
         } catch (e) {
      console.error("[siyuan-file-editor] 加载打开方式失败:", e);
+        }
+        // 加载正文代码块的运行输出存档(代码块面板是同步读内存缓存的,
+        // 必须在 registerCodeBlockRun 之前完成 —— 注册时会立刻给已打开的文档补面板)
+        try {
+            await loadCodeBlockRunData(this);
+        } catch (e) {
+            console.error("[siyuan-file-editor] 加载代码块输出失败:", e);
         }
         // 加载最近使用列表(文件 + 思源文档,供侧边栏面板与斜杆命令选择器使用)
         try {
@@ -371,6 +383,10 @@ export default class FileEditorPlugin extends Plugin {
         void disposePythonKernel();
         void stopPythonLanguageServer();
         disposeAll();
+        // 正文代码块运行:中断所有还在跑的进程、摘掉注入的面板与按钮,
+        // 并把防抖窗口内的输出强制落盘
+        disposeCodeBlockRun();
+        void flushCodeBlockRunData();
         // 清理扩展系统
         clearAllGrammars();
         clearAllThemes();
