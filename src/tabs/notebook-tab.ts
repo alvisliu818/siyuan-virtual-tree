@@ -19,6 +19,8 @@ import {getCurrentMode} from "../editor/monaco";
 import {getActiveThemeName} from "../extensions/theme-loader";
 import {EditorConfig} from "../types";
 import {VDITOR_CDN, ensureVditorCSS} from "./markdown-tab";
+// Vditor.preview 会读全局 window.Lute,vditor 那份缺 SetTabs —— 见 utils/lute-guard
+import {ensureSiyuanLute} from "../utils/lute-guard";
 import {
     getPythonKernel, isPythonAvailable, disposePythonKernel,
     type ExecuteOutcome, type KernelStatus,
@@ -1015,6 +1017,10 @@ export function createNotebookTabConfig(_plugin: IPluginForNotebookTab) {
 
             // 加载文件
             const load = async () => {
+                // md 单元格的预览走 Vditor.preview → 内部要读全局 window.Lute。
+                // 思源是懒加载它自己的 lute 的,开起来的第一个页签很可能赶上还没就位;
+                // 而且必须保证 vditor 那份(缺 SetTabs)不会顶上来 —— 详见 utils/lute-guard。
+                await ensureSiyuanLute();
                 // 重载会换掉整批宿主节点,先把只读实例与观察器收掉
                 try {
                     self._roObserver?.disconnect();

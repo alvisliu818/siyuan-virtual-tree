@@ -42,8 +42,24 @@ import {clearAllIconThemes, getIconThemesWithMissingIcons, getLoadedIconThemes, 
 import {registerPythonLsp, disposePythonLsp} from "./utils/python-lsp-bridge";
 import {disposePythonKernel} from "./utils/python-kernel";
 import {stopPythonLanguageServer} from "./utils/python-lsp";
+// vditor 会用自己的 lute 覆写 window.Lute,使思源之后新建的文档编辑器全部失效。
+// 必须在任何 vditor 实例被创建之前装好守卫 —— 所以放在顶层 import 里(模块求值顺序)。
+import {installLuteGuard} from "./utils/lute-guard";
 import {refreshAllExpanded} from "./components/file-tree";
 import "./index.scss";
+
+// 守卫必须在插件加载的第一时间生效 —— 早于任何 vditor 实例被创建。
+// 放在这里(模块求值期)而不是 onload 里:onload 之后页签才可能已经被打开。
+installLuteGuard();
+
+// addTab/addDock 的回调 this 在 siyuan 类型里钉死为 Custom(element: Element),
+// 而各 Tab/Dock 的实例接口把 element 收窄成 HTMLElement、再挂一堆自有可选字段
+// —— Custom 结构上赋不到它们那边(element 的型变方向相反),但运行时
+// openTab/addDock 挂载的正是同一个实例对象,纯类型层冲突。
+// 全部 13 个注册点统一走这里收口,as 只出现在这一处。
+function asSiyuanCustom<C extends object>(cfg: C): any {
+    return cfg;
+}
 
 export default class FileEditorPlugin extends Plugin {
     public config: EditorConfig = DEFAULT_CONFIG;
@@ -105,27 +121,27 @@ export default class FileEditorPlugin extends Plugin {
         }
 
         // 注册 Tab 类型
-        this.addTab(createEditorTabConfig(this as any));
-        this.addTab(createImageTabConfig(this as any));
-        this.addTab(createOfficeTabConfig(this as any));
-        this.addTab(createMarkdownTabConfig(this as any));
-        this.addTab(createMediaTabConfig(this as any));
+        this.addTab(asSiyuanCustom(createEditorTabConfig(this as any)));
+        this.addTab(asSiyuanCustom(createImageTabConfig(this as any)));
+        this.addTab(asSiyuanCustom(createOfficeTabConfig(this as any)));
+        this.addTab(asSiyuanCustom(createMarkdownTabConfig(this as any)));
+        this.addTab(asSiyuanCustom(createMediaTabConfig(this as any)));
         // Jupyter Notebook(.ipynb)查看与编辑
-        this.addTab(createNotebookTabConfig(this as any));
+        this.addTab(asSiyuanCustom(createNotebookTabConfig(this as any)));
         // 新标签页(接管顶部「+」后打开的启动台:搜索 + 固定 + 最近打开 + 收藏)
-        this.addTab(createStartTabConfig(this as any));
-        this.addTab(createSearchTabConfig(this as any));
-        this.addTab(createTerminalTabConfig(this as any));
+        this.addTab(asSiyuanCustom(createStartTabConfig(this as any)));
+        this.addTab(asSiyuanCustom(createSearchTabConfig(this as any)));
+        this.addTab(asSiyuanCustom(createTerminalTabConfig(this as any)));
 
         // 注册 Dock
         // 注:「文件」面板默认**不注册**(能力已由「虚拟文档树」面板承接);
         // 若用户在设置里打开 showFileTreeDock,会在 onLayoutReady 补注册(见下)。
         // 侧边栏「最近使用」面板(展示最近打开的文件,点击打开/右键复制链接)
-        this.addDock(createRecentDockConfig(this as any));
+        this.addDock(asSiyuanCustom(createRecentDockConfig(this as any)));
         // 侧边栏「标签」面板(按标签聚合文件/文件夹,文件夹可就地逐级展开)
-        this.addDock(createTagDockConfig(this as any));
+        this.addDock(asSiyuanCustom(createTagDockConfig(this as any)));
         // 侧边栏「虚拟文档树」面板(初始为空,挂载文件/文件夹/思源文档/思源块,支持嵌套)
-        this.addDock(createMountTreeDockConfig(this as any));
+        this.addDock(asSiyuanCustom(createMountTreeDockConfig(this as any)));
 
         // 注册思源编辑器斜杆命令(输入 /file 或 /文件 插入文件链接)
         registerSlashCommands(this, () => this.getFileTreeRoot());
@@ -201,7 +217,7 @@ export default class FileEditorPlugin extends Plugin {
     private addFileTreeDock(): void {
         if (this.fileTreeDockAdded) return;
         this.fileTreeDockAdded = true;
-        this.addDock(createFileTreeDockConfig(this as any));
+        this.addDock(asSiyuanCustom(createFileTreeDockConfig(this as any)));
     }
 
     async onLayoutReady(): Promise<void> {

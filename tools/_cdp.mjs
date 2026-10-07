@@ -11,6 +11,8 @@
 
 const CDP_PORT = 9222;
 
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
 async function listTargets() {
     const res = await fetch(`http://127.0.0.1:${CDP_PORT}/json/list`);
     return res.json();
@@ -206,7 +208,103 @@ async function main() {
         return;
     }
 
-    console.log("用法: targets | eval '<js>' [--win X] | evalFile <path> [--win X] | type <text> [--win X] | openws [path] [--win X] | shot out.png [--win X]");
+    if (cmd === "front") {
+        // 把窗口提到前台并取消最小化。
+        // 最小化/后台的 Electron 窗口不绘制(requestAnimationFrame 不触发),
+        // 很多东西会一直挂着不初始化 —— 抓不到任何报错但就是不工作,很容易误判。
+        const t = pickTarget(targets, win);
+        const port = kernelPort(t.url);
+        const ws = new WebSocket(t.webSocketDebuggerUrl);
+        await new Promise((res, rej) => {
+            ws.addEventListener("open", res);
+            ws.addEventListener("error", () => rej(new Error("ws 连接失败")));
+        });
+        ws.send(JSON.stringify({id: 1, method: "Page.bringToFront"}));
+        ws.send(JSON.stringify({
+            id: 2,
+            method: "Browser.setWindowBounds",
+            params: {windowId: Number(t.windowId) || 0, bounds: {windowState: "normal"}},
+        }));
+        await wait(1200);
+        try { ws.close(); } catch { /* ignore */ }
+        const after = (await listTargets()).find((x) => kernelPort(x.url) === port);
+        const state = after ? await evalIn(after, "document.visibilityState") : {error: "窗口消失"};
+        console.log(`已请求前台;visibilityState=${state.result ?? state.error}`);
+        return;
+    }
+
+    if (cmd === "mouse") {
+        // 真实鼠标输入(Input.dispatchMouseEvent)。
+        // 合成 MouseEvent 经常不灵:思源的文件树/标签栏有自己的命中判定
+        // (closest(".b3-list-item__text")、isNotCtrl、双击计时器等),走原生事件最稳。
+        // 用法:mouse <x> <y> [--clicks 2] [--moveto] [--win <端口>]
+        const [sx, sy] = positional;
+        const ci = rest.indexOf("--clicks");
+        const clicks = ci >= 0 ? Number(rest[ci + 1]) : 1;
+        const moveFirst = rest.includes("--moveto");
+        const t = pickTarget(targets, win);
+        const ws = new WebSocket(t.webSocketDebuggerUrl);
+        let msgId = 0;
+        const pending = new Map();
+        const send = (method, params) => new Promise((resolve, reject) => {
+            const id = ++msgId + Math.floor(Math.random() * 1e6);
+            pending.set(id, {resolve, reject});
+            ws.send(JSON.stringify({id, method, params}));
+        });
+        ws.addEventListener("message", (ev) => {
+            const m = JSON.parse(ev.data);
+            if (m.id && pending.has(m.id)) {
+                const p = pending.get(m.id);
+                pending.delete(m.id);
+                if (m.error) p.reject(new Error(m.error.message));
+                else p.resolve(m.result);
+            }
+        });
+        await new Promise((res, rej) => {
+            ws.addEventListener("open", res);
+            ws.addEventListener("error", () => rej(new Error("ws 连接失败")));
+        });
+        const x = Number(sx);
+        const y = Number(sy);
+        if (moveFirst) {
+            await send("Input.dispatchMouseEvent", {type: "mouseMoved", x, y, button: "none"});
+        }
+        for (let c = 1; c <= clicks; c++) {
+            await send("Input.dispatchMouseEvent", {type: "mousePressed", x, y, button: "left", buttons: 1, clickCount: c});
+            await send("Input.dispatchMouseEvent", {type: "mouseReleased", x, y, button: "left", buttons: 0, clickCount: c});
+            if (c < clicks) await wait(80);
+        }
+        ws.close();
+        console.log(`已在 (${x}, ${y}) 点击 ${clicks} 下`);
+        return;
+    }
+
+    if (cmd === "reload") {
+        // 页面重载。题目:reload 会断掉当前 ws,wevSuperSize 的 done promise 可能
+        // 永远不 resolve;所以这里不等 Runtime.evaluate 的回包,只等它超时后
+        // 再重新列一次 target 确认窗口活着。
+        const t = pickTarget(targets, win);
+        const port = kernelPort(t.url);
+        const ws = new WebSocket(t.webSocketDebuggerUrl);
+        ws.addEventListener("open", () => ws.send(JSON.stringify({
+            id: 1, method: "Page.reload", params: {ignoreCache: false},
+        })));
+        await wait(1500);
+        try { ws.close(); } catch { /* ignore */ }
+        // 轮询直到重载完成(页面能响应 eval)
+        let ok = false;
+        for (let i = 0; i < 20; i++) {
+            await wait(1500);
+            const fresh = (await listTargets()).find((x) => kernelPort(x.url) === port);
+            if (!fresh) continue;
+            const r = await evalIn(fresh, "document.readyState");
+            if (!r.error && r.result === "complete") { ok = true; break; }
+        }
+        console.log(ok ? `窗口 ${port} 重载完成` : `窗口 ${port} 重载后 30s 仍未就绪`);
+        return;
+    }
+
+    console.log("用法: targets | eval '<js>' [--win X] | evalFile <path> [--win X] | type <text> [--win X] | openws [path] [--win X] | shot out.png [--win X] | reload [--win X] | mouse <x> <y> [--clicks N] [--win X]");
 }
 
 main().catch(e => {

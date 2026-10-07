@@ -8,6 +8,8 @@ import {getModel, saveModel, markDirty, isDirty, consumePendingReveal} from "../
 import {readBinaryFile} from "../api/file";
 import {createBacklinkPanel, BacklinkPanel} from "../components/backlink-panel";
 import {highlightMatches, clearFindHighlights, setCurrentFindHit} from "../components/markdown-find";
+// vditor 与思源共用 window.Lute,且 vditor 那份缺 SetTabs —— 详见 utils/lute-guard 的说明
+import {ensureSiyuanLute} from "../utils/lute-guard";
 
 // Markdown 编辑 Tab:对齐 Obsidian 的三态编辑器
 // - live    实时预览:Vditor ir(即时渲染),光标所在行显示源码、其余实时渲染,可编辑
@@ -59,41 +61,6 @@ interface MarkdownTabInstance {
 // Vditor 静态资源目录(webpack 已复制 vditor/dist 到插件目录)
 // 导出供 Notebook Tab 复用(md 单元格渲染 / 样式)
 export const VDITOR_CDN = "/plugins/siyuan-file-editor/vditor";
-
-// ===== window.Lute 保护 =====
-// vditor 首次初始化会注入自己的 lute.min.js 并覆写 window.Lute——同名全局,但 vditor 的
-// 构建缺 SetTabs/SpinBlockDOM 等思源方法,覆写后思源原生文档的渲染全部报错。
-// vditor 只在构造后的 setLute 里读一次全局,之后持有自己的实例;因此把覆写窗口压到最小:
-// 创建前换上 vditor 构建(首次由脚本自己覆写),vditor.lute 一就绪立刻还原思源的 Lute。
-let syLute: any = null;   // 思源原生 Lute(首次创建 vditor 前快照)
-let vdLute: any = null;   // vditor 的 Lute 构建(首次脚本加载后捕获)
-let luteRestoreTimer: any = null;
-
-function armVditorLute(vditor: Vditor): void {
-    try {
-        if (!syLute) syLute = (window as any).Lute ?? null;
-        if (vdLute) (window as any).Lute = vdLute;
-        if (luteRestoreTimer) clearInterval(luteRestoreTimer);
-        luteRestoreTimer = setInterval(() => {
-            if ((vditor as any).lute) disarmVditorLute();
-        }, 3);
-    } catch {
-        // 忽略:保护失败不影响编辑器本身
-    }
-}
-
-function disarmVditorLute(): void {
-    if (luteRestoreTimer) {
-        clearInterval(luteRestoreTimer);
-        luteRestoreTimer = null;
-    }
-    try {
-        if (!vdLute && (window as any).Lute !== syLute) vdLute = (window as any).Lute;
-        if (syLute) (window as any).Lute = syLute;
-    } catch {
-        // 忽略
-    }
-}
 
 // 超过此大小(字节)的 Markdown 强制源码模式(Vditor 大内容性能差)
 const WYSIWYG_MAX_SIZE = 512 * 1024;
@@ -551,7 +518,13 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
             // 创建 Vditor 实例。两种形态共用一套配置:
             // - live    : mode="ir" 即时渲染(光标所在行显示源码、其余实时渲染)+ 工具栏,可编辑
             // - reading : mode="wysiwyg" 完整渲染 + 无工具栏 + disabled(),只读
-            const enterVditor = (vdMode: "ir" | "wysiwyg", readOnly: boolean) => {
+            // 注意:创建前必须先等到思源自己的 Lute 就位。vditor 的 md2html 会读全局
+            // window.Lute 建实例;我们的 lute-guard 已经把 vditor 那份 lute.min.js
+            // 拦在外面(占位 script 让它根本不会下载),所以它拿到的必然是思源的构建
+            // —— 而思源构建是 vditor 构建的超集,直接用没问题。
+            // 若思源还没懒加载(开起来的第一个页签常常撞上),这里主动补载一次。
+            const enterVditor = async (vdMode: "ir" | "wysiwyg", readOnly: boolean) => {
+                await ensureSiyuanLute();
                 closeFind();   // 离开源码态:关掉查找栏并清高亮
                 destroyMonaco(self);
                 // 同一容器上可能已有 Vditor(live ⇄ reading 切换),必须先销毁
@@ -600,8 +573,6 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                         // vditor.lute 在异步 init 完成后才存在,必须在此 patch
                         // (构造函数返回时 lute 尚未赋值,立即 patch 会静默失败)
                         patchLuteDOM2Md(self, vditor);
-                        // vditor 已持有自己的 lute 实例,立刻还原思源的 window.Lute
-                        disarmVditorLute();
                         // 阅读模式:渲染完成后置为只读
                         if (readOnly) {
                             try {
@@ -618,9 +589,6 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                     },
                 });
                 self._vditor = vditor;
-                // vditor 初始化会注入自己的 lute 脚本覆写 window.Lute:先武装保护,
-                // vditor.lute 一就绪(轮询)或 after 回调时还原思源的 Lute
-                armVditorLute(vditor);
                 // 构造后立即尝试 patch(lute 可能已就绪;未就绪由 after 回调兜底)
                 patchLuteDOM2Md(self, vditor);
                 // 兜底扫描(after 可能早于图片 DOM 插入;观察器此时未启动需手动扫一次)
@@ -628,9 +596,9 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
             };
 
             // 实时预览(类 Obsidian Live Preview)
-            const enterLive = () => enterVditor("ir", false);
+            const enterLive = () => void enterVditor("ir", false);
             // 阅读模式(类 Obsidian Reading):完整渲染 + 只读
-            const enterReading = () => enterVditor("wysiwyg", true);
+            const enterReading = () => void enterVditor("wysiwyg", true);
 
             // 模式切换按钮
             this.element.querySelector<HTMLElement>(".syfe-md__bar")!.addEventListener("click", (e: MouseEvent) => {
@@ -797,8 +765,6 @@ function destroyVditor(tab: MarkdownTabInstance): void {
             // 忽略
         }
         tab._vditor = undefined;
-        // 若该实例还在初始化(轮询未触发),销毁时停止轮询并还原思源 Lute
-        disarmVditorLute();
     }
     if (tab._contentEl) tab._contentEl.innerHTML = "";
 }
