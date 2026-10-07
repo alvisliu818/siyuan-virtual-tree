@@ -59,6 +59,8 @@ export interface RelationNode {
     /** 该文档在思源原生层级里的**子文档数**(决定图标是 folder 还是 file) */
     subFileCount: number;
     children: RelationNode[];
+    /** 是否是树的根(= 挂载到虚拟文档树的那个文档)。根才能「从虚拟树移除」 */
+    isRoot: boolean;
     /** 消歧阶段临时保存父指针,用完即清(避免序列化时循环引用) */
     __parent?: RelationNode | null;
 }
@@ -72,6 +74,10 @@ function sqlStr(value: string): string {
 
 function sqlInList(ids: string[]): string {
     return "(" + ids.map((id) => sqlStr(id)).join(",") + ")";
+}
+
+function dedup(ids: string[]): string[] {
+    return Array.from(new Set(ids.filter(Boolean)));
 }
 
 async function sqlQuery<T>(stmt: string): Promise<T[]> {
@@ -284,11 +290,15 @@ function sortNodes(
 /**
  * 构建引用关系森林。
  * 返回的节点带 depth,由调用方扁平化渲染。
+ *
+ * rootDocIds = 挂载到虚拟文档树的思源文档 id(关系树的根,对齐原插件的 rootDocIds)。
+ * 这些文档即使没被任何文档引用也照样作为根出现(引用者为空,只是没有子节点);
+ * 传空数组时才退回"自动挑根":挑有引用者但没被引用的文档,避免用户什么都没挂时面板全空。
  */
-export async function buildRelationForest(opts: RelationTreeOptions): Promise<RelationNode[]> {
+export async function buildRelationForest(opts: RelationTreeOptions, rootDocIds: string[] = []): Promise<RelationNode[]> {
     const options: RelationTreeOptions = {...DEFAULT_RELATION_OPTIONS, ...opts};
     const relations = await fetchRefRelations();
-    if (relations.size === 0) return [];
+    if (relations.size === 0 && rootDocIds.length === 0) return [];
 
     // 并入物理子文档(可选)
     if (options.includePhysicalSubtree) {
@@ -304,7 +314,9 @@ export async function buildRelationForest(opts: RelationTreeOptions): Promise<Re
     const allDocIds = await fetchAllDocIds();
     if (allDocIds.length === 0) return [];
     const docIdSet = new Set(allDocIds);
-    const rootIds = pickRoots(allDocIds, relations);
+    // 挂载的文档里可能有已被删除的(docId 不在了),要滤掉,否则会建出一个空节点
+    const mounted = rootDocIds.filter((id) => docIdSet.has(id));
+    const rootIds = mounted.length > 0 ? dedup(mounted) : pickRoots(allDocIds, relations);
     if (rootIds.length === 0) return [];
 
     // 预取涉及的全部文档信息与权重(递归收集,受 maxNodes 约束)
@@ -340,6 +352,7 @@ export async function buildRelationForest(opts: RelationTreeOptions): Promise<Re
             weight: weightMap.get(docId) ?? 0,
             subFileCount: subFileCountMap.get(docId) ?? 0,
             children: [],
+            isRoot: false,
         };
         if (depth >= options.maxDepth) return node;
 
@@ -357,7 +370,10 @@ export async function buildRelationForest(opts: RelationTreeOptions): Promise<Re
     const roots: RelationNode[] = [];
     for (const rootId of rootIds) {
         const node = build(rootId, 0, new Set());
-        if (node) roots.push(node);
+        if (node) {
+            node.isRoot = true;   // 根 = 挂载进来的文档,只有根能被「从虚拟树移除」
+            roots.push(node);
+        }
     }
     sortNodes(roots, RELATION_ROOT_KEY, options);
     // 同名兄弟消歧:思源允许不同目录存在同名文档,不消歧界面上会出现多行一模一样的内容

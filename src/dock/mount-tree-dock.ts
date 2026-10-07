@@ -2,7 +2,7 @@
 // 可挂载:真实文件/文件夹、思源文档(自动带出子文档)、思源块(按子块递归展开);
 // 支持嵌套挂载(把条目挂到另一个挂载项下),可随时取消挂载。
 // 数据层 src/mount-tree.ts(virtual-tree.json);结构变化派发 syfe:mount-tree-changed 自动重绘。
-import {Menu, confirm, showMessage} from "siyuan";
+import {Menu, showMessage} from "siyuan";
 import {MOUNT_TREE_DOCK_TYPE} from "../constants";
 import {readDir} from "../api/file";
 import {DirEntry} from "../types";
@@ -115,9 +115,8 @@ type Row =
     | {kind: "file"; path: string; name: string; isDir: boolean; depth: number; expanded: boolean}
     | {kind: "doc"; docId: string; name: string; depth: number; expanded: boolean; icon?: string; subFileCount?: number}
     | {kind: "block"; blockId: string; name: string; depth: number; expanded: boolean}
-    // 引用关系树的只读行(自动生成,不可挂载/取消挂载/重命名)
-    | {kind: "relation"; docId: string; name: string; hpath: string; depth: number; expanded: boolean; hasChildren: boolean; draggable: boolean; subFileCount: number}
-    | {kind: "relationEmpty"; depth: number}
+    // 引用关系树的只读行(自动生成)。isRoot = 该文档是挂载进来的根节点。
+    | {kind: "relation"; docId: string; name: string; hpath: string; depth: number; expanded: boolean; hasChildren: boolean; draggable: boolean; subFileCount: number; isRoot: boolean}
     | {kind: "relationEmpty"; depth: number}
     | {kind: "empty"; depth: number}
     | {kind: "loading"; depth: number};
@@ -279,6 +278,33 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
             };
             const relationEnabled = () => relCfg().enabled;
 
+            // 关系树的根 = 挂载到虚拟文档树的思源文档(对齐原插件的 rootDocIds)。
+            // 笔记本挂载不参与:笔记本是容器,不是引用关系里的文档节点。
+            const mountedDocIds = (): string[] => {
+                const out: string[] = [];
+                const walk = (list: MountItem[]) => {
+                    for (const it of list) {
+                        if (it.kind === "doc" && it.targetId) out.push(it.targetId);
+                        walk(it.children || []);
+                    }
+                };
+                walk(getRoots() || []);
+                return Array.from(new Set(out));
+            };
+
+            // 按 docId 找到对应的挂载项(用于「取消挂载」:要删的是挂载记录本身)
+            const mountUidOfDoc = (docId: string): string | null => {
+                let found: string | null = null;
+                const walk = (list: MountItem[]) => {
+                    for (const it of list) {
+                        if (it.kind === "doc" && it.targetId === docId) found = it.uid;
+                        walk(it.children || []);
+                    }
+                };
+                walk(getRoots() || []);
+                return found;
+            };
+
             // 把关系树设置的变更写回 editor 配置(拖拽顺序、折叠态都走这里)
             const persistRelationConfig = async (patch: Partial<RelationTreeConfig>) => {
                 try {
@@ -334,6 +360,23 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 else relExpanded.add(docId);
                 persistCollapsed();
                 render();
+            };
+
+            // 关系树上的「取消挂载」:关系树的根就是挂载进来的文档,所以取消挂载 = 把这条挂载摘掉。
+            // 摘掉后该文档不再作为根出现(它的引用者也随之从关系树里消失)。
+            // 行为/措辞与挂载行里的「取消挂载」完全一致,只是入口在关系树上。
+            const unmountRelationNode = (docId: string, name: string) => {
+                const uid = mountUidOfDoc(docId);
+                if (!uid) {
+                    showMessage("该文档不是挂载项,无法取消挂载", 2500, "error");
+                    return;
+                }
+                void removeMountItem(plugin as any, uid).then(() => {
+                    showMessage(`已取消挂载「${name}」`, 2500, "info");
+                    if (relationFocusId === docId) relationFocusId = null;
+                    // 挂载项变化会派发 MOUNT_TREE_CHANGED_EVENT,那里会重建;这里兜底重建一次
+                    ensureRelationTree(true);
+                });
             };
 
             /** 定位当前文档:退出聚焦 → 展开沿途 → 滚动到该行并闪烁提示 */
@@ -412,7 +455,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 // 先占位渲染"加载中",避免用户干等
                 self._rows = [];
                 render();
-                void buildRelationForest(relCfg())
+                void buildRelationForest(relCfg(), mountedDocIds())
                     .then((roots) => {
                         relationRoots = roots;
                         relationLoaded = true;
@@ -677,12 +720,23 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                                 hasChildren: n.children.length > 0,
                                 subFileCount: n.subFileCount,
                                 draggable: relCfg().sortMethod === "custom",
+                                isRoot: n.isRoot,
                             });
                         }
                     }
                 }
                 // --- 手动挂载 ---
+                // 关系树开启时,已挂载的**思源文档**由关系树统一呈现(它们是关系树里的节点),
+                // 这里跳过,否则同一个文档会同时出现两行。文件/文件夹/笔记本/块挂载不受影响。
+                // 判据用"是否被挂载"而不是 isRoot:被挂载但只作为引用者出现的文档也要去重,
+                // 否则它会既在关系树里、又在挂载区里露两次。
+                const relTreeDocIds = new Set(flattenRelationForest(relationRoots).map(n => n.docId));
+                const mountedDocSet = new Set(mountedDocIds());
+                const relShownDocIds = new Set(
+                    relationEnabled() ? Array.from(relTreeDocIds).filter(id => mountedDocSet.has(id)) : [],
+                );
                 const walk = (item: MountItem, depth: number) => {
+                    if (item.kind === "doc" && item.targetId && relShownDocIds.has(item.targetId)) return;
                     // 展开状态键必须与点击时 toggle() 写入的键一致(都用 autoKeyOf),
                     // 否则点击后 _expanded 记在 A 键、这里查 B 键,行永远不会翻转成展开
                     const expanded = self._expanded!.has(autoKeyOf(item));
@@ -821,7 +875,6 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                                 <span class="syfe-mtree__name">${escapeHTML(name)}</span>
                                 ${sub ? `<span class="syfe-mtree__sub">${escapeHTML(sub)}</span>` : ""}
                             </span>
-                            <span class="syfe-mtree__unmount" data-unmount="${escapeHTML(it.uid)}" title="取消挂载">×</span>
                         </li>`;
                     }
                     if (r.kind === "file") {
@@ -965,18 +1018,6 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
             };
 
             const clickHandler = (e: MouseEvent) => {
-                const unEl = (e.target as HTMLElement).closest("[data-unmount]") as HTMLElement | null;
-                if (unEl) {
-                    e.stopPropagation();
-                    const uid = unEl.dataset.unmount!;
-                    confirm("取消挂载", "确定从虚拟文档树中移除该条目吗?(其下嵌套挂载也会一并移除)", () => {
-                        void removeMountItem(plugin as any, uid).then(() => {
-                            showMessage("已取消挂载", 2000, "info");
-                            render();
-                        });
-                    }, () => {});
-                    return;
-                }
                 // 行首箭头:无论哪一行,箭头都只负责展开/收起
                 const arrowEl = (e.target as HTMLElement).closest("[data-arrow]") as HTMLElement | null;
                 if (arrowEl) {
@@ -1100,6 +1141,13 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 render();
             };
 
+            // 引用关系树是**只读派生视图**(每次现查,不落盘),文档被改名/删除/加子文档后
+            // 引用链会变,必须强制重建,否则树上显示的还是旧名字/旧结构
+            const afterRelationDocOp = () => {
+                self._cache = new Map<string, DirEntry[] | BlockNode[]>();
+                ensureRelationTree(true);
+            };
+
             // 右键:文件/文件夹复用文件树完整菜单;思源文档/笔记本给「原生」文档菜单
             // (打开/新建子文档/复制/导出/重命名/删除/固定/收藏,对齐思源文档树),再追加面板特有项
             const contextHandler = (e: MouseEvent) => {
@@ -1176,6 +1224,61 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                             ],
                         });
                     }
+                    return;
+                }
+                if (row.kind === "relation") {
+                    // 引用关系树上的文档:给原生文档菜单(与挂载的思源文档完全一致),
+                    // 外加关系树特有的项(刷新 / 只看子树 / 取消挂载)。
+                    // 关系树的根就是挂载进来的文档,所以「取消挂载」摘掉的是那条挂载记录。
+                    showDocMenu({
+                        x: e.clientX,
+                        y: e.clientY,
+                        plugin,
+                        docId: row.docId,
+                        name: row.name,
+                        onAfter: afterRelationDocOp,
+                        extra: [
+                            {
+                                icon: "iconTags",
+                                label: "标签…",
+                                click: () => openSiyuanTagDialog(row.docId, row.name),
+                            },
+                            {
+                                icon: "iconRefresh",
+                                label: "刷新关系树",
+                                click: () => ensureRelationTree(true),
+                            },
+                            {
+                                icon: "iconFocus",
+                                label: relationFocusId === row.docId ? "退出聚焦" : "只看此文档子树",
+                                click: () => {
+                                    relationFocusId = relationFocusId === row.docId ? null : row.docId;
+                                    render();
+                                },
+                            },
+                            // 只有**被挂载的**文档才对应一条挂载记录,纯引用者没东西可取消
+                            ...(mountUidOfDoc(row.docId) ? [{
+                                icon: "iconTrashcan",
+                                label: "取消挂载",
+                                click: () => unmountRelationNode(row.docId, row.name),
+                            }] : []),
+                        ],
+                    });
+                    return;
+                }
+                if (row.kind === "relationEmpty") {
+                    // 关系树为空/无引用:只给"刷新",别让右键彻底无响应
+                    const menu = new Menu();
+                    menu.addItem({icon: "iconRefresh", label: "刷新关系树", click: () => ensureRelationTree(true)});
+                    menu.addItem({
+                        icon: "iconFocus",
+                        label: "退出聚焦",
+                        click: () => {
+                            relationFocusId = null;
+                            render();
+                        },
+                    });
+                    menu.open({x: e.clientX, y: e.clientY});
                     return;
                 }
                 if (row.kind === "mount" && row.item.kind === "block") {
@@ -1342,8 +1445,12 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
             this._relActionHandler = relActionHandler;
             toolbarEl.addEventListener("click", relActionHandler);
 
-            // 挂载结构变化(任意入口挂载/取消)时自动重绘
-            const changedHandler = () => render();
+            // 挂载结构变化(任意入口挂载/取消)时自动重绘。
+            // 关系树的根就是挂载的思源文档,所以挂载一变,根集合也变了,必须重建(不只是重绘)。
+            const changedHandler = () => {
+                if (relationEnabled()) ensureRelationTree(true);
+                else render();
+            };
             this._changedHandler = changedHandler;
             window.addEventListener(MOUNT_TREE_CHANGED_EVENT, changedHandler);
 

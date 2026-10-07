@@ -2705,30 +2705,6 @@
     white-space: nowrap;
 }
 
-// 取消挂载按钮:hover 行时出现
-.syfe-mtree__unmount {
-    flex-shrink: 0;
-    width: 18px;
-    height: 18px;
-    line-height: 16px;
-    text-align: center;
-    font-size: 16px;
-    color: var(--b3-theme-on-surface);
-    border-radius: 50%;
-    opacity: 0;
-    cursor: pointer;
-    transition: opacity 0.15s, background 0.15s;
-
-    &:hover {
-        background: var(--b3-theme-error);
-        color: #fff;
-    }
-}
-
-.syfe-mtree__row:hover .syfe-mtree__unmount {
-    opacity: 0.85;
-}
-
 /* === 引用关系树(只读派生视图,移植自 siyuan-virtual-tree)=== */
 // 关系树不单独加标题栏,行样式与手动挂载保持一致
 
