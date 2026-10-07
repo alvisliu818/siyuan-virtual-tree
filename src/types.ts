@@ -65,6 +65,106 @@ export interface RelationTreeConfig {
     collapsed: string[];             // 折叠的节点 docId
 }
 
+// === 自定义「打开方式」===
+// 一条自定义打开方式:把选中的文件/文件夹交给指定程序处理。
+//
+// 设计取舍:
+//   - command + args 而不是一整条命令字符串:用户填 "code" 与 args ["-g"]
+//     比填 `code -g {file}` 更不容易出转义问题,也不必实现占位符替换。
+//     {file} 只在「把路径放最后」这个最常见场景下需要,由 launchOpenWith 补。
+//   - kind 区分文件/文件夹:同一个命令对二者的语义往往不同
+//     (code 打开文件夹 = 打开工作区,打开文件 = 编辑该文件)。
+//   - builtin:内置的知名编辑器预置,用户可在设置里改 command;非 builtin 的项
+//     可自由增删。分这个字段是为了让 UI 能把预置项与自定义项分开呈现。
+export interface OpenWithItem {
+    id: string;
+    /** 菜单里显示的文案,如 "用 VS Code 打开" */
+    label: string;
+    /** 可执行文件名或命令名(在 PATH 里找,或填绝对路径) */
+    command: string;
+    /**
+     * 命令行参数,支持 {file} 占位符。
+     * 不含 {file} 时,目标路径自动追加到参数末尾
+     * (VS Code / JetBrains 这类"把文件丢给它就行"的命令不需要写占位符)。
+     */
+    args?: string[];
+    /** 作用对象:文件 / 文件夹 / 两者 */
+    kind: "file" | "dir" | "both";
+    /**
+     * 只对这些扩展名生效(小写,含点,如 [".py", ".ipynb"])。
+     * 空或未设 = 不限。用于"只用它打开 ipynb"这类场景。
+     */
+    extensions?: string[];
+    /** 内置预置项:设置里可改 command,但不能删(避免用户把自己唯一的出口删掉) */
+    builtin?: boolean;
+    /** 菜单图标(siyuan svg id);空则用默认 */
+    icon?: string;
+}
+
+// 打开方式数据版本(结构不兼容时 +1,加载时按版本迁移)
+export const OPEN_WITH_VERSION = 1;
+
+export interface OpenWithData {
+    version: number;
+    items: OpenWithItem[];
+}
+
+/**
+ * 内置预置的打开方式。
+ *
+ * command 填的是**通用命令名**而不是绝对路径 —— 命令名在 PATH 里找不到时,
+ * launchOpenWith 会退回到 Windows 的常见安装位置再试(见 external-app.ts 的
+ * 候选探测)。写死路径会让换机器/换安装位置的用户直接失效。
+ */
+export const DEFAULT_OPEN_WITH: OpenWithItem[] = [
+    {
+        id: "ow-vscode",
+        label: "用 VS Code 打开",
+        command: "code",
+        kind: "both",
+        builtin: true,
+        icon: "iconCode",
+    },
+    {
+        id: "ow-cursor",
+        label: "用 Cursor 打开",
+        command: "cursor",
+        kind: "both",
+        builtin: true,
+        icon: "iconCode",
+    },
+    {
+        id: "ow-windsurf",
+        label: "用 Windsurf 打开",
+        command: "windsurf",
+        kind: "both",
+        builtin: true,
+        icon: "iconCode",
+    },
+    {
+        id: "ow-notepad",
+        label: "用记事本打开",
+        // Windows 内置,macOS/Linux 上多半没有 —— 找不到就报"未找到命令",可接受
+        command: "notepad",
+        kind: "both",
+        builtin: true,
+    },
+    {
+        id: "ow-explorer",
+        label: "在资源管理器中打开",
+        // 用 explorer 而不是"系统默认应用":文件夹场景下语义更明确
+        command: "explorer",
+        kind: "both",
+        builtin: true,
+        icon: "iconFolder",
+    },
+];
+
+export const DEFAULT_OPEN_WITH_DATA: OpenWithData = {
+    version: OPEN_WITH_VERSION,
+    items: DEFAULT_OPEN_WITH,
+};
+
 // === 标签 ===
 // 标签定义(支持嵌套、颜色、图标)
 export interface TagDef {

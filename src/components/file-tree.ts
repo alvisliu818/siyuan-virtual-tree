@@ -3,7 +3,7 @@ import {readDir, renameFile, removeFile, mkdir, writeFile, lsNotebooks, listDocs
 import {isImportMdSourceAssetEnabled} from "../utils/config";
 import {joinPath, basename, dirname, pathDepth, extname, isSiyuanPath} from "../utils/path";
 import {toFileLink, toMarkdownFileLink, getWorkspacePath, toSystemPath} from "../utils/system-path";
-import {openWithExternalApp, revealInSystemExplorer, openTreeFileWithExternalApp} from "../utils/external-app";
+import {openWithExternalApp, revealInSystemExplorer, openTreeFileWithExternalApp, launchOpenWith} from "../utils/external-app";
 import {BINARY_EXTENSIONS, isImageFile, isOfficeFile, isMarkdownFile, isMediaFile, getMediaKind} from "../constants";
 import {isVirtualPath, getMountsUnder, getMountList, normDirKey} from "../utils/virtual-tree";
 import {isBaiduPath} from "../utils/baidu-path";
@@ -15,6 +15,7 @@ import {fileIconHTML, folderIconHTML} from "../utils/icons";
 import {addMountMenuItem} from "./mount-menu";
 import {tagBadgesHTML} from "../tags/tag-ui";
 import {expandWithDescendants, pathMatchesFilter, pathHasAnyTag} from "../tags/tag-store";
+import {getOpenWithItems, openWithMatches} from "../open-with/open-with-store";
 import {DirEntry} from "../types";
 
 // 文件树操作接口(由插件入口提供)
@@ -1194,16 +1195,36 @@ export function showFileTreeMenu(
             label: "系统默认应用",
             click: () => runExternal(() => openWithExternalApp(path)),
         });
-        openWith.push({
-            icon: "iconFolder",
-            label: "在文件资源管理器中显示",
-            click: () => runExternal(() => revealInSystemExplorer(path, false)),
-        });
+openWith.push({
+          icon: "iconFolder",
+    label: "在文件资源管理器中显示",
+     click: () => runExternal(() => revealInSystemExplorer(path, false)),
+   });
     }
+
+    // ===== 自定义「打开方式」=====
+    // 放在内置项之后、菜单.addItem 之前。菜单是同步构建的,所以这里读的是
+    // open-with-store 的内存缓存(插件启动时已 load 完),不需要 await。
+    //
+    // 虚拟路径(sydoc:// 之类)没有系统路径,交给外部程序一定失败,
+    // 所以整段跳过 —— 挂一堆点了就报错的项比不挂更糟。
+    if (!isVirtualPath(path)) {
+        const ext = extname(path).toLowerCase();
+        for (const item of getOpenWithItems()) {
+   if (!openWithMatches(item, isDir, ext)) continue;
+     openWith.push({
+       icon: item.icon || (isDir ? "iconFolder" : "iconOpen"),
+                label: item.label,
+       click: () => runExternal(() => launchOpenWith(item, path)),
+ });
+        }
+        // 一个自定义项都没有时,「打开方式」里就只有内置项,不必再加分组线
+    }
+
     menu.addItem({
         icon: "iconOpen",
         label: "打开方式",
-        submenu: openWith,
+   submenu: openWith,
     });
 
     // 导入到思源:Markdown 文件 / 文件夹(效果同思源文档树的「导入 Markdown 文件/文件夹」)

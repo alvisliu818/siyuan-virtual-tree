@@ -4,6 +4,7 @@ import {basename} from "./path";
 import {isBaiduPath} from "./baidu-path";
 import {bdDownloadFile} from "../api/baidu-pan";
 import {nativeWriteTempFile} from "../api/native-fs";
+import type {OpenWithItem} from "../types";
 
 // 用系统默认(关联)应用打开指定文件 / 在系统资源管理器中定位文件
 // 用于"打开方式"菜单与旧版 Office 二进制格式(doc/xls/ppt 等)的外部打开。
@@ -169,4 +170,141 @@ export async function revealInSystemExplorer(siyuanPath: string, isDir: boolean)
     } catch (e: any) {
         throw new Error(`${e?.message || e} (${sysPath})`);
     }
+}
+
+// === 自定义「打开方式」===
+
+/**
+ * 常见编辑器的安装位置候选。
+ *
+ * 为什么需要:内置预置的 command 填的是通用命令名("code"),它要求 PATH 里有
+ * 这个 shim。但 Windows 上装了 VS Code 并不等于 PATH 里有 code.cmd ——
+ * 只有用户勾了"添加到 PATH"才有。没勾的占绝大多数,所以必须回退去
+ * 安装目录里找 exe。
+ *
+ * 用文件名而不是完整路径:同一个版本号下不同安装方式(用户安装 / 系统安装 /
+ * 便携 / Store)的目录深度差别很大,按目录拼接会漏掉一部分。
+ */
+function commandCandidates(cmd: string, req: (m: string) => any): Array<{cmd: string; args: string[]}> {
+    const out: Array<{cmd: string; args: string[]}> = [];
+    const lower = cmd.toLowerCase();
+    // 带路径分隔符 = 用户填的就是绝对/相对路径,原样用,不做候选展开
+    if (/[\\/]/.test(cmd)) return [{cmd, args: []}];
+
+    out.push({cmd, args: []});
+    if (process.platform !== "win32") return out;
+
+    // Windows:按 PATH 顺序展开常见前缀
+    const sysRoot = process.env.SystemRoot || "C:\\Windows";
+    const pf = process.env.ProgramFiles || "C:\\Program Files";
+    const pf86 = process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)";
+    const local = process.env.LOCALAPPDATA || "";
+    const roots = [local, pf, pf86, sysRoot];
+
+    // 编辑器类命令的 exe 名与命令名不一致:code.cmd → Code.exe
+    const exeNames = lower === "code"
+        ? ["Code.exe", "code.exe"]
+        : lower === "cursor"
+            ? ["Cursor.exe"]
+            : lower === "windsurf"
+          ? ["Windsurf.exe"]
+            : lower === "explorer"
+              ? ["explorer.exe"]
+              : lower === "notepad"
+                ? ["notepad.exe"]
+                : [cmd + ".exe", cmd + ".EXE"];
+
+    // 每个编辑器自己的可执行文件名与产品目录名也常常不一致
+    const dirNames = lower === "code"
+        ? ["Microsoft VS Code", "Programs\\Microsoft VS Code"]
+        : lower === "cursor"
+            ? ["Programs\\cursor", "Cursor"]
+            : lower === "windsurf"
+              ? ["Programs\\Windsurf", "Windsurf"]
+              : [];
+
+    for (const exe of exeNames) {
+        for (const root of roots) {
+            if (!root) continue;
+            for (const dn of dirNames) {
+                out.push({cmd: pathJoin(root, dn, exe), args: []});
+            }
+            // 兜底:直接拼 root/Users/xxx/AppData/... 之外最常见的相对形态
+            out.push({cmd: pathJoin(root, exe), args: []});
+        }
+    }
+    return out;
+}
+
+function pathJoin(...parts: string[]): string {
+    return parts
+        .filter(Boolean)
+        .map((p, i) => (i === 0 ? p.replace(/[\\/]+$/, "") : p.replace(/^[\\/]+|[\\/]+$/g, "")))
+        .join("\\");
+}
+
+/**
+ * 按自定义「打开方式」配置启动外部程序。
+ *
+ * 参数拼装规则:
+ *   args 里有 {file} → 就地替换
+ *   args 里没有 {file} → 目标路径追加到末尾
+ * 后者是绝大多数编辑器的用法(code / cursor / windsurf / notepad 都是
+ * "把路径丢给它就行"),写成占位符反而是用户要额外学的语法。
+ */
+export async function launchOpenWith(item: OpenWithItem, siyuanPath: string): Promise<void> {
+    const req = getNativeRequire();
+    if (!req) throw new Error("当前环境不支持调用外部程序(Node 集成不可用)");
+
+    // 网盘文件(bdpan://)没有本地路径,得先下载到临时目录
+    let targetPath = siyuanPath;
+    let tempCleanup: (() => Promise<void>) | null = null;
+    if (isBaiduPath(siyuanPath)) {
+        const temp = await nativeWriteTempFile(basename(siyuanPath), await bdDownloadFile(siyuanPath));
+        targetPath = temp.tempPath;
+        tempCleanup = temp.cleanup;
+    }
+
+    const sysPath = toSystemPath(targetPath);
+    const hasPlaceholder = (item.args || []).some(a => a.includes("{file}"));
+    const args = (item.args || []).map(a => a.split("{file}").join(sysPath));
+    if (!hasPlaceholder) args.push(sysPath);
+
+    const cp = req("child_process");
+    const fs = req("fs") as typeof import("fs");
+    const candidates = commandCandidates(item.command, req);
+
+    let lastErr = "";
+    try {
+        for (const cand of candidates) {
+            // 绝对路径候选必须真实存在才能用;PATH 上的命令名交给 spawn 去试
+            if (cand.cmd !== item.command) {
+                try {
+                    if (!fs.existsSync(cand.cmd)) continue;
+                } catch {
+                    continue;
+                }
+            }
+            try {
+                await spawnDetached(cp, cand.cmd, args);
+                // 成功:延迟清理网盘临时副本(外部程序可能还在读)
+                if (tempCleanup) {
+                    setTimeout(() => void tempCleanup!(), 30 * 1000);
+                }
+                return;
+            } catch (e: any) {
+                lastErr = e?.message || String(e);
+            }
+        }
+    } catch (e: any) {
+        lastErr = e?.message || String(e);
+    }
+
+    if (tempCleanup) await tempCleanup();
+    throw new Error(
+        `找不到命令「${item.command}」。` +
+        (lastErr ? `(${lastErr})` : "") +
+        `请在设置 → 文件 → 自定义打开方式里确认命令名拼写,` +
+        `或改成可执行文件的完整路径。`,
+    );
 }

@@ -21,6 +21,8 @@ import {basename} from "./utils/path";
 import {loadAllExtensions} from "./extensions/extension-manager";
 import {loadTagData} from "./tags/tag-store";
 import {openTagManagerDialog} from "./tags/tag-ui";
+import {loadOpenWithData} from "./open-with/open-with-store";
+import {openOpenWithManagerDialog} from "./open-with/open-with-ui";
 import {loadRecents, addRecent, addRecentDoc, flushRecents} from "./recent-files";
 import {loadStartPage, itemFromPath, itemFromDoc, toggleInGroup} from "./start-page";
 import {isVirtualPath, virtualId, initMountStore, getMountList, dropSyDocMounts} from "./utils/virtual-tree";
@@ -209,11 +211,19 @@ export default class FileEditorPlugin extends Plugin {
         // 设置里打开了「文件」面板 → 在此补注册(onload 是同步的,拿不到配置,只能延后到布局就绪)
         if (this.config.showFileTreeDock === true) this.addFileTreeDock();
 
-        // 加载标签数据(预设标签库 + 文件/文件夹打标记录)
-        try {
-            await loadTagData(this);
-        } catch (e) {
+// 加载标签数据(预设标签库 + 文件/文件夹打标记录)
+  try {
+   await loadTagData(this);
+    } catch (e) {
             console.error("[siyuan-file-editor] 加载标签失败:", e);
+        }
+        // 加载自定义「打开方式」配置。
+   // 必须在标签之后、且早于任何一次菜单构建:菜单里的「打开方式」是**同步**
+        // 读内存缓存的(getOpenWithItems),没先 load 的话第一次右键看到的是空列表。
+        try {
+    await loadOpenWithData(this);
+        } catch (e) {
+     console.error("[siyuan-file-editor] 加载打开方式失败:", e);
         }
         // 加载最近使用列表(文件 + 思源文档,供侧边栏面板与斜杆命令选择器使用)
         try {
@@ -539,13 +549,26 @@ export default class FileEditorPlugin extends Plugin {
         tagManageBtn.addEventListener("click", () => {
             openTagManagerDialog(this, () => this.refreshFileTrees());
         });
-        this.setting!.addItem({
-            title: "标签",
+this.setting!.addItem({
+title: "标签",
             description: "管理预设标签(支持嵌套、颜色、图标);在文件树右键条目可打标签,工具栏标签按钮可按标签筛选",
-            actionElement: tagManageBtn,
+actionElement: tagManageBtn,
         });
 
-        // 百度网盘(接入方式配置 + 挂载入口说明)
+   // 自定义打开方式(预置 VS Code / Cursor / Windsurf / 记事本 / 资源管理器,可增删改)
+        const openWithBtn = document.createElement("button");
+      openWithBtn.className = "b3-button b3-button--outline fn__size200";
+      openWithBtn.textContent = "管理打开方式…";
+        openWithBtn.addEventListener("click", () => {
+  openOpenWithManagerDialog(this, () => this.refreshFileTrees());
+  });
+     this.setting!.addItem({
+      title: "自定义打开方式",
+            description: "为文件与文件夹配置「用 XX 打开」的入口(预置 VS Code / Cursor / Windsurf / 记事本 / 资源管理器,可自行增删改命令与参数);配置后出现在文件树、虚拟文档树、搜索结果的右键「打开方式」里",
+            actionElement: openWithBtn,
+   });
+
+// 百度网盘(接入方式配置 + 挂载入口说明)
         const bdPanBtn = document.createElement("button");
         bdPanBtn.className = "b3-button b3-button--outline fn__size200";
         bdPanBtn.textContent = "百度网盘账号…";
