@@ -333,45 +333,7 @@ export class PythonKernel {
      * 绝对路径候选则必须真实存在才算数。
      */
     private resolvePython(): {cmd: string; args: string[]} | null {
-        const req = getNativeRequire();
-        if (!req) return null;
-        const fs = req("fs") as typeof import("fs");
-        const path = req("path") as typeof import("path");
-        const isWin = process.platform === "win32";
-
-        // 绝对路径候选:存在才用
-        const absCandidates: Array<{cmd: string; args: string[]}> = [];
-        // PATH 命令候选:直接返回第一个,让 spawn 去试
-        const pathCandidates: Array<{cmd: string; args: string[]}> = [];
-
-        if (isWin) {
-            const sysRoot = process.env.SystemRoot || "C:\\Windows";
-            const pf = process.env.ProgramFiles || "C:\\Program Files";
-            const localApp = process.env.LOCALAPPDATA || "";
-            pathCandidates.push({cmd: "python", args: []});
-            pathCandidates.push({cmd: "python3", args: []});
-            absCandidates.push({cmd: path.join(sysRoot, "py.exe"), args: ["-3"]});
-            for (const v of ["313", "312", "311", "310"]) {
-                absCandidates.push({cmd: path.join(pf, `Python${v}`, "python.exe"), args: []});
-                absCandidates.push({cmd: path.join(localApp, "Programs", "Python", `Python${v}`, "python.exe"), args: []});
-            }
-        } else {
-            pathCandidates.push({cmd: "python3", args: []});
-            pathCandidates.push({cmd: "python", args: []});
-            absCandidates.push({cmd: "/usr/bin/python3", args: []});
-            absCandidates.push({cmd: "/usr/local/bin/python3", args: []});
-        }
-
-        for (const c of absCandidates) {
-            try {
-                if (fs.existsSync(c.cmd)) return c;
-            } catch {
-                // 试下一个
-            }
-        }
-        // PATH 上的命令无法预先探测,返回第一个让 spawn 决定;
-        // 若它 ENOENT,child 的 error 事件会给出足够信息
-        return pathCandidates[0] || null;
+        return resolvePythonInterpreter();
     }
 
     private waitForReady(timeoutMs: number): Promise<boolean> {
@@ -704,6 +666,52 @@ export class PythonKernel {
             }
         }
     }
+}
+
+// ===== 解释器探测(公共) =====
+
+/** 探测可用的 Python 解释器;找不到返回 null。
+ *  内核启动与「编辑器 ▶ 运行」共用这一份候选逻辑,避免两处探测结果不一致。 */
+export function resolvePythonInterpreter(): {cmd: string; args: string[]} | null {
+    const req = getNativeRequire();
+    if (!req) return null;
+    const fs = req("fs") as typeof import("fs");
+    const path = req("path") as typeof import("path");
+    const isWin = process.platform === "win32";
+
+    // 绝对路径候选:存在才用
+    const absCandidates: Array<{cmd: string; args: string[]}> = [];
+    // PATH 命令候选:直接返回第一个,让 spawn 去试
+    const pathCandidates: Array<{cmd: string; args: string[]}> = [];
+
+    if (isWin) {
+        const sysRoot = process.env.SystemRoot || "C:\\Windows";
+        const pf = process.env.ProgramFiles || "C:\\Program Files";
+        const localApp = process.env.LOCALAPPDATA || "";
+        pathCandidates.push({cmd: "python", args: []});
+        pathCandidates.push({cmd: "python3", args: []});
+        absCandidates.push({cmd: path.join(sysRoot, "py.exe"), args: ["-3"]});
+        for (const v of ["313", "312", "311", "310"]) {
+            absCandidates.push({cmd: path.join(pf, `Python${v}`, "python.exe"), args: []});
+            absCandidates.push({cmd: path.join(localApp, "Programs", "Python", `Python${v}`, "python.exe"), args: []});
+        }
+    } else {
+        pathCandidates.push({cmd: "python3", args: []});
+        pathCandidates.push({cmd: "python", args: []});
+        absCandidates.push({cmd: "/usr/bin/python3", args: []});
+        absCandidates.push({cmd: "/usr/local/bin/python3", args: []});
+    }
+
+    for (const c of absCandidates) {
+        try {
+            if (fs.existsSync(c.cmd)) return c;
+        } catch {
+            // 试下一个
+        }
+    }
+    // PATH 上的命令无法预先探测,返回第一个让 spawn 决定;
+    // 若它 ENOENT,child 的 error 事件会给出足够信息
+    return pathCandidates[0] || null;
 }
 
 // ===== 全局单例 =====

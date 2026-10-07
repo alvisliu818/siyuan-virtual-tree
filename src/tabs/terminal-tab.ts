@@ -490,3 +490,61 @@ function scheduleReconnect(self: TerminalTabInstance): void {
         connectServer(self, false);
     }, 3000);
 }
+
+// 在(或新开一个)指定工作目录的终端里执行一条命令。
+//
+// 供「编辑器 ▶ 运行」这类"把文件丢给终端跑"的场景使用。走真终端而不是
+// 内核/子进程捕获,用户保留完整的 stdin(input() 可交互)、退出码与
+// ANSI 颜色,行为与 VS Code 的「Run Python File」一致。
+//
+// 新开的 Tab 是异步初始化的:openTab 返回时实例可能还没建好 PTY/WS,
+// 所以这里轮询等会话可写,超时返回 false(调用方提示用户)。
+export async function runCommandInTerminal(
+    plugin: IPluginForTerminalTab,
+    cwd: string,
+    command: string,
+    timeoutMs = 8000,
+): Promise<boolean> {
+    const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+
+    const findInstance = (): TerminalTabInstance | null => {
+      const list = plugin.getOpenedTab()[TERMINAL_TAB_TYPE] || [];
+      // 注意:数组里放的**就是** TerminalTabInstance 本身(_builtinSession / _term
+      // 这些字段直接挂在它上面),它的 .parent 反而是思源的 TabModel。
+      // 早先写成 hit.parent,拿到的是 TabModel —— _builtinSession 恒为 undefined,
+      // writable() 永远 false,命令等满 8 秒超时后被丢掉,点击「▶ 运行」没反应。
+      return (list.find((c: any) => c?.data?.cwd === cwd) as TerminalTabInstance) || null;
+    };
+
+    let inst = findInstance();
+    if (inst) {
+        // 已有同 cwd 的终端:直接激活它,命令打在最前台
+        (inst.parent as any)?.headElement?.click();
+    } else {
+        openTerminalTab(plugin, cwd);
+        const deadline = Date.now() + timeoutMs;
+        while (!(inst = findInstance())) {
+            if (Date.now() > deadline) return false;
+            await sleep(120);
+        }
+    }
+
+    // 等会话可写:内置模式 PTY/管道会话生成即可写;服务模式要 WS 处于 OPEN
+    const writable = (): boolean =>
+        !!inst!._builtinSession || inst!._ws?.readyState === WebSocket.OPEN;
+    const deadline = Date.now() + timeoutMs;
+    while (!writable()) {
+        if (Date.now() > deadline || inst!._closed) return false;
+        await sleep(120);
+    }
+
+    if (inst._builtinSession) {
+        inst._builtinSession.write(command + "\r");
+        return true;
+    }
+    if (inst._ws && inst._ws.readyState === WebSocket.OPEN) {
+        inst._ws.send(JSON.stringify({type: "input", data: command + "\r"}));
+        return true;
+    }
+    return false;
+}

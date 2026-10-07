@@ -20,6 +20,44 @@ import {
 import {createBacklinkPanel} from "../components/backlink-panel";
 import {addRecent} from "../recent-files";
 import {registerPythonEditor, unregisterPythonEditor} from "../utils/python-lsp-bridge";
+import {resolvePythonInterpreter} from "../utils/python-kernel";
+import {runCommandInTerminal} from "./terminal-tab";
+import {toSystemPath} from "../utils/system-path";
+
+// Python 文件的头部「▶ 运行」:把文件丢进终端里跑。
+//
+// 为什么走终端而不是持久内核:运行一个**文件**的语义是 `python file.py` ——
+// `__name__ == "__main__"`、argv、stdin(input() 交互)、退出码都要成立,
+// 内核的 exec 模型给不了;终端里跑则与 VS Code 的「Run Python File」完全一致,
+// 输出进可滚动的终端 Tab,cwd 自动取文件所在目录(相对路径的资源能找到)。
+function addPythonRunButton(
+    self: any,
+    plugin: IPluginForTab,
+    path: string,
+    pathEl: HTMLElement,
+): void {
+    const py = resolvePythonInterpreter();
+    if (!py) return; // 环境里没有 Python:不显示按钮
+    const btn = document.createElement("span");
+    btn.className = "syfe-editor__run";
+    btn.textContent = "▶ 运行";
+    btn.title = `在终端中运行此文件(${py.cmd})`;
+    btn.addEventListener("click", () => {
+        void (async () => {
+            // 有未保存改动先落盘,避免跑到磁盘上的旧内容
+            if (isDirty(path)) await self.save();
+            const sysPath = toSystemPath(path);
+            // 路径含空格才加引号;PowerShell 下带引号的路径会被当字符串字面量,
+            // 需要补 & 前缀(cmd/bash 不需要,但 Windows 默认 shell 是 PowerShell)
+            const q = (s: string) => (/\s/.test(s) ? `"${s}"` : s);
+            const exe = q(py.cmd);
+            const line = (exe.startsWith('"') ? "& " : "") + exe + " \"" + sysPath.replace(/"/g, '') + "\"";
+            const ok = await runCommandInTerminal(plugin as any, dirname(path), line);
+            if (!ok) showMessage("终端不可用,无法运行", 4000, "error");
+        })();
+    });
+    pathEl.appendChild(btn);
+}
 
 // 编辑器 Tab 所需的插件接口(结构化类型,避免循环依赖)
 export interface IPluginForTab {
@@ -263,6 +301,7 @@ export function createEditorTabConfig(plugin: IPluginForTab) {
                         } catch (e) {
                             console.warn("[siyuan-file-editor] Python LSP 登记失败:", e);
                         }
+                        addPythonRunButton(self, plugin, path, pathEl);
                     }
                     // 初始脏状态(复用 model 时可能已脏)
                     updateDirtyUI(isDirty(path));
