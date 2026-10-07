@@ -25,8 +25,6 @@ function syncThemesWithPreference(plugin: Plugin): void {
         p.refreshThemeSettingUI();
     }
 }
-import type {Plugin} from "siyuan";
-
 function escapeHTML(s: string): string {
     return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }

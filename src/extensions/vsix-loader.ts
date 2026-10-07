@@ -170,7 +170,8 @@ export async function parseVsix(
         const manifestPath = await findFile(zip, "extension.vsixmanifest");
         if (manifestPath) {
             const manifestContent = await zip.file(manifestPath)!.async("string");
-            const iconMatch = manifestContent.match(/<Property\s+Id="Assets">.*?Asset.*?Path="([^"]+)"/s);
+            // 用 [\s\S]*? 而不是 s 标志:tsc 的 target 是 es6,不认 es2018 的 dotAll
+            const iconMatch = manifestContent.match(/<Property\s+Id="Assets">[\s\S]*?Asset[\s\S]*?Path="([^"]+)"/);
             if (iconMatch) {
                 const iconPath = iconMatch[1].replace(/^\.\//, "");
                 const fullPath = basePath ? `${basePath}/${iconPath}` : iconPath;

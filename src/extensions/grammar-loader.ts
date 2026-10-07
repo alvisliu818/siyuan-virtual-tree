@@ -4,7 +4,7 @@
 // 通过 monaco.languages.setMonarchTokensProvider 的替代方案:
 //   注册 Tokenizer,将 TextMate 规则转换为 Monaco 可识别的 token
 import * as monaco from "monaco-editor";
-import {Registry, parseRawGrammar, INITIAL, StackElement} from "vscode-textmate";
+import {Registry, parseRawGrammar, INITIAL, StateStack, IGrammar} from "vscode-textmate";
 import {loadWASM} from "vscode-oniguruma";
 import {InstalledExtension, GrammarContribution, LanguageContribution} from "./types";
 
@@ -94,7 +94,7 @@ export async function loadGrammars(extension: InstalledExtension): Promise<numbe
             // 如果语法关联了语言,注册到 Monaco
             if (grammar.language) {
                 languageToScope.set(grammar.language, grammar.scopeName);
-                registerMonacoTokenizer(grammar.language, grammar.scopeName, g, reg);
+                registerMonacoTokenizer(grammar.language, g);
             }
 
             loadedCount++;
@@ -126,16 +126,18 @@ function registerLanguage(lang: LanguageContribution): void {
 }
 
 // 将 TextMate 语法注册为 Monaco 的 Tokenizer
+//
+// grammar 直接用调用方传入的 IGrammar(loadGrammars 里 reg.addGrammar 的返回值):
+// vscode-textmate v9 已经没有 grammarForScopeName 这个公开方法了(私有化),
+// 而 addGrammar 的产物就是同一个语法对象,顺手传进来即可。
 function registerMonacoTokenizer(
     languageId: string,
-    scopeName: string,
-    grammar: any,
-    reg: Registry,
+    grammar: IGrammar,
 ): void {
     monaco.languages.setTokensProvider(languageId, {
         getInitialState: () => new TokenizerState(INITIAL),
         tokenize: (line: string, state: TokenizerState) => {
-            const result = reg.grammarForScopeName(scopeName)?.tokenizeLine(line, state.ruleStack);
+            const result = grammar.tokenizeLine(line, state.ruleStack);
             if (!result) {
                 return {tokens: [], endState: state};
             }
@@ -155,9 +157,9 @@ function registerMonacoTokenizer(
     });
 }
 
-// Tokenizer 状态(封装 TextMate 的 StackElement)
+// Tokenizer 状态(封装 TextMate 的 StateStack —— v9 里 StackElement 已更名)
 class TokenizerState implements monaco.languages.IState {
-    constructor(public ruleStack: StackElement) {}
+    constructor(public ruleStack: StateStack) {}
     clone(): monaco.languages.IState {
         return new TokenizerState(this.ruleStack);
     }
