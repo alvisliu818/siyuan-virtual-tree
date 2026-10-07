@@ -21,6 +21,10 @@ tools/_probe-*
 tools/_spawn-*
 tools/_verify-*
 tools/_pty-helper-test.js
+# 实机调试用的临时 CDP 脚本 / 内核协议探测脚本(验证完即弃)
+tools/_v1.js
+tools/_test-*
+tools/__pycache__/
 # Dev build outputs at root (legacy, now outputs to SiYuan plugin dir)
 /index.js
 /index.css
