@@ -2987,7 +2987,8 @@
     gap: 4px;
     padding: 2px 8px;
     background: var(--b3-theme-surface);
-    border-bottom: 1px solid var(--b3-border-color);
+    // 不画下边框:格子靠 cellbar 的浅底色与代码区自然分界,
+    // 再加一条线就又把"边框"请回来了(用户明确不要边框)。
     font-size: 12px;
 }
 
@@ -3075,6 +3076,20 @@
     // monaco 自带的层叠上下文与外边距会额外撑高,统一压掉
     .monaco-editor {
         margin: 0;
+
+        // **去掉 monaco 的蓝色聚焦描边** —— 这是"单元格边框去不掉"的真正来源。
+        //
+        // 根因不是我们自己的 border:.syfe-nb__cell 早就没画边框了。真凶是 monaco
+        // 自带 CSS(editor.main.css)里的这条规则 —— 上游就是这么写的,选择器
+        // 列表的最后一项是**裸的 .monaco-editor**:
+        //   .monaco-diff-editor .synthetic-focus, ..., .monaco-editor {
+        //       opacity: 1;
+        //       outline-color: var(--vscode-focusBorder);   // #0090f1
+        //       outline-offset: -1px; outline-style: solid; outline-width: 1px;
+        //   }
+        // 它**无条件**命中每一个 monaco 实例 —— 连只读的阅读态格子都永远带一圈
+        // 蓝框,看起来就是"每个单元格都有边框"。这里在格子范围内整体关掉。
+        outline: none;
     }
 }
 
@@ -3149,12 +3164,13 @@
     // 这两个变量由 notebook-tab.ts 从同一份 config 算出,与 monaco 的一致。
     font-size: var(--syfe-nb-code-font-size, 13px);
     line-height: var(--syfe-nb-code-line-height, 20px);
-}
 
-.syfe-nb__outs-empty {
-    color: var(--b3-theme-on-surface);
-    opacity: .6;
-    padding: 4px 0;
+    // 没有输出的格子:整个输出区不显示。容器由 TS 侧恒定渲染(方便运行后
+    // 直接 innerHTML 填充),空的时候要连那条虚线一起藏起来,
+    // 否则每个没跑过的格子下面都挂着一条孤零零的分隔线。
+    &:empty {
+        display: none;
+    }
 }
 
 .syfe-nb__out {

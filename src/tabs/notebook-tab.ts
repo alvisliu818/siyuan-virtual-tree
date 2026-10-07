@@ -228,12 +228,14 @@ function cellBadge(cell: NbCell): string {
 }
 
 // 渲染输出区 HTML(流/错误/富输出)
-function renderOutputsHTML(cell: NbCell, canRun?: boolean): string {
+//
+// 没有输出时返回空串,不再渲染"无输出(…)"占位提示 —— 笔记本靠留白分隔格子,
+// 每个没跑过的格子下面都挂一行灰字提示,整页看下来全是噪音。
+// 配套:.syfe-nb__outs 有 :empty 规则,容器空时不显示(避免只剩一条虚线)。
+function renderOutputsHTML(cell: NbCell): string {
     const outs = Array.isArray(cell.outputs) ? cell.outputs : [];
     if (outs.length === 0) {
-        return canRun
-            ? `<div class="syfe-nb__outs-empty">无输出(点 ▶ 或 Shift+Enter 运行)</div>`
-            : `<div class="syfe-nb__outs-empty">无输出(本插件只对 Python 内核提供运行能力,此处仅显示已保存的输出)</div>`;
+        return "";
     }
     const parts: string[] = [];
     for (const out of outs) {
@@ -279,7 +281,9 @@ function renderOutputsHTML(cell: NbCell, canRun?: boolean): string {
         }
         // 未知输出类型跳过
     }
-    return parts.length ? parts.join("") : `<div class="syfe-nb__outs-empty">无可显示的输出</div>`;
+    // 有 outputs 但全是渲染不了的类型:同样返回空串(容器会 :empty 隐藏),
+    // 与"没有输出"的观感保持一致
+    return parts.join("");
 }
 
 // 内核 richData 里我们自己不渲染的 MIME —— nbformat 允许只存 text/plain
@@ -640,7 +644,7 @@ export function createNotebookTabConfig(_plugin: IPluginForNotebookTab) {
                             // 放一份静态文本反而会在实例挂上来的一瞬替换闪烁。
                             : `<div class="syfe-nb__src" data-src="${i}" title="点击编辑"></div>`;
                         const outs = cell.cell_type === "code"
-                            ? `<div class="syfe-nb__outs">${renderOutputsHTML(cell, self._canRun)}</div>`
+                            ? `<div class="syfe-nb__outs">${renderOutputsHTML(cell)}</div>`
                             : "";
                         const exec = cell.cell_type === "code" && cell.execution_count != null
                             ? `<span class="syfe-nb__exec">[${cell.execution_count}]</span>` : "";
@@ -857,7 +861,7 @@ export function createNotebookTabConfig(_plugin: IPluginForNotebookTab) {
                 // 输出区
                 const outsEl = cellEl.querySelector(".syfe-nb__outs") as HTMLElement | null;
                 if (outsEl) {
-                    outsEl.innerHTML = renderOutputsHTML(cell, self._canRun);
+                    outsEl.innerHTML = renderOutputsHTML(cell);
                     // 输出里可能有 markdown(富输出),补一次渲染
                     const isDark = getCurrentMode() === 1;
                     outsEl.querySelectorAll<HTMLElement>("[data-md]").forEach(el => {
