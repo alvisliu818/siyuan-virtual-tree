@@ -400,7 +400,10 @@ def do_execute(req):
     _flush_streams(force=True)
     _restore_streams()
 
-    if has_result:
+    # None 不发 execute_result —— 与 ipykernel 的 displayhook 行为一致:
+    # print(...) 这类调用作为末表达式时返回值是 None,用户要的是它打印的内容,
+    # 不是再多一行 "None"。
+    if has_result and result_value is not None:
         data = {"text/plain": _to_text_plain(result_value)}
         html = _repr_html(result_value)
         if html:
