@@ -244,23 +244,28 @@ def _clean_traceback(exc_type, exc_value, exc_tb):
     return [ln.rstrip("\n") for ln in lines]
 
 
-def _find_last_expression(code, filename=CELL_FILE):
-    """返回最后一个可显示的表达式节点,没有则 None。
+def _split_trailing_expr(tree, silent):
+    """把 module body's 最后一条 Expr 摘出来,返回 (前置语句列表, 末表达式)。
 
-    判定规则和 Jupyter 一致:模块/交互模式下,最后一条语句若是 Expr 就显示其值,
-    且**只显示一次**;赋值语句不显示。
+    **为什么要摘而不是「先 exec 整段再 eval 末表达式」**:
+    那样末表达式会被执行两次 —— 一次在 exec 里,一次在 eval 里。后果:
+      - `print("x")` 打印两遍
+      - `items.append(1)` 这种有副作用的调用,元素会多进一个
+      - `next(it)` / `f.read()` 消耗型操作结果直接错
+    而 Jupyter 的语义是末表达式**只求值一次**,所以必须把它从 exec 的
+    语句列表里摘出来,单独走 eval。
+
+    silent=True 时不摘(整段照常 exec),符合 Jupyter 的 silent 语义
+    (静默执行不产生显示值,但副作用照常发生一次)。
     """
-    try:
-        tree = ast.parse(code, filename=filename, mode="exec")
-    except SyntaxError:
-        return None
-    body = [n for n in tree.body if not isinstance(n, ast.Pass)]
-    if not body:
-        return None
-    last = body[-1]
-    if isinstance(last, ast.Expr):
-        return last.value
-    return None
+    if silent:
+        return list(tree.body), None
+    body = list(tree.body)
+    while body and isinstance(body[-1], ast.Pass):
+        body.pop()
+    if not body or not isinstance(body[-1], ast.Expr):
+        return body, None
+    return body[:-1], body[-1].value
 
 
 def _has_top_level_await(tree):
@@ -282,6 +287,7 @@ def do_execute(req):
     _emit({"type": "status", "id": rid, "state": "busy", "execution_count": count})
 
     last_expr = None
+    head_body = None
     try:
         tree = ast.parse(code, filename=CELL_FILE, mode="exec")
         if _has_top_level_await(tree):
@@ -293,7 +299,8 @@ def do_execute(req):
             })
             _emit({"type": "status", "id": rid, "state": "idle", "execution_count": count})
             return
-        last_expr = _find_last_expression(code)
+        # 末表达式要从 exec 里摘出去,否则会被执行两次(见 _split_trailing_expr)
+        head_body, last_expr = _split_trailing_expr(tree, silent)
     except SyntaxError as e:
         _flush_streams(force=True)
         _emit({
@@ -309,8 +316,10 @@ def do_execute(req):
 
     _redirect_streams()
     try:
-        compiled = compile(tree, CELL_FILE, "exec")
-        exec(compiled, user_ns)
+        # 只 exec 前置语句,末表达式留给下面的 eval —— 保证它只求值一次
+        head = ast.Module(body=head_body or [], type_ignores=[])
+        ast.fix_missing_locations(head)
+        exec(compile(head, CELL_FILE, "exec"), user_ns)
     except SystemExit as e:
         _flush_streams(force=True)
         _restore_streams()
@@ -336,6 +345,10 @@ def do_execute(req):
         return
 
     # ---- 取最后一个表达式的值 ----
+    # 末表达式已从上面的 exec 里摘出来(见 _split_trailing_expr),这里是它
+    # **唯一**一次执行。所以它抛异常必须当错误报出去,不能静默吞掉 ——
+    # 否则 `1/0` / `print(undefined_var)` 会表现为"执行成功但无输出",
+    # 用户完全看不出哪里错了(这是实测抓到的真实 bug)。
     result_value = None
     has_result = False
     if last_expr is not None and not silent:
@@ -345,10 +358,31 @@ def do_execute(req):
             ast.fix_missing_locations(eval_tree)
             result_value = eval(compile(eval_tree, CELL_FILE, mode), user_ns)
             has_result = True
+        except SystemExit as e:
+            _flush_streams(force=True)
+            _restore_streams()
+            code_val = e.code
+            _emit({
+                "type": "error", "id": rid, "ename": "SystemExit",
+                "evalue": "" if code_val is None else str(code_val),
+                "traceback": ["SystemExit: %s" % ("无参数" if code_val is None else code_val)],
+            })
+            _emit({"type": "status", "id": rid, "state": "idle", "execution_count": count})
+            return
         except BaseException:
-            # 显示值取不到不该让整个单元格算失败(比如最后一行是个会抛的调用,
-            # 但它上面的语句已经成功产生了副作用)。按"无输出"处理即可。
-            has_result = False
+            # 只吞「取显示值」这一步自己引入的失败:_repr_* 之类已在上面的
+            # try 外,这里捕到的都是用户表达式真正抛的异常,必须报出来。
+            exc_type, exc_value, exc_tb = sys.exc_info()
+            _flush_streams(force=True)
+            _restore_streams()
+            _emit({
+                "type": "error", "id": rid,
+                "ename": getattr(exc_type, "__name__", str(exc_type)),
+                "evalue": _safe_repr(exc_value, limit=2000),
+                "traceback": _clean_traceback(exc_type, exc_value, exc_tb),
+            })
+            _emit({"type": "status", "id": rid, "state": "idle", "execution_count": count})
+            return
     _flush_streams(force=True)
     _restore_streams()
 
