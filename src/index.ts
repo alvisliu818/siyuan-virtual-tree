@@ -69,6 +69,17 @@ export default class FileEditorPlugin extends Plugin {
     onload(): void {
         setupMonaco(this.name);
 
+        // 尽早注入插件磁盘目录,供终端的 node-pty 运行时定位预构建二进制
+        // (目录 = 工作空间/data/plugins/<插件名>;PTY 检测依赖它,必须先于任何终端调用)
+        try {
+            const ws = (window as any).siyuan?.config?.system?.workspaceDir;
+            if (ws) {
+                (window as any).__SIYUAN_FILE_EDITOR_DIR__ = `${ws.replace(/[\\/]+$/, "")}/data/plugins/${this.name}`;
+            }
+        } catch {
+            // ignore
+        }
+
         // 注册 Tab 类型
         this.addTab(createEditorTabConfig(this as any));
         this.addTab(createImageTabConfig(this as any));

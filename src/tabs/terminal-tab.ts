@@ -106,19 +106,21 @@ export function createTerminalTabConfig(plugin: IPluginForTerminalTab) {
             this._plugin = plugin;
             this.element.classList.add("syfe-terminal-tab");
 
-            // 判断后端模式:auto 优先内置(若可用),否则用服务模式
-            const backendPref = plugin.config.terminalBackend || "auto";
-            const useBuiltin = backendPref === "builtin" || (backendPref === "auto" && isBuiltinTerminalAvailable());
-            // 内置模式下再分真 PTY(node-pty)与管道(child_process)两种
-            const ptyAvailable = useBuiltin && isPtyAvailable();
-            const backendLabel = useBuiltin ? (ptyAvailable ? "PTY" : "管道") : "服务";
-            // 注入插件目录,供 node-pty 运行时定位预构建二进制(见 utils/builtin-terminal)
+            // 先注入插件目录(供 node-pty 运行时定位预构建二进制,见 utils/builtin-terminal),
+            // 再做 PTY 可用性检测 —— 顺序不能反,否则 loadNodePty 拿不到目录必然失败
             try {
                 (window as any).__SIYUAN_FILE_EDITOR_DIR__ = (window as any).__SIYUAN_FILE_EDITOR_DIR__
                     || guessPluginDir();
             } catch {
                 // ignore
             }
+
+            // 判断后端模式:auto 优先内置(若可用),否则用服务模式
+            const backendPref = plugin.config.terminalBackend || "auto";
+            const useBuiltin = backendPref === "builtin" || (backendPref === "auto" && isBuiltinTerminalAvailable());
+            // 内置模式下再分真 PTY(node-pty)与管道(child_process)两种
+            const ptyAvailable = useBuiltin && isPtyAvailable();
+            const backendLabel = useBuiltin ? (ptyAvailable ? "PTY" : "管道") : "服务";
 
             this.element.innerHTML = `
                 <div class="syfe-terminal">

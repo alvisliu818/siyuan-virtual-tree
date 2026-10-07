@@ -90,6 +90,8 @@ module.exports = (env, argv) => {
                     {from: "src/i18n/", to: "./i18n/"},
                     // Vditor(Markdown 所见即所得)的静态资源:运行时按 cdn 路径懒加载
                     {from: "node_modules/vditor/dist", to: "./vditor/dist"},
+                    // pty-helper:真 PTY 的承载进程(ELECTRON_RUN_AS_NODE 拉起,内部用 node-pty)
+                    {from: "tools/pty-helper.js", to: "./pty-helper.js"},
                     // node-pty:终端真 PTY 的原生模块(按当前平台复制)
                     ...nodePtyPatterns(),
                 ],
@@ -104,6 +106,8 @@ module.exports = (env, argv) => {
                     {from: "plugin.json", to: "./"},
                     {from: "icon.png", to: "./", noErrorOnMissing: true},
                     {from: "node_modules/vditor/dist", to: "./vditor/dist"},
+                    // pty-helper:真 PTY 的承载进程
+                    {from: "tools/pty-helper.js", to: "./pty-helper.js"},
                     // node-pty:终端真 PTY 的原生模块(按当前平台复制)
                     ...nodePtyPatterns(),
                 ],
