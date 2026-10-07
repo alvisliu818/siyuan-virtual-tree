@@ -1,7 +1,13 @@
-// Jupyter Notebook(.ipynb)查看与编辑 Tab。
+// Jupyter Notebook(.ipynb)查看、编辑与运行 Tab。
 // - 查看:代码/Markdown/Raw 单元格渲染,已保存的执行输出(文本/图片/HTML/JSON/错误)
 // - 编辑:点击单元格进入 Monaco 就地编辑;添加/删除/上移/下移/切换单元格类型;写回 nbformat JSON
-// - 不支持内核执行(无 Jupyter 内核),只展示文件里已保存的输出
+// - 运行:代码单元格可点 ▶ 或 Shift+Enter 执行,走**自带的持久 Python 内核**
+//   (utils/python-kernel.ts + tools/syfe-kernel.py),不是 Jupyter 协议。
+//   为什么不走 jupyter_client/ipykernel:那套依赖 zmq 与整套 Jupyter 协议,
+//   而实际只需要「发代码 → 拿 stdout/stderr/结果值/异常」,自己实现更轻。
+//   思源本体 650 条内核路由里也没有任何 Python 执行端点,接不上外部内核。
+//   执行结果按 nbformat 4 规范写回 cell.outputs / cell.execution_count,
+//   所以存盘后用 Jupyter / VS Code 打开也是合法的。
 // 结构对齐 office-tab:独立 _dirty + 保存/重载 + beforeDestroy 确认。
 import {openTab, confirm, showMessage} from "siyuan";
 import * as monaco from "monaco-editor";
@@ -13,6 +19,10 @@ import {getCurrentMode} from "../editor/monaco";
 import {getActiveThemeName} from "../extensions/theme-loader";
 import {EditorConfig} from "../types";
 import {VDITOR_CDN, ensureVditorCSS} from "./markdown-tab";
+import {
+    getPythonKernel, isPythonAvailable, disposePythonKernel,
+    type ExecuteOutcome, type KernelStatus,
+} from "../utils/python-kernel";
 
 // Tab 所需的插件接口
 export interface IPluginForNotebookTab {
@@ -59,6 +69,13 @@ interface NotebookTabInstance {
     _escHandler?: (e: KeyboardEvent) => void;
     _clickHandler?: (e: MouseEvent) => void;
     _dblHandler?: (e: MouseEvent) => void;
+    // ---- Python 内核(执行单元格)----
+    /** 正在执行(或准备执行)的单元格索引 —— 用它做单格 spinner 与重复点击拦截 */
+    _runningIdx?: number | null;
+    /** 笔记本声明的语言不是 python 时置 false,隐藏所有运行入口 */
+    _canRun?: boolean;
+    /** 内核状态订阅的退订函数 */
+    _statusUnsub?: () => void;
 }
 
 function escapeHTML(s: string): string {
@@ -149,10 +166,12 @@ function cellBadge(cell: NbCell): string {
 }
 
 // 渲染输出区 HTML(流/错误/富输出)
-function renderOutputsHTML(cell: NbCell): string {
+function renderOutputsHTML(cell: NbCell, canRun?: boolean): string {
     const outs = Array.isArray(cell.outputs) ? cell.outputs : [];
     if (outs.length === 0) {
-        return `<div class="syfe-nb__outs-empty">无输出(本插件不支持运行代码,仅显示已保存的输出)</div>`;
+        return canRun
+            ? `<div class="syfe-nb__outs-empty">无输出(点 ▶ 或 Shift+Enter 运行)</div>`
+            : `<div class="syfe-nb__outs-empty">无输出(本插件只对 Python 内核提供运行能力,此处仅显示已保存的输出)</div>`;
     }
     const parts: string[] = [];
     for (const out of outs) {
@@ -201,6 +220,80 @@ function renderOutputsHTML(cell: NbCell): string {
     return parts.length ? parts.join("") : `<div class="syfe-nb__outs-empty">无可显示的输出</div>`;
 }
 
+// 内核 richData 里我们自己不渲染的 MIME —— nbformat 允许只存 text/plain
+const KNOWN_MIMES = new Set([
+    "text/plain", "text/html", "text/markdown", "image/png",
+    "image/jpeg", "image/gif", "image/svg+xml", "application/json",
+]);
+
+/**
+ * 把一次执行的结果翻译成 nbformat 4 的 outputs 数组。
+ *
+ * 为什么严格按规范写:存盘后用户可能用 Jupyter / VS Code 打开这个 ipynb,
+ * 字段形状不对就会显示异常。顺序也按 Jupyter 的惯例:先 stream(输出)、
+ * 再 execute_result(末尾表达式求值结果)、最后 error。
+ */
+function outcomeToOutputs(o: ExecuteOutcome): any[] {
+    const outs: any[] = [];
+    // stdout / stderr 各自合成一条 stream
+    // (nbformat 的 stream 用 name 区分 stdout/stderr,不能合成一条)
+    if (o.stdout) outs.push({output_type: "stream", name: "stdout", text: o.stdout});
+    if (o.stderr) outs.push({output_type: "stream", name: "stderr", text: o.stderr});
+
+    // 末表达式结果:有富媒体 mime 就整份存(图片 base64 等),
+    // 补一个 text/plain 兜底给不支持富媒体的阅读器
+    if (o.richData && Object.keys(o.richData).length > 0) {
+        const data: Record<string, string> = {};
+        let kept = 0;
+        for (const [mime, val] of Object.entries(o.richData)) {
+            if (mime === "text/plain" || KNOWN_MIMES.has(mime)) {
+                data[mime] = val;
+                kept++;
+            }
+        }
+        if (kept > 0) {
+            if (data["text/plain"] === undefined && o.result !== undefined) {
+                data["text/plain"] = o.result;
+            }
+            outs.push({
+                output_type: "execute_result",
+                execution_count: o.executionCount,
+                data,
+                metadata: {},
+            });
+        }
+    } else if (o.result !== undefined && o.result !== null) {
+        outs.push({
+            output_type: "execute_result",
+            execution_count: o.executionCount,
+            data: {"text/plain": o.result},
+            metadata: {},
+        });
+    }
+
+    if (o.error) {
+        outs.push({
+            output_type: "error",
+            ename: o.error.ename,
+            evalue: o.error.evalue,
+            // traceback 必须是非空字符串数组,空数组会让部分阅读器渲染出空白
+            traceback: o.error.traceback?.length ? o.error.traceback : [o.error.ename + ": " + o.error.evalue],
+        });
+    }
+    return outs;
+}
+
+// 笔记本声明的语言是不是 Python(只有 Python 内核,别的语言不显示运行入口)
+function isPythonNotebook(nb: Notebook | null | undefined): boolean {
+    if (!nb) return false;
+    const info = nb.metadata?.language_info || {};
+    const name = String(info.name || "").toLowerCase();
+    if (name === "python" || name === "py" || name.startsWith("python")) return true;
+    // 老笔记本可能没有 language_info,退而看 kernelspec 的 display_name
+    const kernel = String(nb.metadata?.kernelspec?.display_name || "").toLowerCase();
+    return kernel.includes("python");
+}
+
 // 创建 Notebook Tab 的 addTab 配置
 export function createNotebookTabConfig(_plugin: IPluginForNotebookTab) {
     return {
@@ -219,6 +312,11 @@ export function createNotebookTabConfig(_plugin: IPluginForNotebookTab) {
             this._editIdx = null;
             this._nb = null;
             this._rawMode = false;
+            this._runningIdx = null;
+            // 内核可用性:机器上有 python **且** 笔记本自己声明的是 Python。
+            // 两者缺一就不显示运行入口 —— 给 R/JS 笔记本挂一个跑不了的 ▶
+            // 比不给更糟,用户会以为插件坏了。
+            this._canRun = isPythonAvailable() && isPythonNotebook(this._nb);
             this.element.classList.add("syfe-nb-tab");
 
             const name = basename(path);
@@ -226,10 +324,15 @@ export function createNotebookTabConfig(_plugin: IPluginForNotebookTab) {
                 <div class="syfe-nb__bar">
                     <span class="syfe-nb__kind">Notebook</span>
                     <span class="syfe-nb__meta"></span>
+                    <span class="syfe-nb__kernel"></span>
                     <span class="syfe-nb__dirty" style="display:none;">●</span>
                     <span class="syfe-nb__actions">
                         <button class="b3-button b3-button--text" data-act="add-code" title="在当前单元格后插入代码单元格">+ 代码</button>
                         <button class="b3-button b3-button--text" data-act="add-md" title="在当前单元格后插入 Markdown 单元格">+ Markdown</button>
+                        <span class="syfe-nb__runall" style="display:none;">
+                            <button class="b3-button b3-button--text" data-act="run-all" title="按从上到下顺序执行全部代码单元格">▶ 运行全部</button>
+                            <button class="b3-button b3-button--text" data-act="restart" title="清空内核的变量与导入,重新开始(不影响已保存的输出)">重启内核</button>
+                        </span>
                         <button class="b3-button b3-button--text" data-act="save">保存</button>
                         <button class="b3-button b3-button--text" data-act="reload">重载</button>
                     </span>
@@ -283,6 +386,13 @@ export function createNotebookTabConfig(_plugin: IPluginForNotebookTab) {
 
             // 顶部元信息
             const renderMeta = () => {
+                // 运行相关入口的显隐统一在这里收口,避免散落在 render/load 两处
+                const runAll = barEl.querySelector(".syfe-nb__runall") as HTMLElement | null;
+                if (runAll) runAll.style.display = self._canRun ? "" : "none";
+                if (!self._canRun) {
+                    renderKernelState("stopped");
+                    return;
+                }
                 if (!self._nb) {
                     metaEl.textContent = "原始 JSON";
                     return;
@@ -310,16 +420,22 @@ export function createNotebookTabConfig(_plugin: IPluginForNotebookTab) {
                             ? `<div class="syfe-nb__mdview" data-mdview="${i}" title="双击编辑源码"></div><div class="syfe-nb__src" data-src="${i}" style="display:none;"></div>`
                             : `<div class="syfe-nb__src" data-src="${i}" title="点击编辑"><pre class="syfe-nb__hl" data-hl="${i}">${src}</pre></div>`;
                         const outs = cell.cell_type === "code"
-                            ? `<div class="syfe-nb__outs">${renderOutputsHTML(cell)}</div>`
+                            ? `<div class="syfe-nb__outs">${renderOutputsHTML(cell, self._canRun)}</div>`
                             : "";
                         const exec = cell.cell_type === "code" && cell.execution_count != null
                             ? `<span class="syfe-nb__exec">[${cell.execution_count}]</span>` : "";
                         const toggle = cell.cell_type === "code" ? "MD" : "⌨";
+                        // 运行按钮:只给代码单元格、且内核可用时才出现
+                        const running = self._runningIdx === i;
+                        const runBtn = (cell.cell_type === "code" && self._canRun)
+                            ? `<span class="syfe-nb__cellbtn syfe-nb__cellbtn--run${running ? " syfe-nb__cellbtn--busy" : ""}" data-act="run" data-idx="${i}" title="${running ? "执行中…" : "运行此单元格(Shift+Enter)"}">${running ? "◌" : "▶"}</span>`
+                            : "";
                         return `
-                        <div class="syfe-nb__cell syfe-nb__cell--${escapeHTML(cell.cell_type)}${self._activeIdx === i ? " syfe-nb__cell--active" : ""}" data-idx="${i}">
+                        <div class="syfe-nb__cell syfe-nb__cell--${escapeHTML(cell.cell_type)}${self._activeIdx === i ? " syfe-nb__cell--active" : ""}${running ? " syfe-nb__cell--running" : ""}" data-idx="${i}">
                             <div class="syfe-nb__cellbar">
                                 <span class="syfe-nb__badge">${cellBadge(cell)}</span>${exec}
                                 <span class="fn__flex-1"></span>
+                                ${runBtn}
                                 <span class="syfe-nb__cellbtn" data-act="up" data-idx="${i}" title="上移">↑</span>
                                 <span class="syfe-nb__cellbtn" data-act="down" data-idx="${i}" title="下移">↓</span>
                                 <span class="syfe-nb__cellbtn" data-act="type" data-idx="${i}" title="切换为 ${toggle === "MD" ? "Markdown" : "代码"}">${toggle}</span>
@@ -422,6 +538,23 @@ export function createNotebookTabConfig(_plugin: IPluginForNotebookTab) {
                 editor.onDidBlurEditorWidget(() => {
                     if (self._editIdx === idx) commitCellEditor();
                 });
+                // Shift+Enter = 运行本格(Jupyter 习惯)。
+                // 用 addAction 而不是挂 DOM 事件:monaco 会吞掉编辑器内的按键冒泡,
+                // 只有走 Keybinding 才能拿到。
+                editor.addAction({
+                    id: "syfe-nb-run-cell",
+                    label: "运行此单元格",
+                    keybindings: [monaco.KeyMod.Shift | monaco.KeyCode.Enter],
+                    run: () => {
+                        // 先把内容落回 cell 再跑,否则执行的是上一版代码
+                        if (self._editIdx === idx && self._editEditor) {
+                            setSourceText(cell, self._editEditor.getValue());
+                            markChanged();
+                        }
+                        commitCellEditorSilent();
+                        void runCell(idx);
+                    },
+                });
                 editor.focus();
                 self._editIdx = idx;
                 self._editEditor = editor;
@@ -485,6 +618,135 @@ export function createNotebookTabConfig(_plugin: IPluginForNotebookTab) {
                 });
             };
 
+            // ===== Python 内核:运行单元格 =====
+
+            // 切换单元格上的运行态(只改这一格的 DOM,不整表重绘,
+            // 否则正在编辑的单元格会被销毁、光标位置丢失)
+            const setCellRunning = (idx: number, running: boolean) => {
+                const cellEl = bodyEl.querySelector(`.syfe-nb__cell[data-idx="${idx}"]`);
+                if (!cellEl) return;
+                cellEl.classList.toggle("syfe-nb__cell--running", running);
+                const btn = cellEl.querySelector('[data-act="run"]') as HTMLElement | null;
+                if (btn) {
+                    btn.textContent = running ? "◌" : "▶";
+                    btn.setAttribute("title", running ? "执行中…" : "运行此单元格(Shift+Enter)");
+                    btn.classList.toggle("syfe-nb__cellbtn--busy", running);
+                }
+            };
+
+            // 反映内核状态到工具栏(启动中/就绪/不可用)
+            const renderKernelState = (status: KernelStatus, detail?: string) => {
+                const badge = barEl.querySelector(".syfe-nb__kernel") as HTMLElement | null;
+                if (!badge) return;
+                if (status === "ready") {
+                    badge.textContent = "内核就绪";
+                    badge.className = "syfe-nb__kernel syfe-nb__kernel--ready";
+                    badge.title = detail || "持久 Python 内核已就绪,变量在单元格之间保持";
+                } else if (status === "starting") {
+                    badge.textContent = "内核启动中…";
+                    badge.className = "syfe-nb__kernel syfe-nb__kernel--busy";
+                    badge.title = "正在拉起 Python 内核进程";
+                } else if (status === "error") {
+                    badge.textContent = "内核不可用";
+                    badge.className = "syfe-nb__kernel syfe-nb__kernel--error";
+                    badge.title = detail || "无法启动 Python 内核,请确认 python 在 PATH 中";
+                } else {
+                    badge.textContent = "";
+                    badge.className = "syfe-nb__kernel";
+                }
+            };
+
+            /** 执行第 idx 个代码单元格,结果写回 cell.outputs / execution_count */
+            const runCell = async (idx: number) => {
+                if (!self._canRun || self._rawMode) return;
+                const cell = self._nb?.cells[idx];
+                if (!cell || cell.cell_type !== "code") return;
+                // 正在跑一格时:再点就是「中断」(Windows 上中断 = 杀进程+重放历史)
+                if (self._runningIdx !== null && self._runningIdx !== undefined) {
+                    if (self._runningIdx === idx) {
+                        await interruptKernel();
+                    }
+                    return;
+                }
+                // 先把这格的编辑内容提交回 cell,否则跑的是旧代码
+                if (self._editIdx === idx && self._editEditor) {
+                    setSourceText(cell, self._editEditor.getValue());
+                }
+                const code = getSourceText(cell);
+                if (!code.trim()) {
+                    showMessage("空单元格,没有可执行的代码", 2000, "info");
+                    return;
+                }
+                const kernel = getPythonKernel();
+                if (!kernel) {
+                    showMessage("未找到 Python 内核,请确认 python 在 PATH 中", 5000, "error");
+                    return;
+                }
+                self._runningIdx = idx;
+                self._activeIdx = idx;
+                setCellRunning(idx, true);
+                // 立刻标脏:即使执行失败,输出也已经变了
+                markChanged();
+                try {
+                    const outcome = await kernel.execute(code);
+                    if (!outcome) {
+                        cell.outputs = [{
+                            output_type: "error", ename: "KernelError",
+                            evalue: "内核未响应", traceback: ["内核启动失败或已被关闭"],
+                        }];
+                        cell.execution_count = null;
+                    } else {
+                        cell.outputs = outcomeToOutputs(outcome);
+                        cell.execution_count = outcome.executionCount;
+                    }
+                } catch (e) {
+                    cell.outputs = [{
+                        output_type: "error", ename: "PluginError",
+                        evalue: String(e), traceback: [String(e)],
+                    }];
+                } finally {
+                    self._runningIdx = null;
+                    setCellRunning(idx, false);
+                    markChanged();
+                    render();
+                }
+            };
+
+            const runAllCells = async () => {
+                if (!self._canRun || self._rawMode) return;
+                const cells = self._nb?.cells || [];
+                for (let i = 0; i < cells.length; i++) {
+                    if (cells[i].cell_type !== "code") continue;
+                    const code = getSourceText(cells[i]);
+                    if (!code.trim()) continue;
+                    await runCell(i);
+                    // 整表重绘后 cells 引用会变(下一次 render 重建了 DOM 但
+                    // 数据对象还是同一个),这里每次都重新取,避免索引失效
+                    if (self._runningIdx !== null) return; // 被中断,停下
+                }
+            };
+
+            const restartKernel = async () => {
+                const kernel = getPythonKernel();
+                if (!kernel) {
+                    showMessage("未找到 Python 内核", 3000, "error");
+                    return;
+                }
+                const ok = await kernel.reset();
+                showMessage(ok ? "内核已重启,变量与导入已清空" : "内核重启失败", 3000, ok ? "info" : "error");
+            };
+
+            const interruptKernel = async () => {
+                const kernel = getPythonKernel();
+                const idx = self._runningIdx;
+                if (!kernel || idx === null || idx === undefined) return;
+                await kernel.interrupt();
+                self._runningIdx = null;
+                setCellRunning(idx, false);
+                showMessage("已中断(内核会重建并重放之前执行过的代码)", 3000, "info");
+                render();
+            };
+
             // 加载文件
             const load = async () => {
                 bodyEl.innerHTML = `<div class="syfe-nb__loading">正在加载…</div>`;
@@ -507,6 +769,8 @@ export function createNotebookTabConfig(_plugin: IPluginForNotebookTab) {
                     if (nb) {
                         self._nb = nb;
                         self._rawMode = false;
+                        // 语言信息在文件里,加载完才能判断能不能跑
+                        self._canRun = isPythonAvailable() && isPythonNotebook(nb);
                         render();
                     } else {
                         // 兜底:原始 JSON 编辑
@@ -588,6 +852,7 @@ export function createNotebookTabConfig(_plugin: IPluginForNotebookTab) {
                     else if (act === "del" && idx !== null) deleteCell(idx);
                     else if (act === "type" && idx !== null) toggleCellType(idx);
                     else if (act === "edit" && idx !== null) openCellEditor(idx);
+                    else if (act === "run" && idx !== null) void runCell(idx);
                     return;
                 }
                 // 点击单元格:选中;点代码源码区进入编辑
@@ -621,6 +886,8 @@ export function createNotebookTabConfig(_plugin: IPluginForNotebookTab) {
                 const act = btn.dataset.act;
                 if (act === "add-code") addCell("code");
                 else if (act === "add-md") addCell("markdown");
+                else if (act === "run-all") void runAllCells();
+                else if (act === "restart") void restartKernel();
                 else if (act === "save") void save();
                 else if (act === "reload") reload();
             });
@@ -645,7 +912,32 @@ export function createNotebookTabConfig(_plugin: IPluginForNotebookTab) {
             };
             document.addEventListener("keydown", this._escHandler, true);
 
-            void load();
+            // 启动内核并订阅状态 → 工具栏徽章。
+            // 必须在 load() 判定完语言之后再调:init 阶段 self._nb 还是 null,
+            // 那时算出来的 _canRun 恒为 false。
+            const ensureKernel = () => {
+                if (!self._canRun) return;
+                const k = getPythonKernel();
+                if (!k) {
+                    renderKernelState("error", "未找到 Python 内核");
+                    return;
+                }
+                if (!self._statusUnsub) {
+                    // 退订函数存到实例上,destroy 时必须调用,
+                    // 否则关掉 Tab 后内核状态变化还会往已销毁的 DOM 上写
+                    self._statusUnsub = k.onStatus((status, detail) => renderKernelState(status, detail));
+                    renderKernelState("starting");
+                }
+                void k.start().then((ok) => {
+                    // 徽章的 tooltip 显示具体解释器路径,方便用户确认用的是哪个 python
+                    const detail = ok
+                        ? (k.kernelInfo ? `${k.kernelInfo.executable}(Python ${k.kernelInfo.version})` : "")
+                        : "启动失败";
+                    renderKernelState(ok ? "ready" : "error", detail);
+                });
+            };
+
+            void load().then(ensureKernel);
         },
         resize(this: NotebookTabInstance) {
             // Monaco automaticLayout 自适应,无需处理
@@ -677,6 +969,15 @@ export function createNotebookTabConfig(_plugin: IPluginForNotebookTab) {
             return false; // 阻止本次关闭,等待用户选择
         },
         destroy(this: NotebookTabInstance) {
+            // 退订内核状态,否则关掉 Tab 后内核事件还会往已销毁的 DOM 上写
+            if (this._statusUnsub) {
+                try {
+                    this._statusUnsub();
+                } catch {
+                    // 忽略
+                }
+                this._statusUnsub = undefined;
+            }
             if (this._onKey) {
                 this.element.removeEventListener("keydown", this._onKey);
                 this._onKey = undefined;
@@ -698,6 +999,10 @@ export function createNotebookTabConfig(_plugin: IPluginForNotebookTab) {
             this._editEditor = null;
             this._editModel = null;
             this._nb = null;
+            this._runningIdx = null;
+            // 注:内核进程**不**在这里关 —— 它是全局单例,多个 notebook Tab
+            // 可能同时开着(而且用户可能正在跑长任务)。它由插件卸载时
+            // index.ts 的 disposePythonKernel() 统一收尾。
         },
     };
 }
