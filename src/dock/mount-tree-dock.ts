@@ -2,7 +2,7 @@
 // 可挂载:真实文件/文件夹、思源文档(自动带出子文档)、思源块(按子块递归展开);
 // 支持嵌套挂载(把条目挂到另一个挂载项下),可随时取消挂载。
 // 数据层 src/mount-tree.ts(virtual-tree.json);结构变化派发 syfe:mount-tree-changed 自动重绘。
-import {Menu, showMessage} from "siyuan";
+import {Menu, confirm, showMessage} from "siyuan";
 import {MOUNT_TREE_DOCK_TYPE} from "../constants";
 import {readDir} from "../api/file";
 import {DirEntry} from "../types";
@@ -360,6 +360,18 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 else relExpanded.add(docId);
                 persistCollapsed();
                 render();
+            };
+
+            // 取消挂载:行内 × 按钮已去掉,所有挂载类型统一走右键菜单这一个入口。
+            // 嵌套挂载由 removeMountItem 连带移除(其下子挂载一起消失)。
+            const unmountMountRow = (row: Extract<Row, {kind: "mount"}>) => {
+                const it = row.item;
+                confirm("取消挂载", `确定从虚拟文档树中移除「${it.name}」吗?(其下嵌套挂载也会一并移除)`, () => {
+                    void removeMountItem(plugin as any, it.uid).then(() => {
+                        showMessage("已取消挂载", 2000, "info");
+                        render();
+                    });
+                }, () => {});
             };
 
             // 关系树上的「取消挂载」:关系树的根就是挂载进来的文档,所以取消挂载 = 把这条挂载摘掉。
@@ -1167,7 +1179,15 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                     const fPath = row.kind === "file" ? row.path : row.item.path!;
                     const fIsDir = row.kind === "file" ? row.isDir : !!row.item.isDir;
                     const rootEl = findTreeRootEl(fPath);
-                    showFileTreeMenu(e, fPath, fIsDir, rootEl, rootEl?.dataset.path || "", fileTreeActions);
+                    // 挂载行(而非子项行)要能取消挂载:行内 × 按钮已去掉,入口只留右键菜单
+                    const fileExtra: DocMenuItem[] = row.kind === "mount"
+                        ? [{
+                            icon: "iconTrashcan",
+                            label: "取消挂载",
+                            click: () => unmountMountRow(row),
+                        }]
+                        : [];
+                    showFileTreeMenu(e, fPath, fIsDir, rootEl, rootEl?.dataset.path || "", fileTreeActions, undefined, fileExtra as any);
                     return;
                 }
                 // 挂载的思源文档/笔记本 → 原生文档/笔记本菜单 + 标签/取消挂载/挂载子菜单
@@ -1191,12 +1211,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                                 {
                                     icon: "iconTrashcan",
                                     label: "取消挂载",
-                                    click: () => {
-                                        void removeMountItem(plugin as any, it.uid).then(() => {
-                                            showMessage("已取消挂载", 2000, "info");
-                                            render();
-                                        });
-                                    },
+                                    click: () => unmountMountRow(row as Extract<Row, {kind: "mount"}>),
                                 },
                                 ...mountMenuItems(row.uid, where),
                             ],
@@ -1213,12 +1228,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                                 {
                                     icon: "iconTrashcan",
                                     label: "取消挂载",
-                                    click: () => {
-                                        void removeMountItem(plugin as any, it.uid).then(() => {
-                                            showMessage("已取消挂载", 2000, "info");
-                                            render();
-                                        });
-                                    },
+                                    click: () => unmountMountRow(row as Extract<Row, {kind: "mount"}>),
                                 },
                                 ...mountMenuItems(row.uid, where),
                             ],
@@ -1302,12 +1312,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                     menu.addItem({
                         icon: "iconTrashcan",
                         label: "取消挂载",
-                        click: () => {
-                            void removeMountItem(plugin as any, it.uid).then(() => {
-                                showMessage("已取消挂载", 2000, "info");
-                                render();
-                            });
-                        },
+                        click: () => unmountMountRow(row as Extract<Row, {kind: "mount"}>),
                     });
                     menu.open({x: e.clientX, y: e.clientY});
                     return;
