@@ -3399,3 +3399,13 @@
   color: #9e9e9e;
   font-size: 13px;
 }
+
+/* 思源主题对 .block__icon 默认 opacity:0(面板图标悬浮才显示,见主题 dock 样式),
+   我们的终端 dock 里没有对应的悬浮恢复规则,新建/重启按钮会整体透明 → 显式恢复 */
+.syfe-terminal-dock .block__icon {
+  opacity: 0.86;
+
+  &:hover {
+    opacity: 1;
+  }
+}
