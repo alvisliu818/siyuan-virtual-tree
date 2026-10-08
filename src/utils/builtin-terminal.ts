@@ -223,7 +223,6 @@ function isHelperReady(): boolean {
 // (实测 2-3s,用户感知就是「点 + 之后黑屏等很久」)。常驻复用后:
 // 第一个终端付冷启动成本,之后的终端在现成 helper 里开新 PTY,毫秒级。
 // helper 侧空闲 5 分钟自动退出,宿主下次用时重新拉起,不会常驻空耗内存。
-const SYFE_DEBUG_HOST = true; // 临时调试,验证完删除
 interface SharedHelper {
     child: any;
     ready: boolean;
@@ -302,7 +301,6 @@ function spawnSharedHelper(): SharedHelper | null {
                     }
                     break;
                 case "output":
-                    if (SYFE_DEBUG_HOST) console.warn("[syfe-debug] output sid=" + sid + " hasCbs=" + (!!cbs) + " len=" + String(msg.data ?? "").length);
                     if (cbs?.data) cbs.data(String(msg.data ?? ""));
                     break;
                 case "exit": {

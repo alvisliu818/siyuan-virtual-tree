@@ -39,17 +39,6 @@ const readline = require("readline");
 const path = require("path");
 const {spawn} = require("child_process");
 
-// 临时调试日志(排查多会话路由,验证完删除)
-const dbgLog = "E:\\HOME\\Local\\_siyuan-debug\\pty-helper-debug.log";
-function dbg(m) {
-    try {
-        require("fs").appendFileSync(dbgLog, new Date().toISOString() + " " + m + "\n");
-    } catch {
-        // ignore
-    }
-}
-dbg("boot pid=" + process.pid + " ptyPath=" + (process.argv[2] || ""));
-
 // argv[2] 由宿主传入 node-pty 绝对路径(插件目录内);退化到同级 node_modules
 const ptyPath = process.argv[2] || path.join(__dirname, "node_modules", "node-pty");
 
@@ -76,12 +65,8 @@ let rawSeq = 0;
 function send(msg) {
     try {
         process.stdout.write(JSON.stringify(msg) + "\n");
-    } catch (e) {
-        try {
-            require("fs").appendFileSync(dbgLog, new Date().toISOString() + " SEND FAIL: " + e.message + "\n");
-        } catch {
-            // ignore
-        }
+    } catch {
+        // 宿主已断开
     }
 }
 
@@ -165,13 +150,7 @@ function createSession(msg) {
     }
     const entry = {proc: p};
     ptySessions.set(sessionId, entry);
-    dbg(`create sid=${sessionId} file=${file} pid=${p.pid}`);
-    let outLogged = 0;
     p.onData((d) => {
-        if (outLogged < 3) {
-            dbg(`onData sid=${sessionId} len=${d.length}`);
-            outLogged++;
-        }
         send({type: "output", sessionId, data: d});
     });
     p.onExit((e) => {
@@ -289,7 +268,6 @@ rl.on("line", (line) => {
         case "input": {
             const sid = String(msg.sessionId || "default");
             const s = ptySessions.get(sid);
-            dbg(`input sid=${sid} found=${!!s} len=${String(msg.data || "").length}`);
             try {
                 s && s.proc.write(msg.data);
             } catch {
