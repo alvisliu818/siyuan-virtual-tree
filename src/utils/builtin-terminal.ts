@@ -218,12 +218,24 @@ function isHelperReady(): boolean {
  * 拉起 pty-helper 子进程,用 stdio 按行 JSON 收发,得到一个真 PTY 会话。
  * 失败(文件缺失/进程起不来)返回 null,由调用方回退管道模式。
  */
-function spawnHelperTerminal(
-    shell: string,
-    cwd: string,
-    cols: number,
-    rows: number,
-): BuiltinTerminalSession | null {
+// ===== 共享 pty-helper:一个进程承载多个 PTY 会话 =====
+// 每个终端各拉一个 helper 的话,新终端要等 Electron 以纯 Node 模式冷启动
+// (实测 2-3s,用户感知就是「点 + 之后黑屏等很久」)。常驻复用后:
+// 第一个终端付冷启动成本,之后的终端在现成 helper 里开新 PTY,毫秒级。
+// helper 侧空闲 5 分钟自动退出,宿主下次用时重新拉起,不会常驻空耗内存。
+const SYFE_DEBUG_HOST = true; // 临时调试,验证完删除
+interface SharedHelper {
+    child: any;
+    ready: boolean;
+    ptyCallbacks: Map<string, {data?: (d: string) => void; exit?: (c: number) => void}>;
+    died: boolean;
+}
+
+let sharedHelper: SharedHelper | null = null;
+// helper 冷启动失败(退出且从未 ready)后 60s 内不再尝试 helper,直接走管道
+let helperBootFailedUntil = 0;
+
+function spawnSharedHelper(): SharedHelper | null {
     const req = getNativeRequire();
     const dir = getPluginDir();
     if (!req || !dir || !isHelperReady()) return null;
@@ -237,8 +249,7 @@ function spawnHelperTerminal(
         return null;
     }
 
-    // ELECTRON_RUN_AS_NODE=1 让思源 exe 以纯 Node 模式运行 —— 这是绕开
-    // 「渲染进程不支持 worker_threads」的关键。execPath 在思源里就是 SiYuan.exe。
+    // ELECTRON_RUN_AS_NODE=1 让思源 exe 以纯 Node 模式运行(绕开渲染进程禁 Worker 的限制)
     const execPath = (window as any).process?.execPath;
     if (!execPath) return null;
 
@@ -260,31 +271,15 @@ function spawnHelperTerminal(
         return null;
     }
 
-    const listeners: {data?: (d: string) => void; exit?: (c: number) => void} = {};
-    let pending = "";      // stdout 按行缓冲
-    let started = false;
-    let closed = false;
-
-    const sendMsg = (msg: Record<string, unknown>) => {
-        try {
-            child.stdin.write(JSON.stringify(msg) + "\n");
-        } catch {
-            // helper 可能已退出
-        }
+    const helper: SharedHelper = {
+        child,
+        ready: false,
+        ptyCallbacks: new Map(),
+        died: false,
     };
+    sharedHelper = helper;
 
-    // helper 启动成功后才算可用;若它先退出且从未 ready,交回 null 让调用方回退
-    const failFastTimer = (window as any).setTimeout(() => {
-        if (!started) {
-            closed = true;
-            try {
-                child.kill();
-            } catch {
-                // ignore
-            }
-        }
-    }, 8000);
-
+    let pending = "";      // stdout 按行缓冲
     child.stdout.on("data", (chunk: Buffer) => {
         pending += chunk.toString();
         let idx: number;
@@ -298,20 +293,30 @@ function spawnHelperTerminal(
             } catch {
                 continue;
             }
+            const sid = msg.sessionId != null ? String(msg.sessionId) : "";
+            const cbs = sid ? helper.ptyCallbacks.get(sid) : undefined;
             switch (msg.type) {
                 case "ready":
-                    started = true;
-                    (window as any).clearTimeout(failFastTimer);
+                    if (!helper.ready) {
+                        helper.ready = true;
+                    }
                     break;
                 case "output":
-                    if (listeners.data) listeners.data(String(msg.data ?? ""));
+                    if (SYFE_DEBUG_HOST) console.warn("[syfe-debug] output sid=" + sid + " hasCbs=" + (!!cbs) + " len=" + String(msg.data ?? "").length);
+                    if (cbs?.data) cbs.data(String(msg.data ?? ""));
                     break;
-                case "exit":
-                    if (listeners.exit) listeners.exit(Number(msg.code) || 0);
+                case "exit": {
+                    const code = Number(msg.code) || 0;
+                    if (cbs?.exit) cbs.exit(code);
+                    helper.ptyCallbacks.delete(sid);
                     break;
+                }
                 case "error":
-                    if (listeners.data) {
-                        listeners.data(`\r\n\x1b[31m[helper] ${String(msg.message).replace(/[<>]/g, "")}\x1b[0m\r\n`);
+                    // 会话级错误写进对应终端;helper 级错误没有 sessionId,只能丢给日志
+                    if (cbs?.data) {
+                        cbs.data(String.fromCharCode(13, 10, 27) + "[31m[helper] " + String(msg.message).replace(/[<>]/g, "") + String.fromCharCode(13, 10));
+                    } else {
+                        console.warn("[siyuan-file-editor] pty-helper:", msg.message);
                     }
                     break;
                 default:
@@ -324,55 +329,26 @@ function spawnHelperTerminal(
         // helper 的 stderr 只用于诊断,不污染终端
     });
 
-    const onChildExit = (code: number) => {
-        closed = true;
-        (window as any).clearTimeout(failFastTimer);
-        if (!started) {
-            // 从未 ready:让调用方回退管道模式
-            started = false;
+    child.on("exit", () => {
+        helper.died = true;
+        if (sharedHelper === helper) sharedHelper = null;
+        // helper 死亡:所有还挂着的 PTY 会话报 exit(tab 会显示已退出),
+        // 下一个终端 spawn 时 ensureSharedHelper 会重新拉起
+        for (const [, cbs] of helper.ptyCallbacks) {
+            if (cbs.exit) cbs.exit(0);
         }
-        if (listeners.exit) listeners.exit(code ?? 0);
-    };
-    child.on("exit", onChildExit);
-    child.on("error", () => {
-        closed = true;
+        helper.ptyCallbacks.clear();
     });
+    child.on("error", () => {
+        helper.died = true;
+        if (sharedHelper === helper) sharedHelper = null;
+    });
+    return helper;
+}
 
-    sendMsg({type: "create", cwd, cols, rows, shell});
-
-    return {
-        backend: "pty",
-        write(data: string): void {
-            sendMsg({type: "input", data});
-        },
-        resize(c: number, r: number): void {
-            sendMsg({type: "resize", cols: c, rows: r});
-        },
-        kill(): void {
-            try {
-                sendMsg({type: "kill"});
-                child.stdin.end();
-            } catch {
-                // ignore
-            }
-            // 给 helper 一点时间收尾,再强杀
-            (window as any).setTimeout(() => {
-                if (!closed) {
-                    try {
-                        child.kill();
-                    } catch {
-                        // ignore
-                    }
-                }
-            }, 300);
-        },
-        onData(cb: (d: string) => void): void {
-            listeners.data = cb;
-        },
-        onExit(cb: (c: number) => void): void {
-            listeners.exit = cb;
-        },
-    };
+function ensureSharedHelper(): SharedHelper | null {
+    if (sharedHelper && !sharedHelper.died) return sharedHelper;
+    return spawnSharedHelper();
 }
 
 // 启动内置终端会话
@@ -412,9 +388,43 @@ export function spawnBuiltinTerminal(
     env.LINES = String(rows);
     env.TERM = "xterm-256color";
 
-    // ---- 首选:pty-helper 独立进程(真 PTY,渲染进程唯一可行路径)----
-    const helperSession = spawnHelperTerminal(shell, cwd, cols, rows);
-    if (helperSession) return helperSession;
+    // ---- 首选:共享 pty-helper(常驻复用,一个进程承载多个 PTY 会话)----
+    const helper = Date.now() < helperBootFailedUntil ? null : ensureSharedHelper();
+    if (helper) {
+        // 会话对象立即可用:create 命令进 helper 的 stdin 管道,helper 启动完成后处理。
+        // 冷启动(首个终端)期间 helper 要 2-3s,写进 xterm 的「正在启动 shell…」负责反馈
+        const sessionId = `t${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+        const callbacks: {data?: (d: string) => void; exit?: (c: number) => void} = {};
+        helper.ptyCallbacks.set(sessionId, callbacks);
+        const sendMsg = (msg: Record<string, unknown>) => {
+            try {
+                helper.child.stdin.write(JSON.stringify(msg) + "\n");
+            } catch {
+                // helper 可能已退出(exit 回调会触发)
+            }
+        };
+        sendMsg({type: "create", sessionId, cwd: workDir, cols, rows, shell});
+        return {
+            backend: "pty",
+            write(data: string): void {
+                sendMsg({type: "input", sessionId, data});
+            },
+            resize(c: number, r: number): void {
+                sendMsg({type: "resize", sessionId, cols: c, rows: r});
+            },
+            kill(): void {
+                // 只杀自己的 PTY;helper 是共享的,可能有别的终端还活着
+                sendMsg({type: "kill", sessionId});
+                helper.ptyCallbacks.delete(sessionId);
+            },
+            onData(cb: (d: string) => void): void {
+                callbacks.data = cb;
+            },
+            onExit(cb: (c: number) => void): void {
+                callbacks.exit = cb;
+            },
+        };
+    }
 
     // ---- 次选:直接在渲染进程 require node-pty ----
     // 当前 Electron 渲染进程禁 worker_threads,这里几乎必然失败;

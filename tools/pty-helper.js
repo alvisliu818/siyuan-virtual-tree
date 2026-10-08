@@ -39,6 +39,17 @@ const readline = require("readline");
 const path = require("path");
 const {spawn} = require("child_process");
 
+// 临时调试日志(排查多会话路由,验证完删除)
+const dbgLog = "E:\\HOME\\Local\\_siyuan-debug\\pty-helper-debug.log";
+function dbg(m) {
+    try {
+        require("fs").appendFileSync(dbgLog, new Date().toISOString() + " " + m + "\n");
+    } catch {
+        // ignore
+    }
+}
+dbg("boot pid=" + process.pid + " ptyPath=" + (process.argv[2] || ""));
+
 // argv[2] 由宿主传入 node-pty 绝对路径(插件目录内);退化到同级 node_modules
 const ptyPath = process.argv[2] || path.join(__dirname, "node_modules", "node-pty");
 
@@ -51,7 +62,12 @@ try {
     send({type: "error", message: `无法加载 node-pty(${ptyPath}): ${e.message}`});
 }
 
-let proc = null;   // 当前 PTY 会话(单例,兼容旧协议)
+let proc = null;   // 旧协议的单会话 PTY(仅兼容 legacy 调用方,新代码用 ptySessions)
+
+// PTY 会话表:sessionId -> {proc} —— 一个 helper 承载多个终端,
+// 避免「每开一个终端都冷启动一个 Electron-as-Node 进程(实测 2-3s)」
+const ptySessions = new Map();
+let ptySeq = 0;
 
 // raw 子进程表: sessionId -> {proc, exited}
 const rawSessions = new Map();
@@ -60,8 +76,12 @@ let rawSeq = 0;
 function send(msg) {
     try {
         process.stdout.write(JSON.stringify(msg) + "\n");
-    } catch {
-        // 宿主已断开
+    } catch (e) {
+        try {
+            require("fs").appendFileSync(dbgLog, new Date().toISOString() + " SEND FAIL: " + e.message + "\n");
+        } catch {
+            // ignore
+        }
     }
 }
 
@@ -111,13 +131,16 @@ function resolveShell(shell) {
 }
 
 function createSession(msg) {
-    if (proc) {
+    // 多会话:同一 helper 可承载多个终端;不传 sessionId 视为 "default"(旧协议兼容)
+    const sessionId = String(msg.sessionId || "default");
+    const old = ptySessions.get(sessionId);
+    if (old) {
         try {
-            proc.kill();
+            old.proc.kill();
         } catch {
             // ignore
         }
-        proc = null;
+        ptySessions.delete(sessionId);
     }
     const {file, args} = resolveShell(msg.shell);
     const cols = Number(msg.cols) || 80;
@@ -127,8 +150,9 @@ function createSession(msg) {
         COLUMNS: String(cols),
         LINES: String(rows),
     });
+    let p;
     try {
-        proc = pty.spawn(file, args, {
+        p = pty.spawn(file, args, {
             name: "xterm-256color",
             cols,
             rows,
@@ -136,15 +160,25 @@ function createSession(msg) {
             env,
         });
     } catch (e) {
-        send({type: "error", message: `pty.spawn 失败: ${e.message}`});
+        send({type: "error", sessionId, message: `pty.spawn 失败: ${e.message}`});
         return;
     }
-    proc.onData((d) => send({type: "output", data: d}));
-    proc.onExit((e) => {
-        proc = null;
-        send({type: "exit", code: (e && e.exitCode) || 0});
+    const entry = {proc: p};
+    ptySessions.set(sessionId, entry);
+    dbg(`create sid=${sessionId} file=${file} pid=${p.pid}`);
+    let outLogged = 0;
+    p.onData((d) => {
+        if (outLogged < 3) {
+            dbg(`onData sid=${sessionId} len=${d.length}`);
+            outLogged++;
+        }
+        send({type: "output", sessionId, data: d});
     });
-    send({type: "ready", shell: file, pid: proc.pid, hasPty: true});
+    p.onExit((e) => {
+        ptySessions.delete(sessionId);
+        send({type: "exit", sessionId, code: (e && e.exitCode) || 0});
+    });
+    send({type: "ready", sessionId, shell: file, pid: p.pid, hasPty: true});
 }
 
 // ===== raw 子进程(管道模式):Python 内核 / LSP server=====
@@ -252,28 +286,38 @@ rl.on("line", (line) => {
         case "create":
             createSession(msg);
             break;
-        case "input":
+        case "input": {
+            const sid = String(msg.sessionId || "default");
+            const s = ptySessions.get(sid);
+            dbg(`input sid=${sid} found=${!!s} len=${String(msg.data || "").length}`);
             try {
-                proc && proc.write(msg.data);
+                s && s.proc.write(msg.data);
             } catch {
                 // 进程可能已退出
             }
             break;
-        case "resize":
+        }
+        case "resize": {
+            const sid = String(msg.sessionId || "default");
+            const s = ptySessions.get(sid);
             try {
-                proc && proc.resize(Number(msg.cols) || 80, Number(msg.rows) || 24);
+                s && s.proc.resize(Number(msg.cols) || 80, Number(msg.rows) || 24);
             } catch {
                 // ignore
             }
             break;
-        case "kill":
+        }
+        case "kill": {
+            const sid = String(msg.sessionId || "default");
+            const s = ptySessions.get(sid);
             try {
-                proc && proc.kill();
+                s && s.proc.kill();
             } catch {
                 // ignore
             }
-            proc = null;
+            ptySessions.delete(sid);
             break;
+        }
         // ===== raw 子进程 =====
         case "spawn":
             spawnRaw(msg);
@@ -309,11 +353,22 @@ rl.on("line", (line) => {
 });
 
 rl.on("close", () => {
-    try {
-        proc && proc.kill();
-    } catch {
-        // ignore
+    for (const [, s] of ptySessions) {
+        try {
+            s.proc.kill();
+        } catch {
+            // ignore
+        }
     }
     for (const sid of Array.from(rawSessions.keys())) killRaw(sid);
     process.exit(0);
 });
+
+// 空闲自退:没有任何会话持续 5 分钟就退出,宿主下次用时重新拉起。
+// 否则关掉所有终端后,一个 200M 的 Electron-as-Node 进程会一直挂着。
+let idleChecks = 0;
+setInterval(() => {
+    const busy = ptySessions.size > 0 || rawSessions.size > 0;
+    idleChecks = busy ? 0 : idleChecks + 1;
+    if (idleChecks >= 5) process.exit(0);
+}, 60000);

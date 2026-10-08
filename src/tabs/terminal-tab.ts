@@ -369,6 +369,8 @@ function connectBuiltin(self: TerminalTabInstance, restart: boolean): void {
 
         setStatus(self, "connected", "已连接");
         if (self._term) {
+            // PowerShell 带 conda profile 时启动要 3-10s,先给一行反馈避免「黑屏等待」焦虑
+            self._term.write('\x1b[90m[正在启动 shell,首次可能需要几秒…]\x1b[0m\r\n');
             const kind = session.backend === "pty"
                 ? "真 PTY(支持行编辑/历史/真彩色)"
                 : "管道模式(无行编辑,建议启用 node-pty)";
