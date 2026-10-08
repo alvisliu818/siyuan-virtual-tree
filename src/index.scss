@@ -2760,6 +2760,13 @@
     }
 }
 
+
+/* emoji 图标字号对齐原生(原生 b3-list-item__icon 为 16px;嵌套容器会把它压到 12px) */
+.syfe-mtree__icon .b3-list-item__graphic,
+.syfe-tree__icon .b3-list-item__graphic {
+    font-size: 16px;
+    line-height: 1;
+}
 .syfe-mtree__icon {
     flex-shrink: 0;
     display: inline-flex;
