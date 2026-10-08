@@ -44,6 +44,7 @@ import {clearAllLsp} from "./extensions/lsp-loader";
 import {clearAllIconThemes, getIconThemesWithMissingIcons, getLoadedIconThemes, activateIconThemeByPreference} from "./extensions/icon-theme-loader";
 import {registerPythonLsp, disposePythonLsp} from "./utils/python-lsp-bridge";
 import {disposePythonKernel} from "./utils/python-kernel";
+import {disposeAllKernels, registerKernelChoicePersistence} from "./utils/kernel/registry";
 import {stopPythonLanguageServer} from "./utils/python-lsp";
 // vditor 会用自己的 lute 覆写 window.Lute,使思源之后新建的文档编辑器全部失效。
 // 必须在任何 vditor 实例被创建之前装好守卫 —— 所以放在顶层 import 里(模块求值顺序)。
@@ -100,6 +101,23 @@ export default class FileEditorPlugin extends Plugin {
     private fileTreeDockAdded = false;
 
     onload(): void {
+        // 内核选择的持久化走插件存储(workspace 级),onload 注册
+        registerKernelChoicePersistence({
+            load: async () => {
+                try {
+                    return (await this.loadData("kernel-choices")) as Record<string, import("./utils/kernel/registry").KernelChoice> | null;
+                } catch {
+                    return null;
+                }
+            },
+            save: async (data) => {
+                try {
+                    await this.saveData("kernel-choices", data);
+                } catch {
+                    // ignore
+                }
+            },
+        });
         setupMonaco(this.name);
 
         // 挂上「按需补注册文件面板」的钩子。必须在这里(而不是 addFileTreeDock
@@ -390,6 +408,8 @@ export default class FileEditorPlugin extends Plugin {
             // ignore
         }
         void disposePythonKernel();
+        // 注册表里的内核(Jupyter/Legacy,按文档)统一收尾
+        void disposeAllKernels();
         void stopPythonLanguageServer();
         disposeAll();
         // 正文代码块运行:中断所有还在跑的进程、摘掉注入的面板与按钮,

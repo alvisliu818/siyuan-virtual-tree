@@ -505,10 +505,14 @@
     flex-shrink: 0;
     display: flex;
     align-items: center;
+    // 行本身 gap 4px,再加 4px = 8px,与原生文件树的图标右间距一致
+    margin-right: 4px;
 
     svg {
-        width: 16px;
-        height: 16px;
+        // 与原生文件树对齐(b3-list-item__graphic 18×18,见思源 _layout.scss sy__file 作用域),
+        // 否则虚拟文档树里的思源文档图标会比原生的小一号
+        width: 18px;
+        height: 18px;
     }
 
     .syfe-tree__ext-icon {
@@ -3407,5 +3411,16 @@
 
   &:hover {
     opacity: 1;
+  }
+}
+
+/* Notebook 内核徽章:可点击切换内核 */
+.syfe-nb__kernel[data-act="kernel-menu"] {
+  cursor: pointer;
+  user-select: none;
+
+  &:hover {
+    background: var(--b3-theme-background-light);
+    border-radius: 4px;
   }
 }

@@ -9,7 +9,7 @@
 //   执行结果按 nbformat 4 规范写回 cell.outputs / cell.execution_count,
 //   所以存盘后用 Jupyter / VS Code 打开也是合法的。
 // 结构对齐 office-tab:独立 _dirty + 保存/重载 + beforeDestroy 确认。
-import {openTab, confirm, showMessage} from "siyuan";
+import {openTab, confirm, showMessage, Menu} from "siyuan";
 import * as monaco from "monaco-editor";
 import Vditor from "vditor";
 import {NOTEBOOK_TAB_TYPE} from "../constants";
@@ -22,9 +22,14 @@ import {VDITOR_CDN, ensureVditorCSS} from "./markdown-tab";
 // Vditor.preview 会读全局 window.Lute,vditor 那份缺 SetTabs —— 见 utils/lute-guard
 import {ensureSiyuanLute} from "../utils/lute-guard";
 import {
-    getPythonKernel, isPythonAvailable, disposePythonKernel,
+    isPythonAvailable,
     type ExecuteOutcome, type KernelStatus,
 } from "../utils/python-kernel";
+import {
+    getKernel, getKernelChoice, setKernelChoice, disposeKernel,
+    loadKernelChoices, listAvailableKernels,
+    type KernelChoice,
+} from "../utils/kernel/registry";
 
 // Tab 所需的插件接口
 export interface IPluginForNotebookTab {
@@ -392,7 +397,7 @@ export function createNotebookTabConfig(_plugin: IPluginForNotebookTab) {
                 <div class="syfe-nb__bar">
                     <span class="syfe-nb__kind">Notebook</span>
                     <span class="syfe-nb__meta"></span>
-                    <span class="syfe-nb__kernel"></span>
+                    <span class="syfe-nb__kernel" data-act="kernel-menu" title="点击切换内核"></span>
                     <span class="syfe-nb__dirty" style="display:none;">●</span>
                     <span class="syfe-nb__actions">
                         <button class="b3-button b3-button--text" data-act="add-code" title="在当前单元格后插入代码单元格">+ 代码</button>
@@ -941,9 +946,9 @@ export function createNotebookTabConfig(_plugin: IPluginForNotebookTab) {
                     showMessage("空单元格,没有可执行的代码", 2000, "info");
                     return;
                 }
-                const kernel = getPythonKernel();
+                const kernel = getKernel(self._path || "__notebook__");
                 if (!kernel) {
-                    showMessage("未找到 Python 内核,请确认 python 在 PATH 中", 5000, "error");
+                    showMessage("未找到内核,请从工具栏内核徽章选择一个内核", 5000, "error");
                     return;
                 }
                 self._runningIdx = idx;
@@ -994,9 +999,9 @@ export function createNotebookTabConfig(_plugin: IPluginForNotebookTab) {
             };
 
             const restartKernel = async () => {
-                const kernel = getPythonKernel();
+                const kernel = getKernel(self._path || "__notebook__");
                 if (!kernel) {
-                    showMessage("未找到 Python 内核", 3000, "error");
+                    showMessage("未找到内核", 3000, "error");
                     return;
                 }
                 const ok = await kernel.reset();
@@ -1004,7 +1009,7 @@ export function createNotebookTabConfig(_plugin: IPluginForNotebookTab) {
             };
 
             const interruptKernel = async () => {
-                const kernel = getPythonKernel();
+                const kernel = getKernel(self._path || "__notebook__");
                 const idx = self._runningIdx;
                 if (!kernel || idx === null || idx === undefined) return;
                 await kernel.interrupt();
@@ -1189,6 +1194,7 @@ const save = async () => {
                 else if (act === "add-md") addCell("markdown");
                 else if (act === "run-all") void runAllCells();
                 else if (act === "restart") void restartKernel();
+                else if (act === "kernel-menu") void openKernelMenu();
                 else if (act === "save") void save();
                 else if (act === "reload") reload();
             });
@@ -1216,26 +1222,89 @@ const save = async () => {
             // 启动内核并订阅状态 → 工具栏徽章。
             // 必须在 load() 判定完语言之后再调:init 阶段 self._nb 还是 null,
             // 那时算出来的 _canRun 恒为 false。
-            const ensureKernel = () => {
+            const ensureKernel = async () => {
                 if (!self._canRun) return;
-                const k = getPythonKernel();
+                // 每个文档按 registry 里记录的选择拿内核(默认 = 内置 Legacy)
+                await loadKernelChoices();
+                const k = getKernel(self._path || "__notebook__");
                 if (!k) {
-                    renderKernelState("error", "未找到 Python 内核");
+                    renderKernelState("error", "未找到内核");
                     return;
                 }
-                if (!self._statusUnsub) {
-                    // 退订函数存到实例上,destroy 时必须调用,
-                    // 否则关掉 Tab 后内核状态变化还会往已销毁的 DOM 上写
-                    self._statusUnsub = k.onStatus((status, detail) => renderKernelState(status, detail));
-                    renderKernelState("starting");
+                // 切换内核会换实例:旧的退订,新的重新订阅(destroy 时统一清理)
+                if (self._statusUnsub) {
+                    try {
+                        self._statusUnsub();
+                    } catch {
+                        // 忽略
+                    }
                 }
+                self._statusUnsub = k.onStatus((status, detail) => renderKernelState(status, detail));
+                renderKernelState("starting");
                 void k.start().then((ok) => {
-                    // 徽章的 tooltip 显示具体解释器路径,方便用户确认用的是哪个 python
+                    // 徽章的 tooltip 显示当前内核与解释器,方便用户确认
+                    const choice = getKernelChoice(self._path || "__notebook__");
+                    const prefix = choice?.kind === "jupyter" ? `[Jupyter·${choice.specName || "python3"}] ` : "[内置内核] ";
                     const detail = ok
-                        ? (k.kernelInfo ? `${k.kernelInfo.executable}(Python ${k.kernelInfo.version})` : "")
-                        : "启动失败";
+                        ? (k.kernelInfo ? `${prefix}${k.kernelInfo.executable}(Python ${k.kernelInfo.version})` : `${prefix}已就绪`)
+                        : `${prefix}启动失败`;
                     renderKernelState(ok ? "ready" : "error", detail);
                 });
+            };
+
+            // 内核徽章 → 切换菜单:内置内核 + 本机全部 Jupyter kernelspec + 重启
+            const openKernelMenu = async () => {
+                if (!self._canRun) return;
+                const docId = self._path || "__notebook__";
+                const cur = getKernelChoice(docId);
+                const menu = new Menu("syfe-nb-kernel-switch");
+                menu.addItem({
+                    iconHTML: "", label: (cur?.kind ?? "syfe") === "syfe" ? "✓ 内置 Python 内核" : "内置 Python 内核",
+                    click: () => {
+                        setKernelChoice(docId, {kind: "syfe"});
+                        void ensureKernel();
+                    },
+                });
+                menu.addSeparator();
+                const specs = await listAvailableKernels();
+                if (specs.length === 0) {
+                    menu.addItem({iconHTML: "", label: "(未检测到 Jupyter kernelspec)", click: () => {}});
+                } else {
+                    for (const spec of specs) {
+                        const isCur = cur?.kind === "jupyter" && cur.specName === spec.name;
+                        menu.addItem({
+                            iconHTML: "", label: (isCur ? "✓ " : "") + `Jupyter · ${spec.displayName || spec.name}`,
+                            click: () => {
+                                if (self._runningIdx !== null && self._runningIdx !== undefined) {
+                                    showMessage("有单元格正在执行,请先等它完成或中断", 3000, "info");
+                                    return;
+                                }
+                                setKernelChoice(docId, {kind: "jupyter", specName: spec.name, specResourceDir: spec.resourceDir});
+                                void ensureKernel();
+                                showMessage(`已切换到 Jupyter 内核 ${spec.name}`, 2500, "info");
+                            },
+                        });
+                    }
+                }
+                menu.addSeparator();
+                menu.addItem({
+                    iconHTML: "", icon: "iconRefresh", label: "重启当前内核",
+                    click: async () => {
+                        if (self._runningIdx !== null && self._runningIdx !== undefined) {
+                            showMessage("有单元格正在执行", 3000, "info");
+                            return;
+                        }
+                        await disposeKernel(docId);
+                        self._statusUnsub?.();
+                        self._statusUnsub = undefined;
+                        await ensureKernel();
+                        showMessage("内核已重启", 2500, "info");
+                    },
+                });
+                // 菜单弹在内核徽章下方
+                const badge = barEl.querySelector(".syfe-nb__kernel") as HTMLElement | null;
+                const rect = badge?.getBoundingClientRect();
+                menu.open({x: rect ? rect.left : innerWidth / 2, y: rect ? rect.bottom + 4 : 80});
             };
 
             void load().then(ensureKernel);
