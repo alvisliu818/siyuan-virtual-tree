@@ -63,13 +63,7 @@ function switchPane(self: TerminalDockInstance, id: number): void {
     }
     renderTabs(self);
     // 从 display:none 变回可见后 xterm 需要重新 fit,否则画布尺寸是旧的
-    setTimeout(() => {
-        try {
-            pane.inst.resize.call(pane.inst);
-        } catch {
-            // ignore
-        }
-    }, 0);
+    fitWhenReady(pane.inst, [0, 200, 600, 1500]);
 }
 
 function closePane(self: TerminalDockInstance, id: number): void {
@@ -108,6 +102,44 @@ function renderEmpty(self: TerminalDockInstance): void {
     }
 }
 
+/**
+ * 渐进式 fit:dock 面板开启动画/布局稳定需要时间,单次 fit 会算出 1 行高的尺寸。
+ * 在多个时间点重试,收敛后若缓冲区没有任何输出(提示符在 0 尺寸期被丢),
+ * 补一个回车让 shell 打印新提示符 —— 否则用户看到的就是黑屏只剩光标。
+ */
+function fitWhenReady(inst: any, extraDelays: number[]): void {
+    for (const delay of extraDelays) {
+        setTimeout(() => {
+            try {
+                inst.resize.call(inst);
+            } catch {
+                // ignore
+            }
+            if (delay !== extraDelays[extraDelays.length - 1]) return;
+            // 最后一次:检查缓冲区,空的就补提示符
+            try {
+                const term = inst._term;
+                if (!term) return;
+                let hasText = false;
+                const buf = term.buffer?.active;
+                if (buf) {
+                    for (let i = 0; i < Math.min(buf.length, 40); i++) {
+                        if ((buf.getLine(i)?.translateToString(true) || "").trim()) {
+                            hasText = true;
+                            break;
+                        }
+                    }
+                }
+                if (!hasText && inst._builtinSession?.write) {
+                    inst._builtinSession.write(inst._builtinSession.backend === "pty" ? "\r" : "\r\n");
+                }
+            } catch {
+                // ignore
+            }
+        }, delay);
+    }
+}
+
 function createPane(self: TerminalDockInstance, cwd: string): void {
     if (!self._panesEl) return;
     if (self._panes.length >= MAX_TERMINALS) {
@@ -122,8 +154,13 @@ function createPane(self: TerminalDockInstance, cwd: string): void {
     while (self._panes.some((p) => p.title === title)) title = `${base} (${n++})`;
 
     const paneEl = document.createElement("div");
-    paneEl.className = "syfe-terminal-dock__pane";
+    // ⚠️ 必须先激活(display:block)再 init:xterm 在隐藏容器里 open() 时尺寸为 0,
+    // shell 启动瞬间写下的提示符/横幅会丢,之后 fit 也补不回来 → 黑屏只剩光标
+    paneEl.className = "syfe-terminal-dock__pane syfe-terminal-dock__pane--active";
     self._panesEl.appendChild(paneEl);
+    const prevActive = self._panes.find((p) => p.id === self._activeId);
+    if (prevActive) prevActive.el.classList.remove("syfe-terminal-dock__pane--active");
+    self._activeId = id;
 
     // 伪实例:终端 Tab 的 init/destroy/resize 只依赖 element 与 data.cwd
     const inst: any = {element: paneEl, data: {cwd}};
@@ -132,13 +169,22 @@ function createPane(self: TerminalDockInstance, cwd: string): void {
     } catch (e) {
         console.warn("[siyuan-file-editor] 终端面板初始化失败:", e);
         paneEl.remove();
+        if (prevActive) {
+            prevActive.el.classList.add("syfe-terminal-dock__pane--active");
+            self._activeId = prevActive.id;
+        } else {
+            self._activeId = -1;
+        }
         showMessage("终端初始化失败", 3000, "error");
         return;
     }
     const pane: TerminalPane = {id, title, el: paneEl, inst};
     self._panes.push(pane);
+    renderTabs(self);
     renderEmpty(self);
-    switchPane(self, id);
+    // 布局稳定后再补 fit;窗口给足 6s(实测底部面板打开动画+布局稳定可能超过 2s),
+    // 收敛后若提示符丢失则补一个回车
+    fitWhenReady(inst, [60, 300, 800, 1500, 2500, 4000, 6000]);
 }
 
 export function createTerminalDockConfig(plugin: IPluginForTerminalTab) {
