@@ -34,3 +34,6 @@ tools/__pycache__/
 /[0-9]*.js
 /vendors-*.js
 /node_modules_*.js
+
+# 内部方案文档不入公开仓库
+/docs/
