@@ -21,6 +21,8 @@ export const RECENT_DOCK_TYPE = "siyuan-file-editor-recent-dock";
 export const TAG_DOCK_TYPE = "siyuan-file-editor-tag-dock";
 // 侧边栏「虚拟文档树」面板(用户自建树,初始为空,可挂载文件/文件夹/思源文档/思源块)
 export const MOUNT_TREE_DOCK_TYPE = "siyuan-file-editor-mount-tree-dock";
+// 侧边栏「终端」面板(复用终端 Tab 的 xterm + 三后端实现,常驻侧栏底部)
+export const TERMINAL_DOCK_TYPE = "siyuan-file-editor-terminal-dock";
 
 // Markdown 扩展名(由独立的 Markdown Tab 打开,支持所见即所得/源码双模式)
 export const MARKDOWN_EXTENSIONS = new Set([".md", ".markdown"]);

@@ -35,6 +35,7 @@ import {registerCodeBlockRun, disposeCodeBlockRun} from "./protyle/code-block-ru
 import {loadCodeBlockRunData, flushCodeBlockRunData} from "./protyle/code-block-run-store";
 import {initMountTree, migrateSyDocMounts, SYFE_RELATION_TREE_CHANGED_EVENT} from "./mount-tree";
 import {createMountTreeDockConfig} from "./dock/mount-tree-dock";
+import {createTerminalDockConfig} from "./dock/terminal-dock";
 import {openExtensionMarket} from "./extensions/market-ui";
 import {clearAllGrammars} from "./extensions/grammar-loader";
 import {clearAllThemes, applyThemeByPreference, getLoadedThemes} from "./extensions/theme-loader";
@@ -149,6 +150,8 @@ export default class FileEditorPlugin extends Plugin {
         this.addDock(asSiyuanCustom(createTagDockConfig(this as any)));
         // 侧边栏「虚拟文档树」面板(初始为空,挂载文件/文件夹/思源文档/思源块,支持嵌套)
         this.addDock(asSiyuanCustom(createMountTreeDockConfig(this as any)));
+        // 侧边栏「终端」面板(复用终端 Tab 的 xterm 实现,常驻底部,与终端 Tab 互相独立)
+        this.addDock(asSiyuanCustom(createTerminalDockConfig(this as any)));
 
         // 注册思源编辑器斜杆命令(输入 /file 或 /文件 插入文件链接)
         registerSlashCommands(this, () => this.getFileTreeRoot());
