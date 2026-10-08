@@ -53,7 +53,7 @@ function guessPluginDir(): string {
             const req = getNativeRequire();
             const p = req ? (req("path") as typeof import("path")) : null;
             const join = (a: string, b: string) => (p ? p.join(a, b) : `${a}/${b}`);
-            return join(ws, join("data", join("plugins", "siyuan-file-editor")));
+            return join(ws, join("data", join("plugins", "siyuan-virtual-tree")));
         }
     } catch {
         // ignore

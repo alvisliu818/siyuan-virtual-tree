@@ -66,7 +66,7 @@ function getCrypto(): any {
 export function createWireSession(key: Buffer): WireSession {
     const crypto = getCrypto();
     const sessionId = crypto ? crypto.randomBytes(8).toString("hex") : "session";
-    return {key, sessionId, username: "siyuan-file-editor"};
+    return {key, sessionId, username: "siyuan-virtual-tree"};
 }
 
 /** 生成 msg_id。只需唯一,不需要符合 uuid 形态 */

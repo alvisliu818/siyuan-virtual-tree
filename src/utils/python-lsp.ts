@@ -271,7 +271,7 @@ export class PythonLanguageServer {
             const rootUri = this.workspaceRoot ? pathToUri(this.workspaceRoot) : null;
             const result = await conn.request<any>("initialize", {
                 processId: process.pid,
-                clientInfo: {name: "siyuan-file-editor", version: "1.0.0"},
+                clientInfo: {name: "siyuan-virtual-tree", version: "1.0.0"},
                 rootUri,
                 // 无 workspaceRoot 时给个占位,否则 pyright 会拿 cwd 当根,
                 // 偶尔会扫到整个盘(实测日志:File or directory does not exist)

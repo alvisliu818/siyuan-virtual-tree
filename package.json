@@ -1,5 +1,5 @@
 {
-  "name": "siyuan-file-editor",
+  "name": "siyuan-virtual-tree",
   "version": "0.1.0",
   "description": "VSCode-like file editor & Obsidian-like file manager for SiYuan, powered by Monaco Editor.",
   "main": "index.js",

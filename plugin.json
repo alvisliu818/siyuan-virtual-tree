@@ -1,8 +1,8 @@
 {
-  "name": "siyuan-file-editor",
+  "name": "siyuan-virtual-tree",
   "author": "alvisliu",
   "url": "https://github.com/alvisliu/siyuan-file-editor",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "minAppVersion": "3.7.0",
   "kernels": [
     "windows",
@@ -24,14 +24,13 @@
     "desktop-window",
     "all"
   ],
-  "disabledInPublish": false,
   "displayName": {
-    "default": "File Editor",
-    "zh-CN": "文件编辑器"
+    "default": "Virtual Document Tree",
+    "zh_CN": "虚拟文档树"
   },
   "description": {
-    "default": "VSCode-like file editor & Obsidian-like file manager for SiYuan, powered by Monaco Editor. Supports mounting Baidu Netdisk (incl. sync space) into the file tree.",
-    "zh-CN": "类 VSCode 文件编辑器与类 Obsidian 文件管理器,基于 Monaco Editor;支持挂载百度网盘文件与文件夹(含同步空间)。"
+    "default": "Virtual document tree + file editor suite for SiYuan Notes (successor of siyuan-virtual-tree)",
+    "zh_CN": "思源笔记虚拟文档树 + 文件编辑器套件(原 siyuan-virtual-tree 的继任版本,功能已全部并入)"
   },
   "readme": {
     "default": "README.md",
