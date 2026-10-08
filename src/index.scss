@@ -2765,12 +2765,14 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 16px;
-    height: 16px;
+    // 与原生文件树的图标对齐(sy__file 里 b3-list-item__graphic 是 18×18),
+    // 之前的 16/15 偏小,视觉上明显小于原生文档树
+    width: 18px;
+    height: 18px;
 
     svg {
-        width: 15px;
-        height: 15px;
+        width: 17px;
+        height: 17px;
         fill: var(--b3-theme-on-surface);
     }
 }
