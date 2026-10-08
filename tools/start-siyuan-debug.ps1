@@ -14,6 +14,16 @@ $ErrorActionPreference = "Stop"
 $main = "D:\programs\SiYuan\resources\app\electron\main.js"
 $siyuan = "D:\programs\SiYuan\SiYuan.exe"
 
+# Always launch the TEST workspace. Without --workspace the app opens whatever was
+# used last, which is E:\HOME\SiYuan (the main workspace) - and that one is off
+# limits for debugging. Make the target explicit so the choice cannot be inherited
+# from a previous session by accident.
+$workspace = "E:\HOME\Local\siyuan-test-ws"
+if (-not (Test-Path $workspace)) {
+    Write-Host "[ERROR] Test workspace not found: $workspace" -ForegroundColor Red
+    exit 1
+}
+
 # Self-check: is the patch in place?
 if (-not (Select-String -Path $main -Pattern "SY_REMOTE_DEBUG_PORT" -Quiet)) {
     Write-Host "[ERROR] main.js lacks the debug patch; CDP port will not work." -ForegroundColor Red
@@ -42,9 +52,9 @@ if ($running.Count -gt 0) {
 }
 
 $env:SY_REMOTE_DEBUG_PORT = "9222"
-Start-Process -FilePath $siyuan -WorkingDirectory "D:\programs\SiYuan"
+Start-Process -FilePath $siyuan -ArgumentList "--workspace=$workspace" -WorkingDirectory "D:\programs\SiYuan"
 
-Write-Host "[Launched] Waiting for CDP on 9222 ..."
+Write-Host "[Launched] workspace=$workspace ; waiting for CDP on 9222 ..."
 for ($i = 1; $i -le 15; $i++) {
     Start-Sleep -Seconds 2
     try {

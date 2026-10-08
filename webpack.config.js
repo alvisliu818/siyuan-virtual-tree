@@ -38,6 +38,12 @@ const NODE_PTY_DEST = "node_modules/node-pty";
 const PYRIGHT_SRC = path.resolve(__dirname, "node_modules", "pyright");
 const PYRIGHT_DEST = "pyright";
 
+// zeromq(Task D / Jupyter 后端)。同为原生模块(.node 二进制 + 平台相关 build 目录),
+// 无法被 webpack 打包。它的 JS 层(lib/)只做相对引用,原生层在 build/<plat>/<arch>/<abi>,
+// 所以复制 lib + package.json + 整个 build 即可(排除各自的调试符号)。
+const ZEROMQ_SRC = path.resolve(__dirname, "node_modules", "zeromq");
+const ZEROMQ_DEST = "node_modules/zeromq";
+
 /**
  * 生成 pyright 的复制规则。
  *
@@ -83,6 +89,21 @@ function nodePtyPatterns() {
     return patterns;
 }
 
+/**
+ * 生成 zeromq 的复制规则(Jupyter 后端用)。
+ * zeromq.js v6 的 JS 层在 lib/,原生层在 build/<platform>/<arch>/<abi|msvc 变体>/addon.node,
+ * 运行时由 zeromq 自己按 ABI 探测选择,因此 build 整目录复制(总共约 3M,不再细分)。
+ * 排除 .pdb。宿主仓库没装 zeromq 时返回空(不影响构建)。
+ */
+function zeromqPatterns() {
+    if (!fs.existsSync(ZEROMQ_SRC)) return [];
+    return [
+        {from: path.join(ZEROMQ_SRC, "package.json"), to: `${ZEROMQ_DEST}/`},
+        {from: path.join(ZEROMQ_SRC, "lib"), to: `${ZEROMQ_DEST}/lib`, globOptions: {ignore: ["**/*.map"]}},
+        {from: path.join(ZEROMQ_SRC, "build"), to: `${ZEROMQ_DEST}/build`, globOptions: {ignore: ["**/*.pdb"]}},
+    ];
+}
+
 module.exports = (env, argv) => {
     const production = argv.mode === "production";
     // 生产模式输出到 dist/ 子目录(完整插件目录)
@@ -122,8 +143,12 @@ module.exports = (env, argv) => {
                     {from: "tools/pty-helper.js", to: "./pty-helper.js"},
                     // syfe-kernel:Python 内核本体(由 pty-helper 以 raw 子进程拉起)
                     {from: "tools/syfe-kernel.py", to: "./syfe-kernel.py"},
+                    // jupyter-launch:Windows 中断用启动器(Jupyter 后端)
+                    {from: "tools/jupyter-launch.py", to: "./jupyter-launch.py", noErrorOnMissing: true},
                     // node-pty:终端真 PTY 的原生模块(按当前平台复制)
                     ...nodePtyPatterns(),
+                    // zeromq:Jupyter 后端的 zmq 通道(按当前平台复制)
+                    ...zeromqPatterns(),
                     // pyright:Python 语言服务器(运行时独立进程,需整包复制)
                     ...pyrightPatterns(),
                 ],
@@ -142,8 +167,12 @@ module.exports = (env, argv) => {
                     {from: "tools/pty-helper.js", to: "./pty-helper.js"},
                     // syfe-kernel:Python 内核本体
                     {from: "tools/syfe-kernel.py", to: "./syfe-kernel.py"},
+                    // jupyter-launch:Windows 中断用启动器(Jupyter 后端)
+                    {from: "tools/jupyter-launch.py", to: "./jupyter-launch.py", noErrorOnMissing: true},
                     // node-pty:终端真 PTY 的原生模块(按当前平台复制)
                     ...nodePtyPatterns(),
+                    // zeromq:Jupyter 后端的 zmq 通道(按当前平台复制)
+                    ...zeromqPatterns(),
                     // pyright:Python 语言服务器(运行时独立进程,需整包复制)
                     ...pyrightPatterns(),
                 ],

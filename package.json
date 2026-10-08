@@ -48,6 +48,7 @@
     "vscode-oniguruma": "^2.0.1",
     "vscode-textmate": "^9.3.2",
     "x-data-spreadsheet": "^1.1.9",
-    "xlsx": "^0.18.5"
+    "xlsx": "^0.18.5",
+    "zeromq": "^6.8.0"
   }
 }
