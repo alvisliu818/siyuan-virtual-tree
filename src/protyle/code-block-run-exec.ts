@@ -149,3 +149,81 @@ export function extractLang(blockElement: Element): string {
     const el = blockElement.querySelector(".protyle-action__language");
     return (el?.textContent || "").trim().toLowerCase();
 }
+// ===== 内核模式(Task D / Phase 3b):代码块走注册表的持久内核 =====
+//
+// 与上面 runPythonCode(干净子进程)的关键差异:
+//   - 变量跨块保留(同一个 docId 共享一个内核实例,见 registry)
+//   - 没有 stdin 通道:Legacy 内核本就没有,input() 会 EOF;Jupyter 内核
+//     allow_stdin=false。input() 的交互脚本请走「干净运行」
+//   - 中断:Jupyter 后端保留变量,Legacy 是杀进程+重放历史
+//
+// 输出走 kernel.onEvent 转发(流式,与面板的 onOutput 兼容);
+// execute 的 Promise 在单元格结束时 resolve,onExit 在那时触发。
+
+import {getKernel, disposeKernel} from "../utils/kernel/registry";
+
+export interface KernelRunOptions {
+    docId: string;
+    code: string;
+    onOutput: (chunk: string) => void;
+    onExit: (exitCode: number) => void;
+}
+
+/** 用文档绑定的持久内核执行代码。返回 null 表示内核拿不到(理论上不发生)。 */
+export function runKernelCode(options: KernelRunOptions): RunHandle | null {
+    let kernel;
+    try {
+        kernel = getKernel(options.docId);
+    } catch {
+        return null;
+    }
+    if (!kernel) return null;
+
+    let inputHinted = false;
+    const unsub = kernel.onEvent((ev) => {
+        if (ev.type === "stream") {
+            options.onOutput(ev.text);
+        } else if (ev.type === "execute_result") {
+            const text = ev.data?.["text/plain"];
+            if (typeof text === "string" && text.trim()) options.onOutput(text + "\n");
+        }
+    });
+
+    void kernel.execute(options.code).then((outcome) => {
+        unsub();
+        if (!outcome) {
+            // execute 超时或内核没起来:与代码报错明确区分(Phase 3b 验收项 ④)
+            options.onOutput("[内核未响应:可能启动失败,或执行超过了超时时间。可用「重置内核」后重试]\n");
+            options.onExit(-1);
+            return;
+        }
+        // 纯异常且没有任何流式输出时,把 traceback 补进输出(带 ANSI 色的先不管,面板自己不认色)
+        if (outcome.error && !outcome.stdout && !outcome.stderr) {
+            options.onOutput((outcome.error.traceback || []).join("\n") + "\n");
+        }
+        options.onExit(outcome.ok ? 0 : 1);
+    }).catch((e) => {
+        unsub();
+        options.onOutput(String(e?.message || e) + "\n");
+        options.onExit(-1);
+    });
+
+    return {
+        sendInput(line: string): void {
+            // 内核无 stdin:只提示一次,避免用户以为输入框坏了
+            if (!inputHinted) {
+                inputHinted = true;
+                options.onOutput("[内核模式不支持 input();请用面板上的「干净运行」执行交互式脚本]\n");
+            }
+            void line;
+        },
+        interrupt(): void {
+            void kernel.interrupt();
+        },
+    };
+}
+
+/** 重置文档绑定的内核(销毁实例,下次执行自动重建) */
+export function resetDocKernel(docId: string): Promise<void> {
+    return disposeKernel(docId);
+}

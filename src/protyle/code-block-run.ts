@@ -26,13 +26,33 @@ import {
     setCodeBlockCollapsed, clearCodeBlockOutput,
     CODE_BLOCK_RUN_LOADED_EVENT,
 } from "./code-block-run-store";
-import {runPythonCode, extractCode, extractLang, type RunHandle} from "./code-block-run-exec";
+import {runPythonCode, runKernelCode, resetDocKernel, extractCode, extractLang, type RunHandle} from "./code-block-run-exec";
 
 const PANEL_CLASS = "syfe-cb-run";
 const BTN_CLASS = "syfe-cb-run__btn";
 
 // blockId → 正在跑的进程(用于「停止」)
 const running = new Map<string, RunHandle>();
+
+// ===== 内核模式(Task D / Phase 3b) =====
+// 默认:代码块走注册表的持久内核(按文档绑定,变量跨块保留)。
+// 不喜欢状态污染的场合:点面板上的「干净运行」切回独立的子进程(有真 stdin,
+// 支持 input());切走后按钮变成「内核运行」可随时切回来。按文档记忆,仅内存。
+const cleanModeDocs = new Set<string>();
+
+function docKeyOf(block: HTMLElement): string {
+    return "cb:" + docDirOf(block);
+}
+
+function isKernelMode(block: HTMLElement): boolean {
+    return !cleanModeDocs.has(docKeyOf(block));
+}
+
+function toggleRunMode(block: HTMLElement): void {
+    const key = docKeyOf(block);
+    if (cleanModeDocs.has(key)) cleanModeDocs.delete(key);
+    else cleanModeDocs.add(key);
+}
 
 /** 从 .protyle-wysiwyg 里找出所有 Python 代码块 */
 function eachPythonBlock(root: ParentNode, fn: (block: HTMLElement) => void): void {
@@ -90,7 +110,7 @@ function ensureRunButton(block: HTMLElement): void {
             handle.interrupt();
             return;
         }
-        void startRun(block);
+        void startRun(block, !isKernelMode(block));
     });
 
     // 放在「更多」按钮前面,和原生工具按钮排在一起
@@ -120,6 +140,7 @@ function panelOf(block: HTMLElement, blockId: string): HTMLElement | null {
 
 /** 面板当前的状态是否还和存档一致 —— 不一致才需要重绘 */
 function panelNeedsRebuild(
+    block: HTMLElement,
     panel: HTMLElement,
     record: ReturnType<typeof getCodeBlockOutput>,
     isRunning: boolean,
@@ -139,9 +160,15 @@ function panelNeedsRebuild(
     const runBtn = panel.querySelector('.syfe-cb-run__btn2[data-act="run"]');
     const wantRun = isRunning ? "■ 停止" : "▶ 运行";
     if ((runBtn?.textContent || "").trim() !== wantRun) return true;
-    // stdin 输入框的有无跟着运行态走
+    // stdin 输入框的有无跟着运行态走(内核模式没有 stdin)
     const hasStdin = !!panel.querySelector(".syfe-cb-run__stdin");
-    if (hasStdin !== (isRunning && !collapsed)) return true;
+    if (hasStdin !== (isRunning && !collapsed && !isKernelMode(block))) return true;
+    // 模式切换按钮的文案变了(模式翻转)也得重绘
+    const modeBtn = (panel.querySelector('.syfe-cb-run__btn2[data-act="mode"]')?.textContent || "").trim();
+    const wantMode = isKernelMode(block) ? "▸ 干净运行" : "▸ 内核运行";
+    if (modeBtn !== wantMode) return true;
+    // 重置内核按钮的有无跟着模式走
+    if (!!panel.querySelector('.syfe-cb-run__btn2[data-act="reset-kernel"]') !== isKernelMode(block)) return true;
     return false;
 }
 
@@ -165,7 +192,7 @@ function renderPanel(block: HTMLElement): HTMLElement | null {
     // 已经有面板、状态没变、位置也对 → 什么都不用做。
     // decorate 会被 MutationObserver 频繁触发,每次都重绘的话
     // 正在折叠的面板/正在输入的 stdin 会不停地被重建。
-    if (!panelNeedsRebuild(panel, record, isRunning)) return panel;
+    if (!panelNeedsRebuild(block, panel, record, isRunning)) return panel;
 
     // 任何一种重建都要同步这个标记:refreshPanel 靠它判断运行态有没有翻转
     panel.dataset.syfeRunning = String(isRunning);
@@ -183,9 +210,16 @@ function renderPanel(block: HTMLElement): HTMLElement | null {
     // 出错时给标题条加个 class,颜色由 CSS 的 __head--err 决定
     head.className = record && record.exitCode !== 0
         ? "syfe-cb-run__head syfe-cb-run__head--err" : "syfe-cb-run__head";
-    head.innerHTML = `<span class="syfe-cb-run__title">${isRunning ? "运行中…" : (record && record.exitCode !== 0 ? "已结束(出错)" : "输出")}</span>`
+    // 有输出且在内核模式下,标题标注模式;按钮组里放模式切换 + 内核重置(仅内核模式)
+    const kernelMode = isKernelMode(block);
+    const title = isRunning
+        ? `运行中…${kernelMode ? "(内核)" : "(独立进程)"}`
+        : (record && record.exitCode !== 0 ? "已结束(出错)" : (kernelMode ? "输出(内核)" : "输出"));
+    head.innerHTML = `<span class="syfe-cb-run__title">${title}</span>`
         + `<span class="fn__flex-1"></span>`
         + `<span class="syfe-cb-run__btn2" data-act="run">${isRunning ? "■ 停止" : "▶ 运行"}</span>`
+        + `<span class="syfe-cb-run__btn2" data-act="mode" title="切换运行模式(内核模式变量跨块保留;干净模式有独立 stdin,支持 input())">${kernelMode ? "▸ 干净运行" : "▸ 内核运行"}</span>`
+        + (kernelMode ? `<span class="syfe-cb-run__btn2" data-act="reset-kernel" title="销毁内核实例:变量与导入清空,下次执行自动重启">↺ 重置内核</span>` : "")
         + `<span class="syfe-cb-run__btn2" data-act="fold">${collapsed ? "▾ 展开" : "▴ 折叠"}</span>`
         + `<span class="syfe-cb-run__btn2" data-act="clear">✕ 清除</span>`;
 
@@ -204,7 +238,7 @@ function renderPanel(block: HTMLElement): HTMLElement | null {
     panel.appendChild(body);
 
     // 折叠状态下额外放一个输入框?不 —— 折叠就是收起,输入框跟着 body 一起藏
-    if (!collapsed && isRunning) {
+    if (!collapsed && isRunning && !isKernelMode(block)) {
         const input = document.createElement("div");
         input.className = "syfe-cb-run__stdin";
         input.innerHTML = `<input type="text" placeholder="程序在等输入,在这里输入后回车">`;
@@ -250,7 +284,12 @@ function renderPanel(block: HTMLElement): HTMLElement | null {
         if (act === "run") {
             const h = running.get(id);
             if (h) h.interrupt();
-            else void startRun(block);
+            else void startRun(block, !isKernelMode(block));
+        } else if (act === "mode") {
+            toggleRunMode(block);
+            renderPanel(block);
+        } else if (act === "reset-kernel") {
+            void resetDocKernel(docKeyOf(block)).then(() => showMessage("内核已重置,变量已清空", 2500, "info"));
         } else if (act === "fold") {
             const cur = getCodeBlockOutput(id);
             setCodeBlockCollapsed(id, !(cur?.collapsed === true));
@@ -268,7 +307,7 @@ function renderPanel(block: HTMLElement): HTMLElement | null {
 
 // ===== 执行 =====
 
-async function startRun(block: HTMLElement): Promise<void> {
+async function startRun(block: HTMLElement, clean = false): Promise<void> {
     const id = blockIdOf(block);
     if (!id) return;
     const code = extractCode(block);
@@ -281,31 +320,61 @@ async function startRun(block: HTMLElement): Promise<void> {
     // 塞一条空记录占位:没有记录时 renderPanel 会认为"没运行过"而把面板藏起来。
     setCodeBlockOutput(id, {output: "", collapsed: false, finishedAt: 0, exitCode: 0});
 
+    // 内核模式(默认):走文档绑定的持久内核,变量跨块保留;
+    // 干净模式(逃生通道):独立子进程,有真 stdin,支持 input(),跑完即弃
+    const useKernel = !clean;
+
     let handle: RunHandle;
     try {
-        handle = runPythonCode({
-            code,
-            cwd: docDirOf(block),
-            onOutput: (chunk) => {
-                appendCodeBlockOutput(id, chunk);
-                refreshPanel(block);
-            },
-            onExit: (exitCode) => {
-                running.delete(id);
-                const cur = getCodeBlockOutput(id);
-                if (cur && cur.output.length > 0) {
-                    setCodeBlockOutput(id, {...cur, exitCode, finishedAt: Date.now()});
-                } else {
-                    // 空输出也留一条记录(而且必须有非空文本,见 store 的 sanitize):
-                    // 否则面板会自己消失,用户以为没跑;重载后存档也会被丢掉。
-                    setCodeBlockOutput(id, {
-                        output: `（无输出，退出码 ${exitCode}）\n`,
-                        collapsed: false, finishedAt: Date.now(), exitCode,
-                    });
-                }
-                refreshPanel(block);
-            },
-        });
+        if (useKernel) {
+            const khandle = runKernelCode({
+                docId: docKeyOf(block),
+                code,
+                onOutput: (chunk) => {
+                    appendCodeBlockOutput(id, chunk);
+                    refreshPanel(block);
+                },
+                onExit: (exitCode) => {
+                    running.delete(id);
+                    const cur = getCodeBlockOutput(id);
+                    if (cur && cur.output.length > 0) {
+                        setCodeBlockOutput(id, {...cur, exitCode, finishedAt: Date.now()});
+                    } else {
+                        setCodeBlockOutput(id, {
+                            output: `（无输出，退出码 ${exitCode}）\n`,
+                            collapsed: false, finishedAt: Date.now(), exitCode,
+                        });
+                    }
+                    refreshPanel(block);
+                },
+            });
+            if (!khandle) throw new Error("内核不可用");
+            handle = khandle;
+        } else {
+            handle = runPythonCode({
+                code,
+                cwd: docDirOf(block),
+                onOutput: (chunk) => {
+                    appendCodeBlockOutput(id, chunk);
+                    refreshPanel(block);
+                },
+                onExit: (exitCode) => {
+                    running.delete(id);
+                    const cur = getCodeBlockOutput(id);
+                    if (cur && cur.output.length > 0) {
+                        setCodeBlockOutput(id, {...cur, exitCode, finishedAt: Date.now()});
+                    } else {
+                        // 空输出也留一条记录(而且必须有非空文本,见 store 的 sanitize):
+                        // 否则面板会自己消失,用户以为没跑;重载后存档也会被丢掉。
+                        setCodeBlockOutput(id, {
+                            output: `（无输出，退出码 ${exitCode}）\n`,
+                            collapsed: false, finishedAt: Date.now(), exitCode,
+                        });
+                    }
+                    refreshPanel(block);
+                },
+            });
+        }
     } catch (e: any) {
         setCodeBlockOutput(id, {
             output: String(e?.message || e) + "\n",
