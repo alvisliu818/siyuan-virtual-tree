@@ -134,6 +134,12 @@ function panelOf(block: HTMLElement, blockId: string): HTMLElement | null {
     const scope = block.closest(".protyle") || document;
     const panel = scope.querySelector<HTMLElement>(`.${PANEL_CLASS}[data-block-id="${blockId}"]`);
     if (!panel) return null;
+    // 自愈:思源的 DOM 补丁偶尔会把面板弄进代码块内部(实测会把面板 HTML
+    // 序列化进 .sy 正文,污染文档)。只要发现面板在块内,立刻挪回外面。
+    if (block.contains(panel)) {
+        block.after(panel);
+        return panel;
+    }
     if (block.nextElementSibling !== panel) block.after(panel);
     return panel;
 }
@@ -464,7 +470,15 @@ function pruneOrphanPanels(): void {
         const owner = document.querySelector(
             `[data-type="NodeCodeBlock"][data-node-id="${id}"]`,
         );
-        if (!owner) panel.remove();
+        if (!owner) {
+            panel.remove();
+            return;
+        }
+        // 自愈:面板被思源的 DOM 补丁弄进块内时会污染文档(序列化进 .sy),
+        // 一旦发现立刻挪回块外
+        if (owner.contains(panel)) {
+            owner.after(panel);
+        }
     });
 }
 
