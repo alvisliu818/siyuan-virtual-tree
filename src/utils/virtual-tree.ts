@@ -11,7 +11,7 @@
 // 思源 .sy 文件名即文档 ID,/filetree/listDocsByPath 返回的 path 末段去掉 .sy 即 docId。
 import {DirEntry} from "../types";
 import {STORAGE_SY_MOUNTS} from "../constants";
-import {querySQL, lsNotebooks, listDocsByPath} from "../api/file";
+import {querySQL, lsNotebooks, listDocsByPath, flushTransaction} from "../api/file";
 import {isBaiduPath} from "./baidu-path";
 import {parseStoredData} from "./stored-data";
 
@@ -42,20 +42,37 @@ interface DocInfo {
 }
 const docInfoCache = new Map<string, DocInfo | null>();
 
-// 查询文档归属(SQL;失败/不存在返回 null,缓存避免重复查询)
+// 查询文档归属(SQL;失败/不存在返回 null)
+// 注意:blocks SQL 表在新建文档后有秒级的异步落库延迟,查空不等于文档不存在,
+// 因此未命中时先强制内核 flush 事务/SQL 队列再重试一次;且 null 结果不进缓存,
+// 避免"刚创建还没落库"被污染成长期的"文档不存在"(曾导致导入 md 报无法确定所属笔记本)。
 export async function getDocInfo(docId: string): Promise<DocInfo | null> {
     if (docInfoCache.has(docId)) return docInfoCache.get(docId)!;
-    let info: DocInfo | null = null;
+    const info = await queryDocInfoRow(docId);
+    if (!info) {
+        await flushTransaction();
+        const retry = await queryDocInfoRow(docId);
+        if (!retry) return null; // flush 后仍查不到:确实不存在(已删除等)
+        return cacheDocInfo(docId, retry);
+    }
+    return cacheDocInfo(docId, info);
+}
+
+async function queryDocInfoRow(docId: string): Promise<DocInfo | null> {
     try {
         const id = docId.replace(/'/g, "''");
         const rows = await querySQL(
             `SELECT box, path, hpath FROM blocks WHERE id = '${id}' AND type = 'd' LIMIT 1`);
         if (Array.isArray(rows) && rows[0] && rows[0].box && rows[0].path) {
-            info = {box: String(rows[0].box), path: String(rows[0].path), hpath: String(rows[0].hpath || "")};
+            return {box: String(rows[0].box), path: String(rows[0].path), hpath: String(rows[0].hpath || "")};
         }
     } catch {
-        info = null;
+        // 查询失败按未命中处理
     }
+    return null;
+}
+
+function cacheDocInfo(docId: string, info: DocInfo): DocInfo {
     if (docInfoCache.size > 2000) docInfoCache.clear();
     docInfoCache.set(docId, info);
     return info;

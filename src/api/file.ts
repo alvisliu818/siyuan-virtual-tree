@@ -257,6 +257,17 @@ export async function createDocWithMd(notebook: string, path: string, markdown: 
     return await postJSON<string>("/api/filetree/createDocWithMd", payload);
 }
 
+// 强制内核把挂起的文件树事务与 SQL 索引队列立即落库(/api/sqlite/flushTransaction)。
+// 为什么需要:内核 createDocWithMd 返回时只保证了 .sy 文件与 blocktrees 内存索引,
+// blocks SQL 表走独立的异步刷写队列(秒级),这期间按 id 查 blocks 会查空。
+export async function flushTransaction(): Promise<void> {
+    try {
+        await postJSON("/api/sqlite/flushTransaction", {});
+    } catch {
+        // 老版本内核没有该 API 或临时失败:静默忽略,调用方按查询结果自行兜底
+    }
+}
+
 // 重命名文档(/api/filetree/renameDocByID,内核自动解析 notebook/path)
 export async function renameDocByID(id: string, title: string): Promise<void> {
     await postJSON("/api/filetree/renameDocByID", {id, title});
