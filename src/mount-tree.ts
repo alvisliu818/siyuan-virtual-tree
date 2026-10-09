@@ -205,6 +205,38 @@ export async function removeMountItem(plugin: Plugin, uid: string): Promise<bool
     return removed;
 }
 
+// 拖拽排序:把 srcUid 移动到同一父节点下 dstUid 的**之前/之后**。
+//
+// 只处理兄弟之间重排:嵌套到别的挂载项属于"改变层级"(语义完全不同,还要判
+// 子孙回环),不做。返回是否真的改变了顺序,调用方据此决定要不要重绘/提示。
+export async function reorderMountItem(
+    srcUid: string,
+    dstUid: string,
+    position: "before" | "after",
+): Promise<boolean> {
+    if (!loaded) return false;
+    if (!srcUid || !dstUid || srcUid === dstUid) return false;
+    if (!findMountItem(srcUid) || !findMountItem(dstUid)) return false;
+    // 注意 getParentUid 对"未找到"也返回 null,所以上面先做存在性校验
+    const parentUid = getParentUid(srcUid);
+    if (parentUid !== getParentUid(dstUid)) return false; // 不同父 → 不是兄弟
+    const list = parentUid ? (findMountItem(parentUid)?.children || null) : roots;
+    if (!list) return false;
+    const from = list.findIndex(it => it.uid === srcUid);
+    const to = list.findIndex(it => it.uid === dstUid);
+    if (from < 0 || to < 0) return false;
+    // 先算好插槽再动数组:slot = 目标在旧数组里的插入点;移除自己之后,
+    // 位于自己之后的元素下标会左移一位,插入点要减 1
+    const slot = position === "before" ? to : to + 1;
+    const insert = from < slot ? slot - 1 : slot;
+    if (insert === from) return false; // 已经在那个位置,不必落盘
+    const [moved] = list.splice(from, 1);
+    list.splice(insert, 0, moved);
+    await persist();
+    dispatchChanged();
+    return true;
+}
+
 // 注:按用户要求**不提供"一键清空整棵树"**;取消挂载请用 removeMountItem(逐条移除)。
 // 可作为挂载目标的节点(供右键子菜单列出:顶层 + 所有挂载项,带面包屑)
 export interface MountTarget {

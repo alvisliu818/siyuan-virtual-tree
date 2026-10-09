@@ -37,6 +37,8 @@ import {mountPayload, promptMountPathDialog} from "../components/mount-menu";
 import {
     getRoots,
     removeMountItem,
+    reorderMountItem,
+    getParentUid,
     mountTreeEmptyHint,
     MOUNT_TREE_CHANGED_EVENT,
     SYFE_RELATION_TREE_CHANGED_EVENT,
@@ -137,11 +139,13 @@ interface MountTreeDockInstance {
     _tagsChangedHandler?: () => void;
     _relationHandler?: () => void;
     _relationRebuildHandler?: () => void;
-    // 拖拽排序(仅自定义排序时用)
+    // 拖拽排序:引用关系树(仅自定义排序时用)
     _dragStartHandler?: (e: DragEvent) => void;
     _dragOverHandler?: (e: DragEvent) => void;
     _dropHandler?: (e: DragEvent) => void;
     _dragEndHandler?: () => void;
+    // 拖拽排序:挂载项(事件名 → 处理器,成对注册/反注册)
+    _mountDragHandlers?: Array<[string, (e: Event) => void]>;
     _rows?: Row[];
     _expanded?: Set<string>;                       // 展开的节点键
     _cache?: Map<string, DirEntry[] | BlockNode[]>;// 已加载的子项
@@ -451,6 +455,33 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 if (dragOverDocId) {
                     const el = listEl.querySelector(`.syfe-mtree__row--relation[data-rel-doc="${CSS.escape(dragOverDocId)}"]`);
                     if (el) el.classList.add("syfe-mtree__row--dragover");
+                }
+            };
+
+            // ===== 拖拽排序:挂载项(顶层根之间 / 同一父节点下的兄弟之间)=====
+            // 与上面的引用关系树是两套独立状态:行种类不同、持久化目标也不同
+            // (挂载项写 virtual-tree.json,关系树写 editor 配置的 customOrder)。
+            // 只重排,不改变层级:嵌到别的挂载项属于换父节点,语义不同且要判子孙回环。
+            let dragMountUid: string | null = null;
+            let dragOverMountUid: string | null = null;
+            let dragOverPos: "before" | "after" = "before";
+
+            const clearMountDragMarks = () => {
+                listEl.querySelectorAll(".syfe-mtree__row--dragover-before, .syfe-mtree__row--dragover-after")
+                    .forEach((el) => {
+                        el.classList.remove("syfe-mtree__row--dragover-before", "syfe-mtree__row--dragover-after");
+                    });
+            };
+
+            // 指示线画在目标行的上/下缘,明确"插到这里之前还是之后"
+            const renderMountDragOver = () => {
+                clearMountDragMarks();
+                if (!dragOverMountUid) return;
+                const el = listEl.querySelector(`.syfe-mtree__row--mount[data-mount-uid="${CSS.escape(dragOverMountUid)}"]`);
+                if (el) {
+                    el.classList.add(dragOverPos === "before"
+                        ? "syfe-mtree__row--dragover-before"
+                        : "syfe-mtree__row--dragover-after");
                 }
             };
 
@@ -879,7 +910,8 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                         }
                         return `
                         <li class="syfe-mtree__row syfe-mtree__row--mount${r.expanded ? " syfe-mtree__row--open" : ""}"
-                            data-idx="${i}" style="padding-left:${pad}px"
+                            data-idx="${i}" data-mount-uid="${escapeHTML(r.uid)}" draggable="true"
+                            style="padding-left:${pad}px"
                             title="${escapeHTML(it.kind === "file" ? (it.path || name) : (it.targetId || name))}">
                             ${arrow}
                             <span class="syfe-mtree__icon">${icon}</span>
@@ -1597,6 +1629,70 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
             this._dragOverHandler = dragOverHandler;
             this._dropHandler = dropHandler;
             this._dragEndHandler = dragEndHandler;
+
+            // ===== 拖拽排序事件:挂载项 =====
+            const mountDragStart = (e: DragEvent) => {
+                // 标签筛选时行与行之间夹着被过滤掉的兄弟,重排结果不直观 → 不允许拖
+                if (filterOn) return;
+                const el = (e.target as HTMLElement).closest(".syfe-mtree__row--mount") as HTMLElement | null;
+                const uid = el?.dataset.mountUid;
+                if (!el || !uid) return;
+                dragMountUid = uid;
+                el.classList.add("syfe-mtree__row--dragging");
+                try {
+                    e.dataTransfer?.setData("text/plain", uid);
+                    if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+                } catch {
+                    // ignore
+                }
+            };
+            const mountDragOver = (e: DragEvent) => {
+                if (!dragMountUid) return;
+                const el = (e.target as HTMLElement).closest(".syfe-mtree__row--mount") as HTMLElement | null;
+                const uid = el?.dataset.mountUid;
+                if (!el || !uid || uid === dragMountUid) return;
+                // 只有同一父节点下的兄弟能排;不同父直接放过(不改光标也不画指示线)
+                if (getParentUid(dragMountUid) !== getParentUid(uid)) return;
+                e.preventDefault();
+                if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+                // 上半 → 插到它之前;下半 → 插到它之后
+                const rect = el.getBoundingClientRect();
+                const pos: "before" | "after" = (e.clientY - rect.top) < rect.height / 2 ? "before" : "after";
+                if (dragOverMountUid !== uid || dragOverPos !== pos) {
+                    dragOverMountUid = uid;
+                    dragOverPos = pos;
+                    renderMountDragOver();
+                }
+            };
+            const mountDrop = (e: DragEvent) => {
+                const src = dragMountUid;
+                const dst = dragOverMountUid;
+                const pos = dragOverPos;
+                dragMountUid = null;
+                dragOverMountUid = null;
+                clearMountDragMarks();
+                if (!src || !dst || src === dst) return;
+                e.preventDefault();
+                void reorderMountItem(src, dst, pos).then(() => render());
+            };
+            const mountDragEnd = () => {
+                dragMountUid = null;
+                dragOverMountUid = null;
+                clearMountDragMarks();
+                listEl.querySelectorAll(".syfe-mtree__row--dragging").forEach((el) => {
+                    el.classList.remove("syfe-mtree__row--dragging");
+                });
+            };
+            // destroy() 里按同样的表反注册,避免重复粘监听
+            this._mountDragHandlers = [
+                ["dragstart", mountDragStart as (e: Event) => void],
+                ["dragover", mountDragOver as (e: Event) => void],
+                ["drop", mountDrop as (e: Event) => void],
+                ["dragend", mountDragEnd as (e: Event) => void],
+            ];
+            for (const [evt, fn] of this._mountDragHandlers) {
+                scrollEl.addEventListener(evt, fn);
+            }
             scrollEl.addEventListener("dragstart", dragStartHandler as EventListener);
             scrollEl.addEventListener("dragover", dragOverHandler as EventListener);
             scrollEl.addEventListener("drop", dropHandler as EventListener);
@@ -1641,6 +1737,12 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
             this._dragOverHandler = undefined;
             this._dropHandler = undefined;
             this._dragEndHandler = undefined;
+            if (this._scrollEl && this._mountDragHandlers) {
+                for (const [evt, fn] of this._mountDragHandlers) {
+                    this._scrollEl.removeEventListener(evt, fn);
+                }
+            }
+            this._mountDragHandlers = undefined;
             this._listEl = undefined;
             this._scrollEl = undefined;
             this._clickHandler = undefined;
