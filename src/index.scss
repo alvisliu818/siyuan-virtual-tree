@@ -2917,6 +2917,15 @@
     cursor: grabbing;
 }
 
+// 自动挂载行可拖(与挂载行一致的开手/抓取光标)
+.syfe-mtree__row--auto[draggable="true"] {
+    cursor: grab;
+}
+
+.syfe-mtree__row--auto.syfe-mtree__row--dragging {
+    cursor: grabbing;
+}
+
 .syfe-mtree__row--relation {
     cursor: pointer;
 }

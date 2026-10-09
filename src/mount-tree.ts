@@ -33,6 +33,9 @@ export const SYFE_RELATION_TREE_CHANGED_EVENT = "syfe:relation-tree-changed";
 export const STORAGE_VIRTUAL_TREE = "virtual-tree.json";
 
 let roots: MountItem[] = [];
+// 自动挂载层(引用子层级)的展示顺序:父文档 id → 该层 docId 有序数组。
+// 与 roots 同存 virtual-tree.json —— 挂载配置持有全部顺序,关系配置不再有 customOrder。
+let autoOrder: Record<string, string[]> = {};
 let saver: ((data: any) => Promise<any>) | null = null;
 let loaded = false;
 
@@ -75,7 +78,7 @@ function dispatchChanged(): void {
 async function persist(): Promise<void> {
     if (!saver) return;
     try {
-        await saver({version: 1, roots});
+        await saver({version: 1, roots, customOrder: autoOrder});
     } catch (e) {
         console.error("[siyuan-file-editor] 保存虚拟文档树失败:", e);
     }
@@ -91,6 +94,14 @@ export async function initMountTree(plugin: Plugin): Promise<void> {
         const parsed = parseStoredData(raw);
         const list = parsed && Array.isArray(parsed.roots) ? parsed.roots : (Array.isArray(parsed) ? parsed : []);
         roots = list.map(sanitizeItem).filter(Boolean) as MountItem[];
+        // 自动挂载层顺序(旧文件没有该字段 → 空表;非法条目丢弃)
+        autoOrder = {};
+        const rawOrder = (parsed && typeof parsed === "object") ? (parsed as {customOrder?: unknown}).customOrder : null;
+        if (rawOrder && typeof rawOrder === "object") {
+            for (const [k, v] of Object.entries(rawOrder)) {
+                if (Array.isArray(v)) autoOrder[k] = v.filter((x): x is string => typeof x === "string");
+            }
+        }
     } catch (e) {
         console.error("[siyuan-file-editor] 加载虚拟文档树失败:", e);
         roots = [];
@@ -234,6 +245,36 @@ export async function reorderMountItem(
     list.splice(insert, 0, moved);
     await persist();
     dispatchChanged();
+    return true;
+}
+
+// 自动挂载层顺序(供渲染排序;键 = 父文档 id)
+export function getAutoOrder(parentDocId: string): string[] {
+    return autoOrder[parentDocId] || [];
+}
+
+// 自动挂载行拖拽排序:siblingIds 为当前展示顺序(全量),重排后整层落盘。
+// 注意:只持久化、不派发 changed 事件 —— 顺序变化由调用方直接重绘,
+// 否则会触发引用关系整树重建,拖一次卡一下。
+export async function reorderAutoChildren(
+    parentDocId: string,
+    siblingIds: string[],
+    srcDocId: string,
+    dstDocId: string,
+    position: "before" | "after",
+): Promise<boolean> {
+    if (!parentDocId || srcDocId === dstDocId) return false;
+    if (!siblingIds.includes(srcDocId) || !siblingIds.includes(dstDocId)) return false;
+    const from = siblingIds.indexOf(srcDocId);
+    const to = siblingIds.indexOf(dstDocId);
+    const slot = position === "before" ? to : to + 1;
+    const insert = from < slot ? slot - 1 : slot;
+    if (insert === from) return false; // 已经在那个位置,不必落盘
+    const list = siblingIds.slice();
+    const [moved] = list.splice(from, 1);
+    list.splice(insert, 0, moved);
+    autoOrder = {...autoOrder, [parentDocId]: list};
+    await persist();
     return true;
 }
 

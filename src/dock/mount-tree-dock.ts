@@ -33,11 +33,13 @@ import {openSiyuanDoc} from "../components/entry-menu";
 import {showDocMenu, showNotebookMenu, addPinFavEntries, DocMenuItem} from "../components/doc-menu";
 import {openSiyuanTagDialog} from "../components/siyuan-tag-dialog";
 import {openFileTab} from "../tabs/editor-tab";
-import {mountPayload, promptMountPathDialog} from "../components/mount-menu";
+import {mountPayload, promptMountPathDialog, showMountTargetMenu} from "../components/mount-menu";
 import {
     getRoots,
     removeMountItem,
     reorderMountItem,
+    reorderAutoChildren,
+    getAutoOrder,
     getParentUid,
     mountTreeEmptyHint,
     MOUNT_TREE_CHANGED_EVENT,
@@ -47,15 +49,10 @@ import {
 import {
     buildRelationForest,
     flattenRelationForest,
-    flattenVisibleRelationForest,
-    relationForestSummary,
-    reorderCustomOrder,
     findRelationNode,
-    subtreeOf,
     pathToNode,
     initialExpandedSet,
     DEFAULT_RELATION_OPTIONS,
-    RELATION_ROOT_KEY,
     RelationNode,
 } from "../relation-tree/relation-tree";
 import {loadConfig, saveConfig} from "../utils/config";
@@ -116,10 +113,9 @@ type Row =
     | {kind: "mount"; uid: string; depth: number; expanded: boolean; hasChildren: boolean; item: MountItem}
     | {kind: "file"; path: string; name: string; isDir: boolean; depth: number; expanded: boolean}
     | {kind: "doc"; docId: string; name: string; depth: number; expanded: boolean; icon?: string; subFileCount?: number}
+    // 自动挂载行:引用子层级(引用的文档 + 物理子文档),与挂载行同款渲染与行为
+    | {kind: "auto"; docId: string; name: string; hpath: string; depth: number; expanded: boolean; hasChildren: boolean; parentDocId: string; subFileCount?: number}
     | {kind: "block"; blockId: string; name: string; depth: number; expanded: boolean}
-    // 引用关系树的只读行(自动生成)。isRoot = 该文档是挂载进来的根节点。
-    | {kind: "relation"; docId: string; name: string; hpath: string; depth: number; expanded: boolean; hasChildren: boolean; draggable: boolean; subFileCount: number; isRoot: boolean}
-    | {kind: "relationEmpty"; depth: number}
     | {kind: "empty"; depth: number}
     | {kind: "loading"; depth: number};
 
@@ -139,11 +135,7 @@ interface MountTreeDockInstance {
     _tagsChangedHandler?: () => void;
     _relationHandler?: () => void;
     _relationRebuildHandler?: () => void;
-    // 拖拽排序:引用关系树(仅自定义排序时用)
-    _dragStartHandler?: (e: DragEvent) => void;
-    _dragOverHandler?: (e: DragEvent) => void;
-    _dropHandler?: (e: DragEvent) => void;
-    _dragEndHandler?: () => void;
+    // 拖拽监听统一在 _mountDragHandlers 表里(手动挂载行 + 自动挂载行)
     // 拖拽排序:挂载项(事件名 → 处理器,成对注册/反注册)
     _mountDragHandlers?: Array<[string, (e: Event) => void]>;
     _rows?: Row[];
@@ -301,20 +293,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 return Array.from(new Set(out));
             };
 
-            // 按 docId 找到对应的挂载项(用于「取消挂载」:要删的是挂载记录本身)
-            const mountUidOfDoc = (docId: string): string | null => {
-                let found: string | null = null;
-                const walk = (list: MountItem[]) => {
-                    for (const it of list) {
-                        if (it.kind === "doc" && it.targetId === docId) found = it.uid;
-                        walk(it.children || []);
-                    }
-                };
-                walk(getRoots() || []);
-                return found;
-            };
-
-            // 把关系树设置的变更写回 editor 配置(拖拽顺序、折叠态都走这里)
+            // 把关系树设置的变更写回 editor 配置(折叠态走这里;自动挂载层顺序在挂载配置)
             const persistRelationConfig = async (patch: Partial<RelationTreeConfig>) => {
                 try {
                     const latest = await loadConfig(plugin as any);
@@ -383,23 +362,6 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 }, () => {});
             };
 
-            // 关系树上的「取消挂载」:关系树的根就是挂载进来的文档,所以取消挂载 = 把这条挂载摘掉。
-            // 摘掉后该文档不再作为根出现(它的引用者也随之从关系树里消失)。
-            // 行为/措辞与挂载行里的「取消挂载」完全一致,只是入口在关系树上。
-            const unmountRelationNode = (docId: string, name: string) => {
-                const uid = mountUidOfDoc(docId);
-                if (!uid) {
-                    showMessage("该文档不是挂载项,无法取消挂载", 2500, "error");
-                    return;
-                }
-                void removeMountItem(plugin as any, uid).then(() => {
-                    showMessage(`已取消挂载「${name}」`, 2500, "info");
-                    if (relationFocusId === docId) relationFocusId = null;
-                    // 挂载项变化会派发 MOUNT_TREE_CHANGED_EVENT,那里会重建;这里兜底重建一次
-                    ensureRelationTree(true);
-                });
-            };
-
             /** 定位当前文档:退出聚焦 → 展开沿途 → 滚动到该行并闪烁提示 */
             const locateCurrentDoc = () => {
                 const cur = currentDocRootId();
@@ -419,7 +381,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 render();
                 // 等 DOM 更新后再滚动
                 window.setTimeout(() => {
-                    const el = listEl.querySelector(`.syfe-mtree__row--relation[data-rel-doc="${CSS.escape(cur)}"]`) as HTMLElement | null;
+                    const el = listEl.querySelector(`[data-rel-doc="${CSS.escape(cur)}"]`) as HTMLElement | null;
                     if (el) el.scrollIntoView({block: "center"});
                 }, 60);
                 // 闪烁 2s 后取消
@@ -429,39 +391,13 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 }, 2000);
             };
 
-            // ===== 拖拽排序(仅「自定义」排序方式下可用)=====
-            // 同一父节点的兄弟之间才能排序;落下后把新顺序写回 customOrder 并持久化
-            let dragDocId: string | null = null;
-            let dragOverDocId: string | null = null;
-
-            const parentKeyOf = (docId: string): string | null => {
-                if (relationRoots.some((r) => r.docId === docId)) return RELATION_ROOT_KEY;
-                const dfs = (nodes: RelationNode[]): string | null => {
-                    for (const n of nodes) {
-                        if (n.children.some((c) => c.docId === docId)) return n.docId;
-                        const hit = dfs(n.children);
-                        if (hit) return hit;
-                    }
-                    return null;
-                };
-                return dfs(relationRoots);
-            };
-
-            const siblingIdsOf = (parentKey: string): string[] => {
-                if (parentKey === RELATION_ROOT_KEY) return relationRoots.map((r) => r.docId);
-                const p = findRelationNode(relationRoots, parentKey);
-                return p ? p.children.map((c) => c.docId) : [];
-            };
-
-            const renderDragOver = () => {
-                listEl.querySelectorAll(".syfe-mtree__row--dragover").forEach((el) => {
-                    el.classList.remove("syfe-mtree__row--dragover");
-                });
-                if (dragOverDocId) {
-                    const el = listEl.querySelector(`.syfe-mtree__row--relation[data-rel-doc="${CSS.escape(dragOverDocId)}"]`);
-                    if (el) el.classList.add("syfe-mtree__row--dragover");
-                }
-            };
+            // ===== 拖拽排序:自动挂载行(同一父文档下的引用子层级)=====
+            // 顺序持久化到**挂载配置**的 customOrder[父文档id](与手动挂载同一文件);
+            // 拖拽模式开启时才可拖,同层内 before/after。
+            let dragAutoParent: string | null = null;
+            let dragAutoDocId: string | null = null;
+            let dragAutoOverDocId: string | null = null;
+            let dragAutoPos: "before" | "after" = "before";
 
             // ===== 拖拽排序:挂载项(顶层根之间 / 同一父节点下的兄弟之间)=====
             // 与上面的引用关系树是两套独立状态:行种类不同、持久化目标也不同
@@ -541,7 +477,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 rows.forEach((r, i) => {
                     if (r.kind === "file") {
                         if (hit(r.path)) keep.add(i);
-                    } else if (r.kind === "mount" || r.kind === "doc" || r.kind === "block") {
+                    } else if (r.kind === "mount" || r.kind === "doc" || r.kind === "auto" || r.kind === "block") {
                         keep.add(i); // 挂载点与思源内容不参与文件标签筛选,始终可见
                     }
                 });
@@ -713,6 +649,8 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
             // 某一行对应的"子项缓存键 + 加载器";返回 null 表示该行不可能有子项(叶子)
             const rowChildSource = (r: Row): {key: string; loader: () => Promise<DirEntry[] | BlockNode[]>} | null => {
                 if (r.kind === "mount") {
+                    // doc 挂载 + 引用配置开启:子项来自预构建的引用关系,不走子文档 loader
+                    if (r.item.kind === "doc" && relationEnabled()) return null;
                     const ldr = autoLoader(r.item);
                     return ldr ? {key: autoKeyOf(r.item), loader: ldr} : null;
                 }
@@ -729,9 +667,15 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 return null;
             };
 
-            // 挂载项是否显示折叠箭头:有显式嵌套挂载一定显示;自动子项按实际条数
+            // 挂载项是否显示折叠箭头:有显式嵌套挂载一定显示;自动子项按实际条数。
+            // doc 挂载在引用配置开启时,子项 = 自动挂载行(来自预构建的引用关系),不看子文档缓存
             const mountHasKids = (item: MountItem): boolean => {
                 if (item.children.length > 0) return true;
+                if (item.kind === "doc" && relationEnabled()) {
+                    if (relationBuilding || !relationLoaded) return true; // 尚未建好:乐观显示
+                    const node = findRelationNode(relationRoots, item.targetId!);
+                    return !!node && node.children.length > 0;
+                }
                 const ldr = autoLoader(item);
                 return ldr ? hasKidsOf(autoKeyOf(item)) : false;
             };
@@ -739,55 +683,61 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
             // 该行是否显示折叠箭头
             const rowHasKids = (r: Row): boolean => {
                 if (r.kind === "mount") return mountHasKids(r.item);
+                if (r.kind === "auto") return r.hasChildren;
                 const src = rowChildSource(r);
                 return src ? hasKidsOf(src.key) : false;
             };
 
-            // 递归渲染:显式嵌套挂载在前,自动子项在后
+            // 递归渲染:显式嵌套挂载在前,自动子项在后。
+            // 引用子层级不再是独立区块,直接作为**自动挂载行**内嵌在挂载树里:
+            //   - 不去重:同一文档可以同时出现在手动挂载位置和各引用位置(用户明确要求);
+            //   - 自动挂载层的顺序存挂载配置 customOrder[父文档id],未记录的按名称回退;
+            //   - 聚焦模式:只渲染聚焦文档引用子树内的行。
             const buildRows = (): Row[] => {
                 const rows: Row[] = [];
-                // --- 引用关系树(只读派生视图,排在手动挂载上方;不额外加标题栏)---
-                // 拖拽模式开启时临时收起:关系行不是挂载行,被挂载的思源文档会渲染成
-                // 不可拖的关系行(如 doc 挂载),与「拖拽模式」语义冲突;排序属于挂载树,
-                // 拖拽模式下全部按挂载树渲染,关闭后恢复关系视图。
-                if (relationEnabled() && !dragMode) {
+                const focusNode = relationFocusId ? findRelationNode(relationRoots, relationFocusId) : null;
+                const focusIds = focusNode
+                    ? (() => {
+                        const s = new Set<string>();
+                        const dfs = (n: RelationNode) => { s.add(n.docId); n.children.forEach(dfs); };
+                        dfs(focusNode);
+                        return s;
+                    })()
+                    : relationFocusId ? new Set([relationFocusId]) : null;
+
+                const emitAutoLevel = (parentDocId: string, kids: RelationNode[], depth: number, out: Row[]): void => {
                     if (relationBuilding) {
-                        rows.push({kind: "loading", depth: 0});
-                    } else if (relationRoots.length === 0) {
-                        rows.push({kind: "relationEmpty", depth: 0});
-                    } else {
-                        // 聚焦视图:只渲染当前文档的子树
-                        const viewRoots = relationFocusId
-                            ? [subtreeOf(relationRoots, relationFocusId)].filter(Boolean) as RelationNode[]
-                            : relationRoots;
-                        for (const n of flattenVisibleRelationForest(viewRoots, (id) => relExpanded.has(id))) {
-                            rows.push({
-                                kind: "relation",
-                                docId: n.docId,
-                                name: n.displayName,
-                                hpath: n.hpath,
-                                depth: n.depth,
-                                expanded: relExpanded.has(n.docId),
-                                hasChildren: n.children.length > 0,
-                                subFileCount: n.subFileCount,
-                                draggable: relCfg().sortMethod === "custom",
-                                isRoot: n.isRoot,
-                            });
-                        }
+                        out.push({kind: "loading", depth});
+                        return;
                     }
-                }
-                // --- 手动挂载 ---
-                // 关系树开启时,已挂载的**思源文档**由关系树统一呈现(它们是关系树里的节点),
-                // 这里跳过,否则同一个文档会同时出现两行。文件/文件夹/笔记本/块挂载不受影响。
-                // 判据用"是否被挂载"而不是 isRoot:被挂载但只作为引用者出现的文档也要去重,
-                // 否则它会既在关系树里、又在挂载区里露两次。
-                const relTreeDocIds = new Set(flattenRelationForest(relationRoots).map(n => n.docId));
-                const mountedDocSet = new Set(mountedDocIds());
-                const relShownDocIds = new Set(
-                    relationEnabled() && !dragMode ? Array.from(relTreeDocIds).filter(id => mountedDocSet.has(id)) : [],
-                );
+                    const order = getAutoOrder(parentDocId);
+                    const rank = new Map(order.map((id, i) => [id, i] as const));
+                    const ordered = kids
+                        .filter(n => !focusIds || focusIds.has(n.docId))
+                        .slice()
+                        .sort((a, b) => {
+                            const ra = rank.has(a.docId) ? rank.get(a.docId)! : Number.MAX_SAFE_INTEGER;
+                            const rb = rank.has(b.docId) ? rank.get(b.docId)! : Number.MAX_SAFE_INTEGER;
+                            return ra !== rb ? ra - rb : a.displayName.localeCompare(b.displayName);
+                        });
+                    if (ordered.length === 0) {
+                        out.push({kind: "empty", depth});
+                        return;
+                    }
+                    for (const n of ordered) {
+                        const ex = relExpanded.has(n.docId);
+                        out.push({
+                            kind: "auto", docId: n.docId, name: n.displayName, hpath: n.hpath,
+                            depth, expanded: ex, hasChildren: n.children.length > 0,
+                            parentDocId, subFileCount: n.subFileCount,
+                        });
+                        if (ex) emitAutoLevel(n.docId, n.children, depth + 1, out);
+                    }
+                };
+
                 const walk = (item: MountItem, depth: number) => {
-                    if (item.kind === "doc" && item.targetId && relShownDocIds.has(item.targetId)) return;
+                    // 聚焦模式:子树外的挂载行隐藏
+                    if (focusIds && !(item.kind === "doc" && item.targetId && focusIds.has(item.targetId))) return;
                     // 展开状态键必须与点击时 toggle() 写入的键一致(都用 autoKeyOf),
                     // 否则点击后 _expanded 记在 A 键、这里查 B 键,行永远不会翻转成展开
                     const expanded = self._expanded!.has(autoKeyOf(item));
@@ -796,12 +746,13 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                     if (!expanded) return;
                     for (const c of item.children) walk(c, depth + 1);
                     if (item.kind === "file" && item.isDir) emitDir(item.path!, depth + 1, rows);
-                    else if (item.kind === "doc" || item.kind === "notebook") {
-                        const vPath = item.kind === "notebook"
-                            ? "sydoc://nb/" + item.targetId
-                            : "sydoc://" + item.targetId;
-                        emitDocs(vPath, depth + 1, rows);
-                    } else if (item.kind === "block") emitBlocks(item.targetId!, depth + 1, rows);
+                    else if (item.kind === "doc") {
+                        // 引用配置开启:子项 = 自动挂载行(引用文档 + 物理子文档);关闭:回退为仅子文档
+                        if (relationEnabled()) emitAutoLevel(item.targetId!, findRelationNode(relationRoots, item.targetId!)?.children || [], depth + 1, rows);
+                        else emitDocs("sydoc://" + item.targetId!, depth + 1, rows);
+                    }
+                    else if (item.kind === "notebook") emitDocs("sydoc://nb/" + item.targetId!, depth + 1, rows);
+                    else if (item.kind === "block") emitBlocks(item.targetId!, depth + 1, rows);
                 };
                 for (const r of getRoots()) walk(r, 0);
                 return rows;
@@ -845,15 +796,12 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
 
             const render = () => {
                 if (!self._listEl) return; // 已销毁
-                // 关系树的 5 个工具按钮:仅在开关开启时显示(与原虚拟树同一位置、同一图标);
-                // 拖拽模式下关系树临时收起,按钮一并隐藏
+                // 关系树的 5 个工具按钮:仅在开关开启时显示(作用于自动挂载行)
                 this.element.querySelectorAll("[data-rel-action]").forEach((el) => {
-                    (el as HTMLElement).style.display = relationEnabled() && !dragMode ? "" : "none";
+                    (el as HTMLElement).style.display = relationEnabled() ? "" : "none";
                 });
                 const roots = getRoots();
-                // 关系树开启且未在拖拽模式时,即使手动挂载为空也要渲染(它自己有区块)
-                const relOn = relationEnabled() && !dragMode;
-                if (roots.length === 0 && !relOn) {
+                if (roots.length === 0) {
                     self._rows = [];
                     listEl.innerHTML = `<li class="syfe-mtree__empty">${mountTreeEmptyHint()}</li>`;
                     return;
@@ -863,7 +811,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 const filtering = filterOn && (tagSel.length > 0 || tagAny);
                 const manualRows = filtering ? applyTagFilter(rows) : rows;
                 const shown = filtering
-                    ? manualRows.filter((r) => r.kind === "relation" || r.kind === "relationEmpty" || r.kind === "loading" || r.depth === 0)
+                    ? manualRows.filter((r) => r.kind === "auto" || r.kind === "loading" || r.depth === 0)
                     : manualRows;
                 self._rows = shown;
                 renderChips();
@@ -872,11 +820,8 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                     if (r.kind === "loading") {
                         return `<li class="syfe-mtree__row syfe-mtree__row--loading" style="padding-left:${pad + 14}px">加载中…</li>`;
                     }
-                    if (r.kind === "relationEmpty") {
-                        return `<li class="syfe-mtree__row syfe-mtree__row--loading" style="padding-left:${pad + 14}px">暂无引用关系(文档首块里还没有引用其它文档)</li>`;
-                    }
-                    // 引用关系树的文档行:只读,单击打开文档
-                    if (r.kind === "relation") {
+                    // 自动挂载行(引用子层级):与挂载行同款渲染,拖拽模式下可拖
+                    if (r.kind === "auto") {
                         // 图标与思源文档树一致:自定义 icon 优先,否则按**真实子文档数**选
                         // folder/file。不能按"有没有引用者"选 —— 那是引用关系的父子,
                         // 与文档自身是否含子文档无关,会导致同一文档两处图标不一样。
@@ -884,9 +829,10 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                         const flashing = relationLocateFlash === r.docId ? " syfe-mtree__row--flash" : "";
                         const cur = currentDocRootId() === r.docId ? " syfe-mtree__row--current" : "";
                         return `
-                        <li class="syfe-mtree__row syfe-mtree__row--relation${r.expanded ? " syfe-mtree__row--open" : ""}${flashing}${cur}"
-                            data-idx="${i}" style="padding-left:${pad}px"
-                            ${r.draggable ? `draggable="true" data-rel-doc="${escapeHTML(r.docId)}"` : ""}
+                        <li class="syfe-mtree__row syfe-mtree__row--auto${r.expanded ? " syfe-mtree__row--open" : ""}${flashing}${cur}"
+                            data-idx="${i}" data-rel-doc="${escapeHTML(r.docId)}" data-auto-parent="${escapeHTML(r.parentDocId)}"
+                            draggable="${dragMode ? "true" : "false"}"
+                            style="padding-left:${pad}px"
                             title="${escapeHTML(r.name)}&#10;ID: ${escapeHTML(r.docId)}${r.hpath ? "\n" + escapeHTML(r.hpath) : ""}">
                             ${toggleArrow(r.expanded, r.hasChildren)}
                             <span class="syfe-mtree__icon">${docIcon}</span>
@@ -972,11 +918,11 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 // (ensureDocIcons 内部去重;挂载节点图标要查块属性,子文档图标已随 listDocsByPath 带回)
                 const mountDocs = shown.filter((r): r is Extract<Row, {kind: "mount"}> =>
                     r.kind === "mount" && r.item.kind === "doc").map(r => r.item.targetId!);
-                // 关系树的文档同理:自定义图标要先按缓存画,后台补齐后重绘,
+                // 自动挂载行同理:自定义图标要先按缓存画,后台补齐后重绘,
                 // 否则首屏拿不到 icon 会与原生文档树显示不一致
-                const relDocs = shown.filter((r): r is Extract<Row, {kind: "relation"}> =>
-                    r.kind === "relation").map(r => r.docId);
-                ensureDocIcons(mountDocs.concat(relDocs), () => render());
+                const autoDocs = shown.filter((r): r is Extract<Row, {kind: "auto"}> =>
+                    r.kind === "auto").map(r => r.docId);
+                ensureDocIcons(mountDocs.concat(autoDocs), () => render());
                 const nbIds = Array.from(new Set(shown.filter((r): r is Extract<Row, {kind: "mount"}> =>
                     r.kind === "mount" && r.item.kind === "notebook").map(r => r.item.targetId!)))
                     .filter(id => !self._nbIcons!.has(id));
@@ -1030,8 +976,8 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                     toggle("d:" + vPath, () => virtualListDir(vPath));
                 } else if (row.kind === "block") {
                     toggle("b:" + row.blockId, () => listChildBlocks(row.blockId));
-                } else if (row.kind === "relation") {
-                    // 与原虚拟树一致:有子节点则展开/收起,否则打开该文档
+                } else if (row.kind === "auto") {
+                    // 自动挂载行:箭头展开/收起引用子层级(状态按 docId 共享)
                     toggleRelationNode(row.docId);
                 }
             };
@@ -1104,21 +1050,14 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                     openSiyuanDoc(row.docId);
                     return;
                 }
+                // 自动挂载行:点名称打开文档(箭头由上面统一分支处理展开/收起)
+                if (row.kind === "auto") {
+                    openSiyuanDoc(row.docId);
+                    return;
+                }
                 if (row.kind === "block") {
                     openSiyuanDoc(row.blockId);
                     return;
-                }
-                // 引用关系树行:与原虚拟树一致 —— 点名称打开文档,点箭头展开/收起
-                if (row.kind === "relation") {
-                    const onArrow = !!(e.target as HTMLElement).closest("[data-arrow]");
-                    if (!onArrow && row.hasChildren) {
-                        // 有子节点:原插件是点名称直接打开;这里保持一致(点箭头才收展)
-                        openSiyuanDoc(row.docId);
-                    } else if (row.hasChildren) {
-                        toggleRelationNode(row.docId);
-                    } else {
-                        openSiyuanDoc(row.docId);
-                    }
                 }
             };
             this._clickHandler = clickHandler;
@@ -1277,10 +1216,8 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                     }
                     return;
                 }
-                if (row.kind === "relation") {
-                    // 引用关系树上的文档:给原生文档菜单(与挂载的思源文档完全一致),
-                    // 外加关系树特有的项(刷新 / 只看子树 / 取消挂载)。
-                    // 关系树的根就是挂载进来的文档,所以「取消挂载」摘掉的是那条挂载记录。
+                if (row.kind === "auto") {
+                    // 自动挂载行(引用子层级):原生文档菜单 + 标签/刷新/聚焦 + 提升为手动挂载项
                     showDocMenu({
                         x: e.clientX,
                         y: e.clientY,
@@ -1296,7 +1233,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                             },
                             {
                                 icon: "iconRefresh",
-                                label: "刷新关系树",
+                                label: "刷新引用关系",
                                 click: () => ensureRelationTree(true),
                             },
                             {
@@ -1307,29 +1244,14 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                                     render();
                                 },
                             },
-                            // 只有**被挂载的**文档才对应一条挂载记录,纯引用者没东西可取消
-                            ...(mountUidOfDoc(row.docId) ? [{
-                                icon: "iconTrashcan",
-                                label: "取消挂载",
-                                click: () => unmountRelationNode(row.docId, row.name),
-                            }] : []),
+                            // 提升为手动挂载项:可选顶层或任意挂载节点下(手动挂载可在任意位置)
+                            {
+                                icon: "iconPin",
+                                label: "固定为手动挂载项…",
+                                click: () => showMountTargetMenu(e.clientX, e.clientY, plugin, {kind: "doc", name: row.name, targetId: row.docId}),
+                            },
                         ],
                     });
-                    return;
-                }
-                if (row.kind === "relationEmpty") {
-                    // 关系树为空/无引用:只给"刷新",别让右键彻底无响应
-                    const menu = new Menu();
-                    menu.addItem({icon: "iconRefresh", label: "刷新关系树", click: () => ensureRelationTree(true)});
-                    menu.addItem({
-                        icon: "iconFocus",
-                        label: "退出聚焦",
-                        click: () => {
-                            relationFocusId = null;
-                            render();
-                        },
-                    });
-                    menu.open({x: e.clientX, y: e.clientY});
                     return;
                 }
                 if (row.kind === "mount" && row.item.kind === "block") {
@@ -1440,7 +1362,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 } else if (action === "drag-mode") {
                     dragMode = !dragMode;
                     actionEl.classList.toggle("syfe-mtree__icon--on", dragMode);
-                    showMessage(dragMode ? "拖拽模式已开启:拖动挂载项调整顺序(同一父节点内,引用关系树已临时收起),再点一次图标关闭" : "拖拽模式已关闭", 2500, "info");
+                    showMessage(dragMode ? "拖拽模式已开启:拖动挂载项/自动挂载项调整顺序(同层内),再点一次图标关闭" : "拖拽模式已关闭", 2500, "info");
                     render();
                 } else if (action === "search") {
                     // 在虚拟树已挂载的目录范围内搜索:优先最近点击的目录,否则第一个挂载文件夹
@@ -1549,13 +1471,16 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
             ensureRelationTree();
             render();
 
-            // ===== 拖拽排序事件(挂在滚动容器上,与行点击委托同一套模式)=====
-            const dragStartHandler = (e: DragEvent) => {
-                const el = (e.target as HTMLElement).closest(".syfe-mtree__row--relation") as HTMLElement | null;
-                if (!el) return;
-                const docId = el.dataset.relDoc;
-                if (!docId) return;
-                dragDocId = docId;
+            // ===== 拖拽排序事件:自动挂载行(挂在滚动容器上,与行点击委托同一套模式)=====
+            const autoDragStart = (e: DragEvent) => {
+                if (!dragMode) return;
+                if (filterOn) return;
+                const el = (e.target as HTMLElement).closest(".syfe-mtree__row--auto") as HTMLElement | null;
+                const docId = el?.dataset.relDoc;
+                const parent = el?.dataset.autoParent;
+                if (!el || !docId || !parent) return;
+                dragAutoParent = parent;
+                dragAutoDocId = docId;
                 el.classList.add("syfe-mtree__row--dragging");
                 try {
                     e.dataTransfer?.setData("text/plain", docId);
@@ -1564,85 +1489,52 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                     // ignore
                 }
             };
-            const dragOverHandler = (e: DragEvent) => {
-                if (!dragDocId) return;
-                const el = (e.target as HTMLElement).closest(".syfe-mtree__row--relation") as HTMLElement | null;
-                if (!el) return;
-                const overId = el.dataset.relDoc;
-                if (!overId || overId === dragDocId) return;
-                // 只允许同级
-                const srcKey = parentKeyOf(dragDocId);
-                const dstKey = parentKeyOf(overId);
-                if (!srcKey || srcKey !== dstKey) return;
+            const autoDragOver = (e: DragEvent) => {
+                if (!dragAutoDocId) return;
+                const el = (e.target as HTMLElement).closest(".syfe-mtree__row--auto") as HTMLElement | null;
+                const docId = el?.dataset.relDoc;
+                if (!el || !docId || docId === dragAutoDocId) return;
+                // 只有同一父文档下的自动挂载行能排
+                if (el.dataset.autoParent !== dragAutoParent) return;
                 e.preventDefault();
                 if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
-                if (dragOverDocId !== overId) {
-                    dragOverDocId = overId;
-                    renderDragOver();
+                const rect = el.getBoundingClientRect();
+                const pos: "before" | "after" = (e.clientY - rect.top) < rect.height / 2 ? "before" : "after";
+                if (dragAutoOverDocId !== docId || dragAutoPos !== pos) {
+                    dragAutoOverDocId = docId;
+                    dragAutoPos = pos;
+                    clearMountDragMarks();
+                    el.classList.add(dragAutoPos === "before"
+                        ? "syfe-mtree__row--dragover-before"
+                        : "syfe-mtree__row--dragover-after");
                 }
             };
-            const dropHandler = (e: DragEvent) => {
-                const srcId = dragDocId;
-                const dstId = dragOverDocId;
-                dragDocId = null;
-                dragOverDocId = null;
-                if (!srcId || !dstId || srcId === dstId) {
-                    renderDragOver();
-                    return;
-                }
+            const autoDrop = (e: DragEvent) => {
+                const parent = dragAutoParent;
+                const src = dragAutoDocId;
+                const dst = dragAutoOverDocId;
+                const pos = dragAutoPos;
+                dragAutoParent = null;
+                dragAutoDocId = null;
+                dragAutoOverDocId = null;
+                clearMountDragMarks();
+                if (!parent || !src || !dst || src === dst) return;
                 e.preventDefault();
-                const key = parentKeyOf(srcId);
-                if (!key || key !== parentKeyOf(dstId)) {
-                    renderDragOver();
-                    return;
-                }
-                const siblings = siblingIdsOf(key);
-                const from = siblings.indexOf(srcId);
-                const to = siblings.indexOf(dstId);
-                if (from < 0 || to < 0) {
-                    renderDragOver();
-                    return;
-                }
-                // 拖到目标之前;往后拖时先移除再插入,避免索引偏移
-                const next = siblings.slice();
-                next.splice(from, 1);
-                next.splice(to, 0, srcId);
-                // 本地立即重排,避免等 SQL 回来才刷新
-                const applyOrder = (nodes: RelationNode[], parentKey: string) => {
-                    if (parentKey === RELATION_ROOT_KEY) {
-                        const rank = new Map(next.map((id, i) => [id, i]));
-                        nodes.sort((a, b) => (rank.get(a.docId) ?? 1e9) - (rank.get(b.docId) ?? 1e9));
-                        return;
-                    }
-                    for (const n of nodes) {
-                        if (n.docId === parentKey) {
-                            const rank = new Map(next.map((id, i) => [id, i]));
-                            n.children.sort((a, b) => (rank.get(a.docId) ?? 1e9) - (rank.get(b.docId) ?? 1e9));
-                            return;
-                        }
-                        applyOrder(n.children, parentKey);
-                    }
-                };
-                applyOrder(relationRoots, key);
-                render();
-                void persistRelationConfig({
-                    customOrder: reorderCustomOrder(relCfg().customOrder || {}, key, next),
-                }).then(() => {
-                    relationLoaded = false;
-                    ensureRelationTree();
+                // 兄弟顺序 = 当前展示顺序(从 DOM 收集,含已应用的 customOrder)
+                const siblingIds = Array.from(
+                    listEl.querySelectorAll(`.syfe-mtree__row--auto[data-auto-parent="${CSS.escape(parent)}"]`),
+                ).map(el => (el as HTMLElement).dataset.relDoc || "").filter(Boolean);
+                void reorderAutoChildren(parent, siblingIds, src, dst, pos).then(() => render());
+            };
+            const autoDragEnd = () => {
+                dragAutoParent = null;
+                dragAutoDocId = null;
+                dragAutoOverDocId = null;
+                clearMountDragMarks();
+                listEl.querySelectorAll(".syfe-mtree__row--dragging").forEach((el) => {
+                    el.classList.remove("syfe-mtree__row--dragging");
                 });
             };
-            const dragEndHandler = () => {
-                dragDocId = null;
-                dragOverDocId = null;
-                listEl.querySelectorAll(".syfe-mtree__row--dragging, .syfe-mtree__row--dragover").forEach((el) => {
-                    el.classList.remove("syfe-mtree__row--dragging", "syfe-mtree__row--dragover");
-                });
-            };
-            this._dragStartHandler = dragStartHandler;
-            this._dragOverHandler = dragOverHandler;
-            this._dropHandler = dropHandler;
-            this._dragEndHandler = dragEndHandler;
 
             // ===== 拖拽排序事件:挂载项 =====
             const mountDragStart = (e: DragEvent) => {
@@ -1699,20 +1591,20 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                     el.classList.remove("syfe-mtree__row--dragging");
                 });
             };
-            // destroy() 里按同样的表反注册,避免重复粘监听
+            // destroy() 里按同样的表反注册,避免重复粘监听(手动挂载行 + 自动挂载行)
             this._mountDragHandlers = [
                 ["dragstart", mountDragStart as (e: Event) => void],
                 ["dragover", mountDragOver as (e: Event) => void],
                 ["drop", mountDrop as (e: Event) => void],
                 ["dragend", mountDragEnd as (e: Event) => void],
+                ["dragstart", autoDragStart as (e: Event) => void],
+                ["dragover", autoDragOver as (e: Event) => void],
+                ["drop", autoDrop as (e: Event) => void],
+                ["dragend", autoDragEnd as (e: Event) => void],
             ];
             for (const [evt, fn] of this._mountDragHandlers) {
                 scrollEl.addEventListener(evt, fn);
             }
-            scrollEl.addEventListener("dragstart", dragStartHandler as EventListener);
-            scrollEl.addEventListener("dragover", dragOverHandler as EventListener);
-            scrollEl.addEventListener("drop", dropHandler as EventListener);
-            scrollEl.addEventListener("dragend", dragEndHandler as EventListener);
         },
         resize() {
             // 无需特殊处理
@@ -1743,17 +1635,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 window.removeEventListener("syfe:files-changed", this._relationRebuildHandler);
                 this._relationRebuildHandler = undefined;
             }
-            if (this._scrollEl) {
-                if (this._dragStartHandler) this._scrollEl.removeEventListener("dragstart", this._dragStartHandler as EventListener);
-                if (this._dragOverHandler) this._scrollEl.removeEventListener("dragover", this._dragOverHandler as EventListener);
-                if (this._dropHandler) this._scrollEl.removeEventListener("drop", this._dropHandler as EventListener);
-                if (this._dragEndHandler) this._scrollEl.removeEventListener("dragend", this._dragEndHandler as EventListener);
-            }
-            this._dragStartHandler = undefined;
-            this._dragOverHandler = undefined;
-            this._dropHandler = undefined;
-            this._dragEndHandler = undefined;
-            if (this._scrollEl && this._mountDragHandlers) {
+            if (this._mountDragHandlers) {
                 for (const [evt, fn] of this._mountDragHandlers) {
                     this._scrollEl.removeEventListener(evt, fn);
                 }

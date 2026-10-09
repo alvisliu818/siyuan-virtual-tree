@@ -806,11 +806,10 @@ actionElement: tagManageBtn,
         this.mountTreeRelationSortSelect.className = "b3-select fn__size200";
         this.mountTreeRelationSortSelect.innerHTML = `
             <option value="name">按名称排序</option>
-            <option value="weight">按权重排序</option>
-            <option value="custom">自定义(拖拽排序)</option>`;
+            <option value="weight">按权重排序</option>`;
         this.setting!.addItem({
-            title: "关系树:排序方式",
-            description: "子节点的排序方式。选「自定义」后可在关系树上直接拖拽调整顺序,顺序会被保存",
+            title: "引用子层级:排序方式",
+            description: "自动挂载行(引用子层级)的回退排序;在虚拟文档树开拖拽模式拖动后的顺序存在挂载配置里,优先生效",
             actionElement: this.mountTreeRelationSortSelect,
         });
 
@@ -919,7 +918,7 @@ actionElement: tagManageBtn,
         if (this.newTabShowFavoritesInput) this.newTabShowFavoritesInput.checked = this.config.newTabShowFavorites !== false;
         if (this.importMdSourceAssetInput) this.importMdSourceAssetInput.checked = this.config.importMdSourceAsset === true;
         if (this.showFileTreeDockInput) this.showFileTreeDockInput.checked = this.config.showFileTreeDock === true;
-        // 关系树设置回填(只回填设置项;customOrder/collapsed 由面板维护,不在这里改)
+        // 引用关系设置回填(只回填设置项;collapsed 由面板维护,拖拽顺序在挂载配置里)
         const rel = this.config.mountTreeRelation || DEFAULT_CONFIG.mountTreeRelation;
         if (this.mountTreeRelationEnabledInput) this.mountTreeRelationEnabledInput.checked = rel.enabled === true;
         if (this.mountTreeRelationSortSelect) this.mountTreeRelationSortSelect.value = rel.sortMethod || "name";
@@ -935,6 +934,9 @@ actionElement: tagManageBtn,
 
     // 保存设置
     private async saveSettings(): Promise<void> {
+        // 挂载关系配置:customOrder 字段已废弃(自动挂载层顺序在挂载配置),剔除旧值避免误导
+        const prevRelation = {...(this.config.mountTreeRelation || {})};
+        delete (prevRelation as Record<string, unknown>).customOrder;
         this.config = {
             fontSize: parseInt(this.fontSizeInput?.value || "14", 10),
             tabSize: parseInt(this.tabSizeInput?.value || "4", 10),
@@ -957,10 +959,10 @@ actionElement: tagManageBtn,
             importMdSourceAsset: this.importMdSourceAssetInput?.checked ?? false,
             showFileTreeDock: this.showFileTreeDockInput?.checked ?? false,
             mountTreeRelation: {
-                // 保留既有的 customOrder / collapsed(面板运行时维护,不在这里覆盖)
-                ...(this.config.mountTreeRelation || {}),
+                // 保留既有的 collapsed(面板运行时维护,不在这里覆盖)
+                ...prevRelation,
                 enabled: this.mountTreeRelationEnabledInput?.checked ?? false,
-                sortMethod: (this.mountTreeRelationSortSelect?.value as "name" | "weight" | "custom") || "name",
+                sortMethod: (this.mountTreeRelationSortSelect?.value as "name" | "weight") || "name",
                 weightAttrName: (this.mountTreeRelationWeightInput?.value || "").trim() || "weight",
                 includePhysicalSubtree: this.mountTreeRelationPhysicalInput?.checked ?? false,
                 caseSensitive: this.mountTreeRelationCaseInput?.checked ?? false,

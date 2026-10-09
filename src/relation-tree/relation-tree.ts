@@ -2,9 +2,8 @@
 //
 // 移植自独立插件 siyuan-virtual-tree(同作者),按 editor 的方式重写:
 //   - 去掉独立插件的 Setting 面板/状态管理/命令面板,设置并入 editor 的设置页
-//   - 排序支持"自定义(拖拽)",顺序持久化到 editor 的配置里
 //   - 关系树是**只读派生视图**:结构不落盘,每次重建都从内核现查,不会产生陈旧数据
-//   - 只有「自定义顺序」和折叠状态会持久化(那是用户的显式意图)
+//   - 折叠状态持久化到 editor 配置;自动挂载层的拖拽顺序存挂载配置(virtual-tree.json 的 customOrder)
 //
 // 与 mount-tree(手动挂载)的关系:两者共存而非互斥。
 // 手动挂载是"用户自己组织的工作区",关系树是"文档之间实际存在的引用结构"。
@@ -17,16 +16,15 @@ import {fetchSyncPost} from "siyuan";
 
 /** 关系树设置(并入 editor 设置页,存 EditorConfig) */
 export interface RelationTreeOptions {
-    // 排序方式:name=按名称 | weight=按文档属性权重 | custom=拖拽自定义
-    sortMethod: "name" | "weight" | "custom";
+    // 回退排序方式:name=按名称 | weight=按文档属性权重。
+    // 自动挂载层的拖拽顺序存在挂载配置(virtual-tree.json 的 customOrder),由调用方渲染时优先应用
+    sortMethod: "name" | "weight";
     weightAttrName: string;   // 权重属性名(文档自定义属性,缺失视为 0)
     caseSensitive: boolean;   // 排序是否区分大小写
     maxDepth: number;         // 最大递归深度(防无限递归)
     maxNodes: number;         // 最大节点数(防失控)
     includePhysicalSubtree: boolean; // 是否并入思源原生层级的物理子文档
     defaultExpandLevel: number;      // 默认展开层级:0=全折叠 -1=全展开 N=展开前 N 层
-    // 自定义(拖拽)顺序:parentDocId -> 子节点 docId 有序数组;"__root__" 表示根层
-    customOrder: Record<string, string[]>;
 }
 
 export const DEFAULT_RELATION_OPTIONS: RelationTreeOptions = {
@@ -37,7 +35,6 @@ export const DEFAULT_RELATION_OPTIONS: RelationTreeOptions = {
     maxNodes: 500,
     includePhysicalSubtree: false,
     defaultExpandLevel: -1,  // 与原插件一致:-1 = 默认全部展开
-    customOrder: {},
 };
 
 export interface RelationDocInfo {
@@ -269,20 +266,6 @@ function sortNodes(
     if (opts.sortMethod === "weight") {
         nodes.sort((a, b) => (b.weight !== a.weight ? b.weight - a.weight : byName(a, b)));
         return;
-    }
-    if (opts.sortMethod === "custom") {
-        const order = opts.customOrder?.[parentKey];
-        if (order && order.length) {
-            const rank = new Map<string, number>();
-            order.forEach((id, i) => rank.set(id, i));
-            nodes.sort((a, b) => {
-                const ra = rank.has(a.docId) ? rank.get(a.docId)! : Number.MAX_SAFE_INTEGER;
-                const rb = rank.has(b.docId) ? rank.get(b.docId)! : Number.MAX_SAFE_INTEGER;
-                if (ra !== rb) return ra - rb;
-                return byName(a, b);
-            });
-            return;
-        }
     }
     nodes.sort(byName);
 }
