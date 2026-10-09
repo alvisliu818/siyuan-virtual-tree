@@ -135,10 +135,21 @@ function renderPathSegments(path: string): string {
     const segs = pathSegments(path);
     if (segs.length === 0) return escapeHTML(path);
     const sep = sepFor(path);
-    return segs.map(s => {
+    const out: string[] = [];
+    segs.forEach((s, i) => {
+        if (i > 0) {
+            // 前一段本身就以分隔符结尾时不能再插一个 ——
+            // POSIX 根分段(basename 为空、回退成完整路径)的 label 就是 "/",
+            // 无脑 join 会渲染出 "//data/templates/xxx.py" 这种多一个斜杠的路径。
+            const prev = segs[i - 1].label;
+            if (!prev.endsWith(sep)) {
+                out.push(`<span class="syfe-editor__sep">${escapeHTML(sep)}</span>`);
+            }
+        }
         const parentDir = dirname(s.fullPath) || s.fullPath;
-        return `<span class="syfe-editor__seg" data-dir="${escapeHTML(parentDir)}" title="点击切换文件或文件夹">${escapeHTML(s.label)}</span>`;
-    }).join(`<span class="syfe-editor__sep">${escapeHTML(sep)}</span>`);
+        out.push(`<span class="syfe-editor__seg" data-dir="${escapeHTML(parentDir)}" title="点击切换文件或文件夹">${escapeHTML(s.label)}</span>`);
+    });
+    return out.join("");
 }
 
 // 顶部路径点击:列出某目录下的条目(文件夹优先),可切换到同级/下级文件或文件夹
