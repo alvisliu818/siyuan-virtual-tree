@@ -2903,6 +2903,11 @@
     background: var(--b3-theme-surface);
 }
 
+// 工具栏开关激活态(拖拽排序模式等)
+.syfe-mtree-dock .block__icon.syfe-mtree__icon--on {
+    color: var(--b3-theme-primary);
+}
+
 // 挂载行可拖:给出可抓取的暗示(拖动中保持抓手形状)
 .syfe-mtree__row--mount[draggable="true"] {
     cursor: grab;

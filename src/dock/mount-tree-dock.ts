@@ -224,6 +224,9 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                     <span class="block__icon ariaLabel" data-action="tag-filter" aria-label="标签筛选" data-position="north">
                         <svg><use xlink:href="#iconTags"></use></svg>
                     </span>
+                    <span class="block__icon ariaLabel" data-action="drag-mode" aria-label="拖拽排序模式(挂载项)" data-position="north">
+                        <svg><use xlink:href="#iconDrag"></use></svg>
+                    </span>
                     <span class="block__icon ariaLabel" data-action="search" aria-label="搜索" data-position="north">
                         <svg><use xlink:href="#iconSearch"></use></svg>
                     </span>
@@ -258,6 +261,8 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
             let tagSel: string[] = [];
             let tagAny = false;
             let filterOn = false;
+            // 拖拽排序模式:开启后挂载行才可拖动(防误拖;默认关闭,会话内有效)
+            let dragMode = false;
             // 最近一次点击的目录(新建文件/文件夹、搜索的默认位置)
             let currentDir: string | null = null;
 
@@ -910,7 +915,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                         }
                         return `
                         <li class="syfe-mtree__row syfe-mtree__row--mount${r.expanded ? " syfe-mtree__row--open" : ""}"
-                            data-idx="${i}" data-mount-uid="${escapeHTML(r.uid)}" draggable="true"
+                            data-idx="${i}" data-mount-uid="${escapeHTML(r.uid)}" draggable="${dragMode ? "true" : "false"}"
                             style="padding-left:${pad}px"
                             title="${escapeHTML(it.kind === "file" ? (it.path || name) : (it.targetId || name))}">
                             ${arrow}
@@ -1428,6 +1433,11 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                     }
                     expandTaggedDirs();
                     render();
+                } else if (action === "drag-mode") {
+                    dragMode = !dragMode;
+                    actionEl.classList.toggle("syfe-mtree__icon--on", dragMode);
+                    showMessage(dragMode ? "拖拽模式已开启:拖动挂载项调整顺序(同一父节点内),再点一次图标关闭" : "拖拽模式已关闭", 2500, "info");
+                    render();
                 } else if (action === "search") {
                     // 在虚拟树已挂载的目录范围内搜索:优先最近点击的目录,否则第一个挂载文件夹
                     const target = currentDir
@@ -1632,6 +1642,8 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
 
             // ===== 拖拽排序事件:挂载项 =====
             const mountDragStart = (e: DragEvent) => {
+                // 未开启拖拽模式:一律不可拖(与 draggable 属性双保险)
+                if (!dragMode) return;
                 // 标签筛选时行与行之间夹着被过滤掉的兄弟,重排结果不直观 → 不允许拖
                 if (filterOn) return;
                 const el = (e.target as HTMLElement).closest(".syfe-mtree__row--mount") as HTMLElement | null;
