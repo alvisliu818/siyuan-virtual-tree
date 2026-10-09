@@ -487,9 +487,11 @@
     flex-shrink: 0;
 
     svg {
-        width: 10px;
-        height: 10px;
-        opacity: 0.6;
+        // 对齐原生箭头 14×14(之前 10px + opacity .6 偏小偏淡)
+        width: 14px;
+        height: 14px;
+        color: var(--b3-theme-on-surface-light);
+        fill: currentColor;
     }
 
     &:empty {
@@ -509,10 +511,14 @@
     margin-right: 4px;
 
     svg {
-        // 与原生文件树对齐(b3-list-item__graphic 18×18,见思源 _layout.scss sy__file 作用域),
-        // 否则虚拟文档树里的思源文档图标会比原生的小一号
-        width: 18px;
-        height: 18px;
+        // 与原生文档树一致:行内 SVG 图标实测 16×16(原生 sy__file 各行 getComputedStyle 实测),
+        // 思源内置文件树图标是描边式(24 viewBox, stroke-width 1.7),尺寸放大描边会等比变粗
+        width: 16px;
+        height: 16px;
+        // 思源图标是**描边式**:<symbol fill="none" stroke="currentColor" ...>(实测 #iconRight)。
+        // 所以只能设 color 来驱动 stroke —— 不能设 fill,否则空心路径被填满,
+        // 折叠箭头会变成一坨实心块(实测踩过)。
+        color: var(--b3-theme-on-surface);
     }
 
     .syfe-tree__ext-icon {
@@ -990,7 +996,9 @@
         svg {
             width: 12px;
             height: 12px;
-            fill: currentColor;
+            // 思源图标统一是描边式(fill="none" stroke="currentColor"),
+            // 用 color 驱动描边;设 fill 会把空心路径填满变成实心块
+            color: inherit;
         }
 
         &:disabled {
@@ -1992,7 +2000,9 @@
         svg {
             width: 12px;
             height: 12px;
-            fill: currentColor;
+            // 思源图标统一是描边式(fill="none" stroke="currentColor"),
+            // 用 color 驱动描边;设 fill 会把空心路径填满变成实心块
+            color: inherit;
         }
 
         &:disabled {
@@ -2159,9 +2169,11 @@
     gap: 4px;
 
     svg {
+        // 描边式图标(思源图标统一 fill="none" stroke="currentColor"):
+        // 只设 color 驱动描边,设 fill 会填成实心块
+        color: inherit;
         width: 14px;
         height: 14px;
-        fill: currentColor;
     }
 }
 
@@ -2478,9 +2490,11 @@
     flex-shrink: 0;
 
     svg {
+        // 描边式图标(思源图标统一 fill="none" stroke="currentColor"):
+        // 只设 color 驱动描边,设 fill 会填成实心块
+        color: var(--b3-theme-on-surface);
         width: 12px;
         height: 12px;
-        fill: currentColor;
     }
 
     &:hover {
@@ -2568,9 +2582,11 @@
     height: 14px;
 
     svg {
-        width: 10px;
-        height: 10px;
-        fill: var(--b3-theme-on-surface);
+        // 对齐原生箭头 14×14;描边式图标颜色走 color(只设 fill 对其无效)
+        width: 14px;
+        height: 14px;
+        color: var(--b3-theme-on-surface-light);
+        fill: currentColor;
     }
 }
 
@@ -2612,7 +2628,10 @@
     border-bottom: 1px solid var(--b3-border-color);
     min-height: 0;
     padding: 0 4px;
-    flex-wrap: nowrap;
+    // 面板窄时按钮换行而不是撑宽容器:容器被撑宽会出横向滚动条
+    // (logo + 10 个按钮最宽 ~400px,窄面板 324px 放不下)
+    flex-wrap: wrap;
+    row-gap: 2px;
 
     .block__logo {
         padding: 0 4px;
@@ -2754,9 +2773,14 @@
     height: 14px;
 
     svg {
-        width: 10px;
-        height: 10px;
-        fill: var(--b3-theme-on-surface);
+        // 对齐思源原生折叠箭头 b3-list-item__arrow(14×14,见 _list.scss);
+        // 之前的 10px 偏小,观感与原生不一致
+        width: 14px;
+        height: 14px;
+        // 思源内置图标是描边式(stroke=currentColor):颜色必须设 color 才生效,
+        // 只设 fill 无效(会继承行文字的深色);原生箭头用淡灰
+        color: var(--b3-theme-on-surface-light);
+        fill: currentColor;
     }
 }
 
@@ -2772,15 +2796,19 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    // 与原生文件树的图标对齐(sy__file 里 b3-list-item__graphic 是 18×18),
-    // 之前的 16/15 偏小,视觉上明显小于原生文档树
+    // 容器 18×18 只负责行内对齐;基准尺寸以内部 svg 为准:
+    // 原生文档树(sy__file)行内 svg 图标实测 16×16、颜色 --b3-theme-on-surface
     width: 18px;
     height: 18px;
 
     svg {
-        width: 17px;
-        height: 17px;
-        fill: var(--b3-theme-on-surface);
+        // 之前 17×17 且只设 fill:思源文件树图标是描边式(stroke=currentColor),
+        // 尺寸放大描边变粗,颜色又继承行文字的深色,观感比原生粗/重
+        width: 16px;
+        height: 16px;
+        // 只设 color(驱动 stroke=currentColor),不设 fill ——
+        // 设了会把描边式图标的空心路径填满,折叠箭头变成实心块
+        color: var(--b3-theme-on-surface);
     }
 }
 
@@ -2793,7 +2821,7 @@
         background: var(--b3-list-hover);
 
         svg {
-            fill: var(--b3-theme-on-background);
+            color: var(--b3-theme-on-background);
         }
     }
 }
@@ -2914,7 +2942,7 @@
         background: var(--b3-list-hover);
 
         svg {
-            fill: var(--b3-theme-on-background);
+            color: var(--b3-theme-on-background);
         }
     }
 }
