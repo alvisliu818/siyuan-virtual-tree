@@ -16,9 +16,15 @@
 const fs = require("fs");
 const path = require("path");
 
+// 插件名以 plugin.json 为唯一来源。改名后这里不用改,也不会出现
+// 「部署目标名校验失败」这种因为名字写死而卡住的情况。
+const PLUGIN_NAME = JSON.parse(
+    fs.readFileSync(path.resolve(__dirname, "..", "plugin.json"), "utf8"),
+).name;
+
 const SRC = path.resolve(__dirname, "..", "dist");
 const DEST = path.resolve(
-    process.env.SYFI_PLUGIN_DIR || "E:\\HOME\\SiYuan\\data\\plugins\\siyuan-file-editor",
+    process.env.SYFI_PLUGIN_DIR || `E:\\HOME\\SiYuan\\data\\plugins\\${PLUGIN_NAME}`,
 );
 
 function fail(msg) {
@@ -29,8 +35,10 @@ function fail(msg) {
 // ---- 前置校验(安全护栏,避免误删无关目录) ----
 if (!fs.existsSync(SRC)) fail(`源目录不存在: ${SRC}`);
 if (!fs.existsSync(path.join(SRC, "index.js"))) fail(`源目录中没有 index.js,不是有效的构建产物: ${SRC}`);
-if (path.basename(DEST) !== "siyuan-file-editor") {
-    fail(`目标目录名不是 siyuan-file-editor,拒绝操作: ${DEST}`);
+// 护栏保留(防止误删无关目录),但校验基准改成 plugin.json 里的名字,
+// 而不是写死某个历史名字 —— 否则改名后连部署都会被拒。
+if (path.basename(DEST) !== PLUGIN_NAME) {
+    fail(`目标目录名(${path.basename(DEST)})与 plugin.json 的 name(${PLUGIN_NAME})不一致,拒绝操作: ${DEST}`);
 }
 
 // 递归删除目录内容(保留目录本身)
@@ -38,7 +46,7 @@ if (path.basename(DEST) !== "siyuan-file-editor") {
 // 容错要点:**不能因为一个文件删不掉就让整次部署失败**。
 // 插件跑起来之后,pyright 会被插件拉起成常驻子进程,它的工作目录
 // (pyright/dist)就被 Windows 锁住了 —— 实测 EBUSY: rmdir
-// '...\siyuan-file-editor\pyright\dist'。同理 node-pty 的 .node 也可能
+// '...\<插件名>\pyright\dist'。同理 node-pty 的 .node 也可能
 // 被已加载的渲染进程锁住。
 //
 // 所以这里对每个条目单独 try:删不掉就留着(它反正和我们要写的新文件

@@ -60,7 +60,12 @@ interface MarkdownTabInstance {
 
 // Vditor 静态资源目录(webpack 已复制 vditor/dist 到插件目录)
 // 导出供 Notebook Tab 复用(md 单元格渲染 / 样式)
-export const VDITOR_CDN = "/plugins/siyuan-file-editor/vditor";
+//
+// 插件名由 webpack DefinePlugin 注入(见 webpack.config.js),**不要写死**:
+// 写死的话插件改名后这个目录就 404,vditor 的 CSS/JS 加载不到,
+// markdown 编辑器会变成没有样式的裸 textarea,且不报错。
+declare const __SYFE_PLUGIN_NAME__: string;
+export const VDITOR_CDN = `/plugins/${__SYFE_PLUGIN_NAME__}/vditor`;
 
 // 超过此大小(字节)的 Markdown 强制源码模式(Vditor 大内容性能差)
 const WYSIWYG_MAX_SIZE = 512 * 1024;

@@ -22,9 +22,16 @@ const monacoFeatures = [
     "codelens", "colorPicker", "documentSymbols", "quickCommand",
 ];
 
+// 插件身份从 plugin.json 读,不要在各处硬编码。
+// 改名(如 siyuan-file-editor → siyuan-virtual-tree)时如果漏改这里,
+// 后果是 Monaco 的语言 chunk 请求打到旧名字的目录上 → 404 →
+// 语言 Monarch 注册不上 → 所有代码一个颜色(mtk1),且不报错,极难排查。
+const PLUGIN_NAME = JSON.parse(fs.readFileSync(path.resolve(__dirname, "plugin.json"), "utf8")).name;
+
 // 思源插件目录(开发模式直接输出到此目录,避免手动复制 chunk 文件)
-// 可通过环境变量 SYFI_PLUGIN_DIR 覆盖
-const SIYUAN_PLUGIN_DIR = process.env.SYFI_PLUGIN_DIR || "E:\\HOME\\SiYuan\\data\\plugins\\siyuan-file-editor";
+// 可通过环境变量 SYFI_PLUGIN_DIR 覆盖;默认路径也跟着 PLUGIN_NAME 走
+const SIYUAN_PLUGIN_DIR = process.env.SYFI_PLUGIN_DIR
+    || `E:\\HOME\\SiYuan\\data\\plugins\\${PLUGIN_NAME}`;
 
 // node-pty 依赖目录。node-pty 是原生模块(内含平台相关的 .node/.dll),
 // 无法被 webpack 打包,只能原样复制到插件目录,由运行时 require 加载。
@@ -114,6 +121,12 @@ module.exports = (env, argv) => {
         new MiniCssExtractPlugin({
             filename: "index.css",
         }),
+        // 把插件名注入前端代码。凡是"资源路径里有插件名"的地方(如 vditor 的
+        // 静态资源目录)都必须用它派生,不能写死 —— 写死后插件一改名就 404,
+        // 而且这类失败通常是静默的(资源加载不到,功能半残但不报错)。
+        new webpack.DefinePlugin({
+            __SYFE_PLUGIN_NAME__: JSON.stringify(PLUGIN_NAME),
+        }),
         new MonacoWebpackPlugin({
             languages: monacoLanguages,
             features: monacoFeatures,
@@ -194,8 +207,10 @@ module.exports = (env, argv) => {
             library: {
                 type: "commonjs2",
             },
-            // Monaco worker 通过 publicPath 加载,必须指向插件资源目录
-            publicPath: production ? "/plugins/siyuan-file-editor/" : "/plugins/siyuan-file-editor/",
+            // Monaco 的 worker 与语言 chunk 都按 publicPath 懒加载,必须指向插件资源目录。
+            // 用 PLUGIN_NAME 拼而不是写死:写死的话插件一改名,这些 chunk 就全部 404,
+            // 表现为"代码打开是纯黑白的,没有任何报错"(Monarch 注册不上,全落 mtk1)。
+            publicPath: `/plugins/${PLUGIN_NAME}/`,
         },
         externals: {
             siyuan: "siyuan",
