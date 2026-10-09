@@ -36,7 +36,8 @@ function authHeaders(): Record<string, string> {
 }
 
 // 通用 JSON POST,校验 code 字段
-async function postJSON<T = any>(url: string, data: any): Promise<T> {
+// 导出供其它模块复用(如文档菜单的导入 Markdown),避免各处重复写 fetch + 鉴权头
+export async function postJSON<T = any>(url: string, data: any): Promise<T> {
     const resp = await fetch(url, {
         method: "POST",
         headers: {"Content-Type": "application/json", ...authHeaders()},

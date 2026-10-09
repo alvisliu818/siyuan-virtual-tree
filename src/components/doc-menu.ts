@@ -12,10 +12,12 @@ import {
     exportMdContent,
     getRefText,
     getHPathByID,
+    postJSON,
 } from "../api/file";
 import {getDocInfo, clearDocInfoCache} from "../utils/virtual-tree";
 import {openSiyuanDoc} from "./entry-menu";
 import {promptDialog, copyText} from "./file-tree";
+import {showOpenDialog} from "../utils/open-dialog";
 import {isPinned, isFavorite, itemFromDoc, toggleInGroup} from "../start-page";
 
 // 菜单所需的插件接口
@@ -150,6 +152,37 @@ export function addPinFavEntries(menu: Menu, plugin: IDocMenuPlugin, docId: stri
     });
 }
 
+// 导入 Markdown 到某个文档下(对齐思源文档树的「导入 Markdown 文档/文件夹」)。
+//
+// 走 /api/import/importStdMd,参数与思源原生一致:
+//   notebook = 文档所属笔记本;toPath = 文档的**存储路径**(/xxx.sy);localPath = 用户选的本地路径。
+// 注意 toPath 必须是 .sy 存储路径而不是 hpath:内核 resolveMarkdownImportTarget 按
+// blocktrees.path(存储路径)查目标文档,传 hpath 会报 "target document not found"。
+// 选路径要弹系统对话框,思源没给插件开放 API,只能走 Electron IPC(见 utils/open-dialog)。
+async function importInto(docId: string, isDir: boolean, after: () => void): Promise<void> {
+    const localPath = await showOpenDialog({
+        properties: [isDir ? "openDirectory" : "openFile"],
+        filters: isDir ? [] : [{name: "Markdown", extensions: ["md", "markdown"]}],
+    });
+    if (!localPath) return; // 取消,或拿不到对话框(非桌面端)
+    const info = await getDocInfo(docId);
+    if (!info?.box || !info?.path) {
+        showMessage("无法确定文档所属笔记本", 3000, "error");
+        return;
+    }
+    try {
+        await postJSON("/api/import/importStdMd", {
+            notebook: info.box,
+            localPath,
+            toPath: info.path,
+        });
+        showMessage(isDir ? "文件夹已导入,非 Markdown 文件作为资源" : "文档已导入", 3000, "info");
+        after();
+    } catch (e: any) {
+        showMessage(`导入失败: ${e?.message || e}`, 4000, "error");
+    }
+}
+
 // 思源文档的右键菜单(挂载的思源文档、子文档、标签面板 sydoc:// 条目共用)。
 // 结构对齐思源文档树:打开 / 新建子文档 / 复制(原生复制子菜单) / 重命名 / 删除 / 固定 / 收藏,
 // extra 由调用方追加面板特有项(标签、取消挂载、挂载子菜单等)。
@@ -215,6 +248,23 @@ export function showDocMenu(opts: {
                         downloadText(`${name}.md`, data.content);
                     })().catch((e: any) => showMessage(`导出失败: ${e?.message || e}`, 3000, "error"));
                 },
+            },
+        ] as any,
+    });
+    // 导入 Markdown:思源文档树右键原生就有这两项(单个 md 文件 / 整个文件夹),
+    // 插件的文档菜单之前漏了,虚拟文档树里挂载的文档就没法往里导入。
+    // 语义与原生一致:导入到**该文档下**(toPath 用它的 hpath)。
+    menu.addItem({
+        icon: "iconDownload",
+        label: lang("import", "导入"),
+        submenu: [
+            {
+                label: "Markdown 文档",
+                click: () => void importInto(docId, false, after),
+            },
+            {
+                label: "Markdown 文件夹",
+                click: () => void importInto(docId, true, after),
             },
         ] as any,
     });
