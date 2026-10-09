@@ -199,6 +199,12 @@ module.exports = (env, argv) => {
         devtool: production ? false : "eval-source-map",
         output: {
             filename: "index.js",
+            // 异步 chunk(Monaco 语言/worker 分包)带内容哈希:内核对插件资源不发
+            // Cache-Control,浏览器按 Last-Modified 做启发式缓存;chunk 文件名若固定,
+            // 重建后同名旧缓存的 chunk 会与新 index.js 混搭,Monarch 注册不上且不报错
+            // (表现:"代码渲染没了/折叠图标不对")。哈希文件名让每次构建都是全新 URL,
+            // 从根上避免陈旧缓存;改名/重部署场景同理受益。
+            chunkFilename: production ? "[id].[contenthash].index.js" : "[id].index.js",
             path: outputPath,
             // 生产模式:构建前清空 dist/,确保其中只有本次打包产物
             // (zip 等二次产物不输出到此目录,由 scripts/zip-dist.js 输出到 build/)
