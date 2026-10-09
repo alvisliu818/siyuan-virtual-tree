@@ -170,7 +170,8 @@ export function createEditor(
         tabSize: config.tabSize,
         wordWrap: config.wordWrap,
         automaticLayout: true,
-        minimap: {enabled: true},
+        // 右侧导航窗格(minimap 缩略图):跟随设置,默认开
+        minimap: {enabled: config.showMinimap !== false},
         scrollBeyondLastLine: false,
         smoothScrolling: true,
         cursorBlinking: "smooth",
@@ -281,4 +282,16 @@ export function createEditor(
 export function disposeMonaco(): void {
     // monaco 无全局 dispose,模型清理在 model-manager 中处理
     initialized = false;
+}
+
+// 把导航窗格(minimap)开关即时应用到所有已打开的编辑器
+// (设置保存后调用,无需重开 Tab;monaco.editor.getEditors() 枚举当前所有实例)
+export function applyMinimapSetting(enabled: boolean): void {
+    try {
+        monaco.editor.getEditors().forEach(ed => {
+            ed.updateOptions({minimap: {enabled}});
+        });
+    } catch (e) {
+        console.warn("[siyuan-file-editor] 应用 minimap 设置失败:", e);
+    }
 }

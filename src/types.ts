@@ -26,6 +26,9 @@ export interface EditorConfig {
     fontSize: number;
     tabSize: number;
     wordWrap: "on" | "off";
+    // 代码编辑器右侧的导航窗格(Monaco 的 minimap 缩略图,点击可跳转)。
+    // 默认开(与改动前一致);关掉后编辑区变宽,适合窄屏或不需要缩略导航的场景
+    showMinimap: boolean;
     formatOnSave: boolean;
     searchMaxFileSize: number;
     fileTreeRoot: string; // 文件树根目录路径
@@ -206,6 +209,7 @@ export const DEFAULT_CONFIG: EditorConfig = {
     fontSize: 14,
     tabSize: 4,
     wordWrap: "off",
+    showMinimap: true,
     formatOnSave: false,
     searchMaxFileSize: 1024 * 1024, // 1MB
     fileTreeRoot: "/data", // 默认思源工作空间 data 目录

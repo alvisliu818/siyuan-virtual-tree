@@ -1,7 +1,7 @@
 import {Plugin, Setting, showMessage} from "siyuan";
 import {DOCK_TYPE, WORKSPACE_ROOT, DEFAULT_TERMINAL_SERVER_URL, MOUNT_TREE_DOCK_TYPE} from "./constants";
 import {EditorConfig, DEFAULT_CONFIG} from "./types";
-import {setupMonaco, applyTheme, getCurrentMode, disposeMonaco} from "./editor/monaco";
+import {setupMonaco, applyTheme, getCurrentMode, disposeMonaco, applyMinimapSetting} from "./editor/monaco";
 import {disposeAll} from "./editor/model-manager";
 import {createEditorTabConfig, openFileTab} from "./tabs/editor-tab";
 import {createImageTabConfig, openImageTab} from "./tabs/image-tab";
@@ -72,6 +72,8 @@ export default class FileEditorPlugin extends Plugin {
     private tabSizeInput?: HTMLInputElement;
     private wordWrapSelect?: HTMLSelectElement;
     private formatOnSaveInput?: HTMLInputElement;
+    // 编辑器右侧导航窗格(minimap 缩略图)开关
+    private showMinimapInput?: HTMLInputElement;
     private searchMaxSizeInput?: HTMLInputElement;
     private fileTreeRootInput?: HTMLInputElement;
     private terminalBackendSelect?: HTMLSelectElement;
@@ -603,6 +605,16 @@ export default class FileEditorPlugin extends Plugin {
             actionElement: this.formatOnSaveInput,
         });
 
+        // 编辑器右侧导航窗格(minimap 缩略图)
+        this.showMinimapInput = document.createElement("input");
+        this.showMinimapInput.type = "checkbox";
+        this.showMinimapInput.className = "b3-switch";
+        this.setting!.addItem({
+            title: "导航窗格",
+            description: "代码编辑器右侧的缩略导航(minimap)。关闭后编辑区变宽,适合窄屏或不需要缩略导航的场景;保存后对已打开的编辑器立即生效",
+            actionElement: this.showMinimapInput,
+        });
+
         // 标签管理(新建/编辑/删除预设标签,支持嵌套、颜色、图标)
         const tagManageBtn = document.createElement("button");
         tagManageBtn.className = "b3-button b3-button--outline fn__size200";
@@ -891,6 +903,7 @@ actionElement: tagManageBtn,
         if (this.tabSizeInput) this.tabSizeInput.value = String(this.config.tabSize);
         if (this.wordWrapSelect) this.wordWrapSelect.value = this.config.wordWrap;
         if (this.formatOnSaveInput) this.formatOnSaveInput.checked = this.config.formatOnSave;
+        if (this.showMinimapInput) this.showMinimapInput.checked = this.config.showMinimap !== false;
         if (this.searchMaxSizeInput) {
             this.searchMaxSizeInput.value = String(Math.round(this.config.searchMaxFileSize / 1024));
         }
@@ -927,6 +940,7 @@ actionElement: tagManageBtn,
             tabSize: parseInt(this.tabSizeInput?.value || "4", 10),
             wordWrap: (this.wordWrapSelect?.value as "on" | "off") || "off",
             formatOnSave: this.formatOnSaveInput?.checked ?? false,
+            showMinimap: this.showMinimapInput?.checked ?? true,
             searchMaxFileSize: (parseInt(this.searchMaxSizeInput?.value || "1024", 10)) * 1024,
             fileTreeRoot: (this.fileTreeRootInput?.value || "").trim() || "/data",
             terminalBackend: (this.terminalBackendSelect?.value as "auto" | "builtin" | "server") || "auto",
@@ -960,6 +974,8 @@ actionElement: tagManageBtn,
         await saveConfig(this, this.config);
         // 主题设置立即生效
         this.applyConfiguredThemes();
+        // 导航窗格开关对已打开的编辑器立即生效
+        applyMinimapSetting(this.config.showMinimap !== false);
         this.refreshFileTrees();
         // 引用关系树开关影响「虚拟文档树」面板内容,通知面板重建(立即生效,无需重启)
         window.dispatchEvent(new CustomEvent(SYFE_RELATION_TREE_CHANGED_EVENT));
