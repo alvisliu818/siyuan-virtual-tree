@@ -747,7 +747,10 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
             const buildRows = (): Row[] => {
                 const rows: Row[] = [];
                 // --- 引用关系树(只读派生视图,排在手动挂载上方;不额外加标题栏)---
-                if (relationEnabled()) {
+                // 拖拽模式开启时临时收起:关系行不是挂载行,被挂载的思源文档会渲染成
+                // 不可拖的关系行(如 doc 挂载),与「拖拽模式」语义冲突;排序属于挂载树,
+                // 拖拽模式下全部按挂载树渲染,关闭后恢复关系视图。
+                if (relationEnabled() && !dragMode) {
                     if (relationBuilding) {
                         rows.push({kind: "loading", depth: 0});
                     } else if (relationRoots.length === 0) {
@@ -781,7 +784,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 const relTreeDocIds = new Set(flattenRelationForest(relationRoots).map(n => n.docId));
                 const mountedDocSet = new Set(mountedDocIds());
                 const relShownDocIds = new Set(
-                    relationEnabled() ? Array.from(relTreeDocIds).filter(id => mountedDocSet.has(id)) : [],
+                    relationEnabled() && !dragMode ? Array.from(relTreeDocIds).filter(id => mountedDocSet.has(id)) : [],
                 );
                 const walk = (item: MountItem, depth: number) => {
                     if (item.kind === "doc" && item.targetId && relShownDocIds.has(item.targetId)) return;
@@ -842,13 +845,14 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
 
             const render = () => {
                 if (!self._listEl) return; // 已销毁
-                // 关系树的 5 个工具按钮:仅在开关开启时显示(与原虚拟树同一位置、同一图标)
+                // 关系树的 5 个工具按钮:仅在开关开启时显示(与原虚拟树同一位置、同一图标);
+                // 拖拽模式下关系树临时收起,按钮一并隐藏
                 this.element.querySelectorAll("[data-rel-action]").forEach((el) => {
-                    (el as HTMLElement).style.display = relationEnabled() ? "" : "none";
+                    (el as HTMLElement).style.display = relationEnabled() && !dragMode ? "" : "none";
                 });
                 const roots = getRoots();
-                // 关系树开启时,即使手动挂载为空也要渲染(它自己有区块)
-                const relOn = relationEnabled();
+                // 关系树开启且未在拖拽模式时,即使手动挂载为空也要渲染(它自己有区块)
+                const relOn = relationEnabled() && !dragMode;
                 if (roots.length === 0 && !relOn) {
                     self._rows = [];
                     listEl.innerHTML = `<li class="syfe-mtree__empty">${mountTreeEmptyHint()}</li>`;
@@ -1436,7 +1440,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 } else if (action === "drag-mode") {
                     dragMode = !dragMode;
                     actionEl.classList.toggle("syfe-mtree__icon--on", dragMode);
-                    showMessage(dragMode ? "拖拽模式已开启:拖动挂载项调整顺序(同一父节点内),再点一次图标关闭" : "拖拽模式已关闭", 2500, "info");
+                    showMessage(dragMode ? "拖拽模式已开启:拖动挂载项调整顺序(同一父节点内,引用关系树已临时收起),再点一次图标关闭" : "拖拽模式已关闭", 2500, "info");
                     render();
                 } else if (action === "search") {
                     // 在虚拟树已挂载的目录范围内搜索:优先最近点击的目录,否则第一个挂载文件夹
