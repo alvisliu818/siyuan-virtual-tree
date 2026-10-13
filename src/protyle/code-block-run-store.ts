@@ -37,6 +37,8 @@ let cached: CodeBlockRunData = {version: DATA_VERSION, blocks: {}};
 let loaded = false;
 let saveTimer: any = null;
 let pendingPlugin: Plugin | null = null;
+// 上次真正落盘的内容快照;落盘前比对,内容没变就不写(见 flushCodeBlockRunData)
+let lastSavedJSON = "";
 
 function dispatchChanged(blockId?: string): void {
     try {
@@ -78,6 +80,8 @@ export async function loadCodeBlockRunData(plugin: Plugin): Promise<void> {
         cached = {version: DATA_VERSION, blocks: {}};
     }
     loaded = true;
+    // 记住读进来时的内容:落盘前比对,内容没变就不写(见 flushCodeBlockRunData)
+    lastSavedJSON = JSON.stringify(cached);
     // 关键:registerCodeBlockRun 在 onload(同步)里就调了,而这里是 onLayoutReady(更晚)。
     // 注册时那一次 decorate 拿到的存档是空的,面板全被建成隐藏的空壳 ——
     // 不广播的话,已打开文档里的输出永远补不回来(重载窗口后实测输出不见了)。
@@ -105,8 +109,15 @@ export async function flushCodeBlockRunData(): Promise<void> {
     }
     const plugin = pendingPlugin;
     if (!plugin) return;
+    // 内容没变就不落盘。
+    // 思源的 saveData 会写工作空间 data/ 并触发同步;多窗口(文档在新窗口打开)时,
+    // 每写一次都会把整轮存储刷一遍并让对端窗口重新套用布局 —— 实测侧栏 dock 图标
+    // 就是被这个 1~2 秒一次的"同内容重写"顶得来回跳动。这里做一次内容比对直接掐断。
+    const json = JSON.stringify(cached);
+    if (json === lastSavedJSON) return;
     try {
         await plugin.saveData(STORAGE_KEY, cached);
+        lastSavedJSON = json;
     } catch (e) {
         console.error("[siyuan-file-editor] 保存代码块输出失败:", e);
     }

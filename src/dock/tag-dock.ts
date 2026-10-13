@@ -120,6 +120,8 @@ export function createTagDockConfig(plugin: IPluginForTagDock) {
             title: "标签",
             hotkey: "",
             show: true,
+            // 显式 index:见 recent-dock.ts 同位置注释(避免多 dock 同 index 导致图标乱跳)
+            index: 4,
         },
         data: {},
         init(this: TagDockInstance) {

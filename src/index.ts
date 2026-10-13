@@ -1,5 +1,13 @@
 import {Plugin, Setting, showMessage} from "siyuan";
-import {DOCK_TYPE, WORKSPACE_ROOT, DEFAULT_TERMINAL_SERVER_URL, MOUNT_TREE_DOCK_TYPE} from "./constants";
+import {
+    WORKSPACE_ROOT,
+    DEFAULT_TERMINAL_SERVER_URL,
+    DOCK_TYPE,
+    RECENT_DOCK_TYPE,
+    TAG_DOCK_TYPE,
+    MOUNT_TREE_DOCK_TYPE,
+    TERMINAL_DOCK_TYPE,
+} from "./constants";
 import {EditorConfig, DEFAULT_CONFIG} from "./types";
 import {setupMonaco, applyTheme, getCurrentMode, disposeMonaco, applyMinimapSetting} from "./editor/monaco";
 import {disposeAll} from "./editor/model-manager";
@@ -11,7 +19,6 @@ import {createMediaTabConfig, openMediaTab} from "./tabs/media-tab";
 import {createNotebookTabConfig} from "./tabs/notebook-tab";
 import {createStartTabConfig, openStartTab, installNewTabHijack} from "./tabs/start-tab";
 import {createTerminalTabConfig, openTerminalTab} from "./tabs/terminal-tab";
-import {createFileTreeDockConfig} from "./dock/file-tree-dock";
 import {createRecentDockConfig} from "./dock/recent-dock";
 import {createTagDockConfig} from "./dock/tag-dock";
 import {createSearchTabConfig, openSearchTab} from "./components/search-panel";
@@ -44,7 +51,8 @@ import {clearAllLsp} from "./extensions/lsp-loader";
 import {clearAllIconThemes, getIconThemesWithMissingIcons, getLoadedIconThemes, activateIconThemeByPreference} from "./extensions/icon-theme-loader";
 import {registerPythonLsp, disposePythonLsp} from "./utils/python-lsp-bridge";
 import {disposePythonKernel} from "./utils/python-kernel";
-import {disposeAllKernels, registerKernelChoicePersistence} from "./utils/kernel/registry";
+import {disposeAllKernels, disposeAllKernelsSync, getGlobalDefaultChoice, getKernelChoice, loadKernelChoices, registerKernelChoicePersistence, setKernelChoice, DEFAULT_KERNEL_ID} from "./utils/kernel/registry";
+import {listKernelSpecs} from "./utils/kernel/interpreter";
 import {stopPythonLanguageServer} from "./utils/python-lsp";
 // vditor 会用自己的 lute 覆写 window.Lute,使思源之后新建的文档编辑器全部失效。
 // 必须在任何 vditor 实例被创建之前装好守卫 —— 所以放在顶层 import 里(模块求值顺序)。
@@ -89,8 +97,8 @@ export default class FileEditorPlugin extends Plugin {
     private newTabShowFavoritesInput?: HTMLInputElement;
     // 导入 md 到思源时,是否在文档顶部插入源文件资源引述块
     private importMdSourceAssetInput?: HTMLInputElement;
-    // 侧边栏「文件」面板开关(默认关,功能已由虚拟文档树承接)
-    private showFileTreeDockInput?: HTMLInputElement;
+    // 默认运行内核(代码块/代码文件/ipynb 共用的全局兜底)
+    private kernelDefaultSelect?: HTMLSelectElement;
     // 引用关系树(移植自 siyuan-virtual-tree)
     private mountTreeRelationEnabledInput?: HTMLInputElement;
     private mountTreeRelationSortSelect?: HTMLSelectElement;
@@ -100,9 +108,78 @@ export default class FileEditorPlugin extends Plugin {
     private mountTreeRelationDepthInput?: HTMLInputElement;
     private mountTreeRelationNodesInput?: HTMLInputElement;
     private mountTreeRelationExpandInput?: HTMLInputElement;
-    private fileTreeDockAdded = false;
+
+    /**
+     * 清掉失效的 dock 状态记录。
+     *
+     * 思源把插件 dock 的显隐/位置/顺序存在 `window.siyuan.storage["local-plugin-docks"]`
+     * (落盘 `data/storage/local.json`),键形如 `<插件名><dockType>`。
+     * **插件改名或卸载后,旧条目不会自动清理** —— 它们会和新条目占同一个 index/position 槽位,
+     * dock 栏重建时两套交替生效,表现为侧栏图标来回跳(2026-10-13 实测)。
+     * 更隐蔽的是:插件改名后,旧条目的 `<插件名><type>` 键会**漂移到新插件名下**
+     * (旧 `siyuan-virtual-tree` 的 `virtual-tree-dock` 就是这么变成我们的僵尸条目的),
+     * 所以不能只按"旧插件名"找,必须按**当前代码还注不注册这个 type** 来判定。
+     *
+     * 只改内存里的 storage,不落盘 —— 下次启动照样再清一遍,天然自愈,也不会触发写盘同步。
+     * 必须在 addDock **之前**调用。
+     */
+    private pruneStalePluginDocks(): void {
+        // 当前代码会注册的 dock type;文件 dock 即使默认不注册也保留(设置里可开)
+        const registered = [
+            DOCK_TYPE, RECENT_DOCK_TYPE, TAG_DOCK_TYPE, MOUNT_TREE_DOCK_TYPE, TERMINAL_DOCK_TYPE,
+        ];
+        // 本插件用过的旧名字(改名前的命名空间,整个都该清)
+        const legacyNames = ["siyuan-file-editor"];
+        try {
+            const storage = (window as any).siyuan?.storage?.["local-plugin-docks"];
+            if (!storage || typeof storage !== "object") return;
+            const valid = new Set(registered.map((t) => this.name + t));
+            for (const ns of [this.name, ...legacyNames]) {
+                const group = storage[ns];
+                if (!group || typeof group !== "object") continue;
+                let removed = 0;
+                for (const key of Object.keys(group)) {
+                    // 旧命名空间里的全部作废;当前命名空间里只保留还注册的 type
+                    if (ns === this.name && valid.has(key)) continue;
+                    delete group[key];
+                    removed++;
+                }
+                if (ns !== this.name && Object.keys(group).length === 0) delete storage[ns];
+                if (removed > 0) {
+                    console.info(`[siyuan-virtual-tree] 清理 ${removed} 条失效 dock 记录(${ns})`);
+                }
+            }
+        } catch {
+            // storage 结构异常不影响插件加载
+        }
+    }
+
+    /**
+     * 注册 Dock,但**只注册一次**。
+     *
+     * 多窗口(文档在新窗口打开)时插件会被反复加载,每次 onload 都走一遍 addDock ——
+     * 而卸载时思源并不会把上一轮的 dock 项从侧栏摘掉,于是侧栏里会短暂出现两套图标,
+     * dock 栏重建的瞬间图标集合在两个状态之间来回切,表现为「虚拟文档树图标跳动」。
+     * 注册前先查 DOM:dock 项已经在栏上就跳过,保证图标集合恒定。
+     */
+    private addDockOnce(cfg: any): void {
+        const type = String(cfg?.type || "");
+        if (type) {
+            // 思源的 dock 项 data-type 有两种形态:裸 type 与 <插件名><type>,都查一遍
+            const sel = `.dock__item[data-type="${type}"], .dock__item[data-type="${this.name}${type}"]`;
+            try {
+                if (document.querySelector(sel)) return;
+            } catch {
+                // 选择器异常不影响注册
+            }
+        }
+        this.addDock(asSiyuanCustom(cfg));
+    }
 
     onload(): void {
+        // 必须在注册 dock 之前:先把改名/卸载留下的僵尸 dock 记录摘掉,
+        // 否则它们会和现役 dock 抢同一批 index/position 槽位(见方法注释)
+        this.pruneStalePluginDocks();
         // 内核选择的持久化走插件存储(workspace 级),onload 注册
         registerKernelChoicePersistence({
             load: async () => {
@@ -115,17 +192,22 @@ export default class FileEditorPlugin extends Plugin {
             save: async (data) => {
                 try {
                     await this.saveData("kernel-choices", data);
-                } catch {
-                    // ignore
+                } catch {                    // ignore
                 }
             },
         });
+        // 渲染进程退出(关窗口/刷新)时同步清理内核:L杀进程 + 关 zmq 套接字。
+        // 不做的话原生句柄随渲染进程异常卸载,实测触发 0xC0000409 崩溃,
+        // 思源下次启动会弹安全模式确认框(20:44 / 21:46 两次崩溃均此模式)。
+        window.addEventListener("beforeunload", () => {
+            try { disposeAllKernelsSync(); } catch { /* ignore */ }
+            try { stopPythonLanguageServer(); } catch { /* ignore */ }
+        });
+        // 启动即加载持久化的内核选择。之前只有笔记本 Tab 会调 loadKernelChoices,
+        // 代码块路径直接 getKernel(docKey) → choices 还是空的 → 永远拿到内置内核,
+        // 用户选的 conda/Jupyter 环境对代码块完全无效(实测复现过)。
+        void loadKernelChoices();
         setupMonaco(this.name);
-
-        // 挂上「按需补注册文件面板」的钩子。必须在这里(而不是 addFileTreeDock
-        // 内部)挂:面板默认不注册,那条路径在默认配置下根本不会走,
-        // 结果新标签页点文件夹时 openFileTab 找不到钩子,只能干等。
-        (window as any).__syfeAddFileTreeDock = () => this.addFileTreeDock();
 
         // 尽早注入插件磁盘目录,供终端的 node-pty 运行时定位预构建二进制
         // (目录 = 工作空间/data/plugins/<插件名>;PTY 检测依赖它,必须先于任何终端调用)
@@ -165,13 +247,13 @@ export default class FileEditorPlugin extends Plugin {
         // 注:「文件」面板默认**不注册**(能力已由「虚拟文档树」面板承接);
         // 若用户在设置里打开 showFileTreeDock,会在 onLayoutReady 补注册(见下)。
         // 侧边栏「最近使用」面板(展示最近打开的文件,点击打开/右键复制链接)
-        this.addDock(asSiyuanCustom(createRecentDockConfig(this as any)));
+        this.addDockOnce(createRecentDockConfig(this as any));
         // 侧边栏「标签」面板(按标签聚合文件/文件夹,文件夹可就地逐级展开)
-        this.addDock(asSiyuanCustom(createTagDockConfig(this as any)));
+        this.addDockOnce(createTagDockConfig(this as any));
         // 侧边栏「虚拟文档树」面板(初始为空,挂载文件/文件夹/思源文档/思源块,支持嵌套)
-        this.addDock(asSiyuanCustom(createMountTreeDockConfig(this as any)));
+        this.addDockOnce(createMountTreeDockConfig(this as any));
         // 侧边栏「终端」面板(复用终端 Tab 的 xterm 实现,常驻底部,与终端 Tab 互相独立)
-        this.addDock(asSiyuanCustom(createTerminalDockConfig(this as any)));
+        this.addDockOnce(createTerminalDockConfig(this as any));
 
         // 注册思源编辑器斜杆命令(输入 /file 或 /文件 插入文件链接)
         registerSlashCommands(this, () => this.getFileTreeRoot());
@@ -187,23 +269,6 @@ export default class FileEditorPlugin extends Plugin {
 
         // 接管思源顶部「+」:点击改为打开新标签页(设置里可关闭,恢复原生新建文档)
         installNewTabHijack(this as any, () => this.config.newTabReplacePlus !== false);
-
-        // 顶栏图标 → 切换 Dock「虚拟文档树」(原「文件」面板已默认关闭,文件浏览由虚拟文档树承接)
-        this.addTopBar({
-            icon: "iconFolder",
-            title: "文档树",
-            position: "right",
-            callback: () => {
-                const dockItem = document.querySelector(
-                    `.dock__item[data-type="${MOUNT_TREE_DOCK_TYPE}"]`,
-                ) as HTMLElement;
-                if (dockItem) {
-                    dockItem.click();
-                } else {
-                    showMessage("请从侧边栏打开「虚拟文档树」面板", 3000, "info");
-                }
-            },
-        });
 
         // 命令:全局搜索
         this.addCommand({
@@ -248,19 +313,10 @@ export default class FileEditorPlugin extends Plugin {
     // 该面板默认不注册(见 onload);用户在设置里打开时调用本方法即时生效。
     // 也可以由 openFileTab 在打开文件夹时按需触发(钩子挂在 onload)。
     // 注:思源插件**没有 removeDock**,所以关闭开关后需要重启思源才真正隐藏。
-    private addFileTreeDock(): void {
-        if (this.fileTreeDockAdded) return;
-        this.fileTreeDockAdded = true;
-        this.addDock(asSiyuanCustom(createFileTreeDockConfig(this as any)));
-    }
-
     async onLayoutReady(): Promise<void> {
         this.config = await loadConfig(this);
         // 设置面板控件同步当前值
         this.syncSettingUI();
-        // 设置里打开了「文件」面板 → 在此补注册(onload 是同步的,拿不到配置,只能延后到布局就绪)
-        if (this.config.showFileTreeDock === true) this.addFileTreeDock();
-
 // 加载标签数据(预设标签库 + 文件/文件夹打标记录)
   try {
    await loadTagData(this);
@@ -782,15 +838,44 @@ actionElement: tagManageBtn,
             actionElement: this.newTabShowFavoritesInput,
         });
 
-        // 侧边栏「文件」面板:文件浏览能力已由「虚拟文档树」承接,默认隐藏
-        this.showFileTreeDockInput = document.createElement("input");
-        this.showFileTreeDockInput.type = "checkbox";
-        this.showFileTreeDockInput.className = "b3-switch";
+        // 默认运行内核:代码块(内核模式)/py 文件 ▶ 运行/ipynb 共用的全局兜底环境。
+        // 选项含内置内核 + 本机全部 Jupyter kernelspec + conda 环境自动扫描结果
+        this.kernelDefaultSelect = document.createElement("select");
+        this.kernelDefaultSelect.className = "b3-select fn__size200";
+        this.kernelDefaultSelect.innerHTML = `<option value="syfe">内置 Python 内核</option>`;
         this.setting!.addItem({
-            title: "侧边栏:显示「文件」面板",
-            description: "恢复传统的文件树面板(按根目录浏览真实文件)。文件浏览/重命名/删除/打开方式等已由「虚拟文档树」面板提供,一般不需要开启;关闭此项需重启思源后生效",
-            actionElement: this.showFileTreeDockInput,
+            title: "默认运行内核",
+            description: "代码块(内核模式)、py 文件的 ▶ 运行、ipynb 在没有单独选过内核时,都用这个环境。conda 环境无需注册 kernelspec(自动扫描,环境需装有 ipykernel);单个文档/笔记本仍可在内核菜单里另行选择,会覆盖此默认",
+            actionElement: this.kernelDefaultSelect,
         });
+        void (async () => {
+            // 异步填充动态选项并回显当前全局默认
+            try {
+                await loadKernelChoices();
+                const specs = await listKernelSpecs();
+                for (const spec of specs) {
+                    const choice = {kind: "jupyter" as const, specName: spec.name, specResourceDir: spec.resourceDir};
+                    const opt = document.createElement("option");
+                    opt.value = JSON.stringify(choice);
+                    const display = spec.displayName || spec.name;
+                    opt.textContent = display.startsWith("conda:") ? display : `Jupyter · ${display}`;
+                    this.kernelDefaultSelect!.appendChild(opt);
+                }
+            } catch {
+                // 列不出来就只有内置内核一项
+            }
+            const cur = getKernelChoice(DEFAULT_KERNEL_ID);
+            if (cur && cur.kind === "jupyter") {
+                for (const opt of Array.from(this.kernelDefaultSelect!.options)) {
+                    try {
+                        const v = JSON.parse(opt.value);
+                        if (v.specName === cur.specName) { this.kernelDefaultSelect!.value = opt.value; break; }
+                    } catch {
+                        // 忽略非法值
+                    }
+                }
+            }
+        })();
 
         // 「虚拟文档树」面板:引用关系树(移植自 siyuan-virtual-tree)
         this.mountTreeRelationEnabledInput = document.createElement("input");
@@ -917,7 +1002,6 @@ actionElement: tagManageBtn,
         if (this.newTabShowRecentInput) this.newTabShowRecentInput.checked = this.config.newTabShowRecent !== false;
         if (this.newTabShowFavoritesInput) this.newTabShowFavoritesInput.checked = this.config.newTabShowFavorites !== false;
         if (this.importMdSourceAssetInput) this.importMdSourceAssetInput.checked = this.config.importMdSourceAsset === true;
-        if (this.showFileTreeDockInput) this.showFileTreeDockInput.checked = this.config.showFileTreeDock === true;
         // 引用关系设置回填(只回填设置项;collapsed 由面板维护,拖拽顺序在挂载配置里)
         const rel = this.config.mountTreeRelation || DEFAULT_CONFIG.mountTreeRelation;
         if (this.mountTreeRelationEnabledInput) this.mountTreeRelationEnabledInput.checked = rel.enabled === true;
@@ -957,7 +1041,8 @@ actionElement: tagManageBtn,
             newTabShowRecent: this.newTabShowRecentInput?.checked ?? true,
             newTabShowFavorites: this.newTabShowFavoritesInput?.checked ?? true,
             importMdSourceAsset: this.importMdSourceAssetInput?.checked ?? false,
-            showFileTreeDock: this.showFileTreeDockInput?.checked ?? false,
+            // 「文件」面板功能已移除(虚拟文档树全面承接);保留配置键兼容旧存储
+            showFileTreeDock: false,
             mountTreeRelation: {
                 // 保留既有的 collapsed(面板运行时维护,不在这里覆盖)
                 ...prevRelation,
@@ -971,8 +1056,20 @@ actionElement: tagManageBtn,
                 defaultExpandLevel: parseInt(this.mountTreeRelationExpandInput?.value || "1", 10) || 0,
             },
         };
-        // 打开开关时即时注册「文件」面板(关闭需重启思源,插件无 removeDock)
-        if (this.config.showFileTreeDock === true) this.addFileTreeDock();
+        // 默认运行内核:写注册表全局默认并持久化;变了就废弃现有内核实例,
+        // 让下一次运行直接用新环境(旧实例留着会在旧环境里继续跑,违背"默认"预期)
+        try {
+            const raw = this.kernelDefaultSelect?.value || "syfe";
+            const prev = getGlobalDefaultChoice();
+            const choice = raw === "syfe"
+                ? ({kind: "syfe"} as import("./utils/kernel/registry").KernelChoice)
+                : (JSON.parse(raw) as import("./utils/kernel/registry").KernelChoice);
+            const changed = JSON.stringify(prev) !== JSON.stringify(choice);
+            setKernelChoice(DEFAULT_KERNEL_ID, choice);
+            if (changed && prev) await disposeAllKernels();
+        } catch {
+            // 解析失败保留原默认
+        }
         await saveConfig(this, this.config);
         // 主题设置立即生效
         this.applyConfiguredThemes();

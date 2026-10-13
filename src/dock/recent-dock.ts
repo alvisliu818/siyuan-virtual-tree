@@ -49,6 +49,10 @@ export function createRecentDockConfig(plugin: IPluginForRecent) {
             title: "最近使用",
             hotkey: "",
             show: true,
+            // 思源 addDock 对未设 index 的 dock 统一填 1000;多个 dock 同 index 时
+            // 重排顺序依赖插入顺序,dock 栏一重建就可能换位置(表现为侧栏图标乱跳)。
+            // 这里给每个 dock 一个固定的显式 index,保证任何一次重建顺序都一致。
+            index: 3,
         },
         data: {},
         init(this: RecentDockInstance) {

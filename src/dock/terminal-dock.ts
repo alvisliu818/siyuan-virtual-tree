@@ -198,6 +198,8 @@ export function createTerminalDockConfig(plugin: IPluginForTerminalTab) {
             icon: "iconTerminal",
             title: "终端",
             hotkey: "",
+            // 显式 index:见 recent-dock.ts 同位置注释(避免多 dock 同 index 导致图标乱跳)
+            index: 0,
         },
         data: {cwd: plugin.config?.fileTreeRoot || "/data"},
         init(this: TerminalDockInstance) {
