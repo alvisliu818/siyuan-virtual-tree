@@ -11,6 +11,7 @@
 // 为什么落到临时 .py 文件再执行:代码块可能有非 ASCII、缩进、CRLF,
 // 直接 `python -c "<整段代码>"` 在 Windows 上会被命令行引号规则搞坏。
 import {resolvePythonInterpreter} from "../utils/python-kernel";
+import {getGlobalDefaultChoice, kernelPythonOf} from "../utils/kernel/registry";
 
 // ANSI 转义序列:子进程输出可能带颜色,面板是纯文本展示,留着会显示成乱码。
 // eslint-disable-next-line no-control-regex
@@ -53,7 +54,10 @@ function tempScriptDir(): string {
 
 /** 执行一段 Python 代码;返回句柄。同步抛错表示根本没起来。 */
 export function runPythonCode(options: RunOptions): RunHandle {
-    const python = resolvePythonInterpreter();
+    // 全局默认若指向 conda/Jupyter 环境,干净模式也用那个解释器跑
+    // (kernel.json argv[0] 即该环境的 python),否则退回自动探测
+    const override = kernelPythonOf(getGlobalDefaultChoice());
+    const python = override ? {cmd: override, args: [] as string[]} : resolvePythonInterpreter();
     if (!python) {
         throw new Error("未找到 Python。请安装 Python 3 并确保 python 在 PATH 中");
     }
@@ -160,17 +164,22 @@ export function extractLang(blockElement: Element): string {
 // 输出走 kernel.onEvent 转发(流式,与面板的 onOutput 兼容);
 // execute 的 Promise 在单元格结束时 resolve,onExit 在那时触发。
 
-import {getKernel, disposeKernel} from "../utils/kernel/registry";
+import {getKernel, disposeKernel, loadKernelChoices} from "../utils/kernel/registry";
 
 export interface KernelRunOptions {
     docId: string;
+    /** 内核进程工作目录(代码块所在文档的目录;与干净模式一致) */
+    cwd?: string;
     code: string;
     onOutput: (chunk: string) => void;
     onExit: (exitCode: number) => void;
 }
 
 /** 用文档绑定的持久内核执行代码。返回 null 表示内核拿不到(理论上不发生)。 */
-export function runKernelCode(options: KernelRunOptions): RunHandle | null {
+export async function runKernelCode(options: KernelRunOptions): Promise<RunHandle | null> {
+    // 兜底加载持久化选择(onload 已加载则幂等立即返回);
+    // 没有这一步,choices 为空 → 永远拿内置内核,用户选的环境无效
+    await loadKernelChoices();
     let kernel;
     try {
         kernel = getKernel(options.docId);
@@ -178,6 +187,7 @@ export function runKernelCode(options: KernelRunOptions): RunHandle | null {
         return null;
     }
     if (!kernel) return null;
+    if (options.cwd) kernel.setCwd(options.cwd);
 
     let inputHinted = false;
     const unsub = kernel.onEvent((ev) => {
@@ -188,9 +198,18 @@ export function runKernelCode(options: KernelRunOptions): RunHandle | null {
             if (typeof text === "string" && text.trim()) options.onOutput(text + "\n");
         }
     });
+    // 启动/运行期的内核级错误(zeromq 加载失败、spawn 失败、握手超时…)带 detail,
+    // 不订阅的话用户只能看到一句"内核未响应",根本没法排查
+    const unsubStatus = kernel.onStatus((status, detail) => {
+        if (status === "error" && detail) options.onOutput(`[内核错误: ${detail}]\n`);
+    });
+    const cleanup = () => {
+        unsub();
+        try { unsubStatus(); } catch { /* 忽略 */ }
+    };
 
     void kernel.execute(options.code).then((outcome) => {
-        unsub();
+        cleanup();
         if (!outcome) {
             // execute 超时或内核没起来:与代码报错明确区分(Phase 3b 验收项 ④)
             options.onOutput("[内核未响应:可能启动失败,或执行超过了超时时间。可用「重置内核」后重试]\n");
@@ -203,7 +222,7 @@ export function runKernelCode(options: KernelRunOptions): RunHandle | null {
         }
         options.onExit(outcome.ok ? 0 : 1);
     }).catch((e) => {
-        unsub();
+        cleanup();
         options.onOutput(String(e?.message || e) + "\n");
         options.onExit(-1);
     });

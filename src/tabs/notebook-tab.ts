@@ -13,7 +13,7 @@ import {openTab, confirm, showMessage, Menu} from "siyuan";
 import * as monaco from "monaco-editor";
 import Vditor from "vditor";
 import {NOTEBOOK_TAB_TYPE} from "../constants";
-import {basename} from "../utils/path";
+import {basename, dirname} from "../utils/path";
 import {readTextFile, writeFile} from "../api/file";
 import {getCurrentMode} from "../editor/monaco";
 import {getActiveThemeName} from "../extensions/theme-loader";
@@ -25,11 +25,13 @@ import {
     isPythonAvailable,
     type ExecuteOutcome, type KernelStatus,
 } from "../utils/python-kernel";
+import {toSystemPath} from "../utils/system-path";
+import {renderPathSegments, showPathSwitchMenu, enableCrumbScroll} from "../components/path-crumbs";
+import {openFileTab} from "./editor-tab";
 import {
-    getKernel, getKernelChoice, setKernelChoice, disposeKernel,
-    loadKernelChoices, listAvailableKernels,
-    type KernelChoice,
+    getKernel, getKernelChoice, loadKernelChoices,
 } from "../utils/kernel/registry";
+import {openKernelChoiceMenu} from "../utils/kernel/kernel-choice-menu";
 
 // Tab 所需的插件接口
 export interface IPluginForNotebookTab {
@@ -396,6 +398,7 @@ export function createNotebookTabConfig(_plugin: IPluginForNotebookTab) {
             this.element.innerHTML = `
                 <div class="syfe-nb__bar">
                     <span class="syfe-nb__kind">Notebook</span>
+                    <span class="syfe-nb__crumbs syfe-crumbs-scroll">${renderPathSegments(path)}</span>
                     <span class="syfe-nb__meta"></span>
                     <span class="syfe-nb__kernel" data-act="kernel-menu" title="点击切换内核"></span>
                     <span class="syfe-nb__dirty" style="display:none;">●</span>
@@ -413,6 +416,17 @@ export function createNotebookTabConfig(_plugin: IPluginForNotebookTab) {
                 <div class="syfe-nb__body"><div class="syfe-nb__loading">正在加载…</div></div>`;
 
             const barEl = this.element.querySelector(".syfe-nb__bar") as HTMLElement;
+            // 顶栏面包屑(与编辑器/Markdown Tab 同款):点某段路径列出同级文件/文件夹,
+            // 点 .ipynb 直接以 Notebook Tab 打开。之前这里没有路径显示。
+            const crumbEl = this.element.querySelector(".syfe-nb__crumbs") as HTMLElement;
+            enableCrumbScroll(crumbEl);
+            crumbEl.addEventListener("click", (e: MouseEvent) => {
+                const seg = (e.target as HTMLElement).closest(".syfe-editor__seg") as HTMLElement | null;
+                if (!seg) return;
+                const dir = seg.dataset.dir;
+                if (!dir) return;
+                void showPathSwitchMenu((p) => openFileTab(_plugin as any, p), dir, seg, path);
+            });
             const bodyEl = this.element.querySelector(".syfe-nb__body") as HTMLElement;
             const dirtyEl = this.element.querySelector(".syfe-nb__dirty") as HTMLElement;
             const metaEl = this.element.querySelector(".syfe-nb__meta") as HTMLElement;
@@ -1227,6 +1241,9 @@ const save = async () => {
                 // 每个文档按 registry 里记录的选择拿内核(默认 = 内置 Legacy)
                 await loadKernelChoices();
                 const k = getKernel(self._path || "__notebook__");
+                // 内核工作目录 = notebook 所在目录(Jupyter 标准语义):
+                // 单元格里的相对路径(如 jieba.load_userdict('data/user_dict'))按它解析
+                if (self._path) k.setCwd(toSystemPath(dirname(self._path)));
                 if (!k) {
                     renderKernelState("error", "未找到内核");
                     return;
@@ -1256,55 +1273,17 @@ const save = async () => {
             const openKernelMenu = async () => {
                 if (!self._canRun) return;
                 const docId = self._path || "__notebook__";
-                const cur = getKernelChoice(docId);
-                const menu = new Menu("syfe-nb-kernel-switch");
-                menu.addItem({
-                    iconHTML: "", label: (cur?.kind ?? "syfe") === "syfe" ? "✓ 内置 Python 内核" : "内置 Python 内核",
-                    click: () => {
-                        setKernelChoice(docId, {kind: "syfe"});
-                        void ensureKernel();
-                    },
-                });
-                menu.addSeparator();
-                const specs = await listAvailableKernels();
-                if (specs.length === 0) {
-                    menu.addItem({iconHTML: "", label: "(未检测到 Jupyter kernelspec)", click: () => {}});
-                } else {
-                    for (const spec of specs) {
-                        const isCur = cur?.kind === "jupyter" && cur.specName === spec.name;
-                        menu.addItem({
-                            iconHTML: "", label: (isCur ? "✓ " : "") + `Jupyter · ${spec.displayName || spec.name}`,
-                            click: () => {
-                                if (self._runningIdx !== null && self._runningIdx !== undefined) {
-                                    showMessage("有单元格正在执行,请先等它完成或中断", 3000, "info");
-                                    return;
-                                }
-                                setKernelChoice(docId, {kind: "jupyter", specName: spec.name, specResourceDir: spec.resourceDir});
-                                void ensureKernel();
-                                showMessage(`已切换到 Jupyter 内核 ${spec.name}`, 2500, "info");
-                            },
-                        });
-                    }
-                }
-                menu.addSeparator();
-                menu.addItem({
-                    iconHTML: "", icon: "iconRefresh", label: "重启当前内核",
-                    click: async () => {
-                        if (self._runningIdx !== null && self._runningIdx !== undefined) {
-                            showMessage("有单元格正在执行", 3000, "info");
-                            return;
-                        }
-                        await disposeKernel(docId);
-                        self._statusUnsub?.();
-                        self._statusUnsub = undefined;
-                        await ensureKernel();
-                        showMessage("内核已重启", 2500, "info");
-                    },
-                });
-                // 菜单弹在内核徽章下方
                 const badge = barEl.querySelector(".syfe-nb__kernel") as HTMLElement | null;
                 const rect = badge?.getBoundingClientRect();
-                menu.open({x: rect ? rect.left : innerWidth / 2, y: rect ? rect.bottom + 4 : 80});
+                await openKernelChoiceMenu({
+                    x: rect ? rect.left : innerWidth / 2,
+                    y: rect ? rect.bottom + 4 : 80,
+                    docId,
+                    // 正在执行时不允许换后端:换内核会销毁实例,跑一半的状态会丢
+                    beforeSwitch: () => (self._runningIdx !== null && self._runningIdx !== undefined)
+                        ? "有单元格正在执行,请先等它完成或中断" : null,
+                    onAfter: () => { void ensureKernel(); },
+                });
             };
 
             void load().then(ensureKernel);

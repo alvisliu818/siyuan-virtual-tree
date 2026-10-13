@@ -27,9 +27,76 @@ import {
     CODE_BLOCK_RUN_LOADED_EVENT,
 } from "./code-block-run-store";
 import {runPythonCode, runKernelCode, resetDocKernel, extractCode, extractLang, type RunHandle} from "./code-block-run-exec";
+import {openKernelChoiceMenu, kernelChoiceLabel} from "../utils/kernel/kernel-choice-menu";
 
 const PANEL_CLASS = "syfe-cb-run";
 const BTN_CLASS = "syfe-cb-run__btn";
+
+// 内核名来自 Jupyter kernelspec(外部数据),拼进 innerHTML 前必须转义
+function escHTML(s: string): string {
+    return String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+// ===== ANSI 转义 → 彩色 HTML =====
+// Jupyter 的 traceback/部分库输出带 SGR 颜色码;纯 textContent 渲染会把
+// ←[0m 这种转义序列原样显示。这里转成带内联颜色的 span。
+// 颜色用 xterm 标准盘,亮度取中间值以兼顾明暗两套主题。
+const ANSI_FG: Record<number, string> = {
+    30: "#6e6e6e", 31: "#e35c5c", 32: "#4bbf7b", 33: "#d6b34a",
+    34: "#5c9ce3", 35: "#c07ec0", 36: "#4fb8c9", 37: "#c8c8c8",
+    90: "#8a8a8a", 91: "#ef8080", 92: "#72d98c", 93: "#e8cf6e",
+    94: "#7ba6ef", 95: "#cf92cf", 96: "#6cc9d8", 97: "#ececec",
+};
+const ANSI_BG: Record<number, string> = {
+    40: "#3a3a3a", 41: "#7a3b3b", 42: "#3b6e4b", 43: "#6e6134",
+    44: "#3b557a", 45: "#653b65", 46: "#33707a", 47: "#6e6e6e",
+    100: "#4a4a4a", 101: "#8f4a4a", 102: "#4a8f5a", 103: "#8f7d42",
+    104: "#4a658f", 105: "#7f4a7f", 106: "#42858f", 107: "#9a9a9a",
+};
+
+function ansiToHtml(text: string): string {
+    // 先整体 HTML 转义再按 SGR 分段上色(转义不会动 \x1b,顺序安全)
+    const parts = escHTML(text).split(/(\x1b\[[0-9;]*m)/);
+    let fg = "";
+    let bg = "";
+    let bold = false;
+    const open: string[] = [];
+    const out: string[] = [];
+    const spanStyle = () => {
+        const st: string[] = [];
+        if (fg) st.push(`color:${fg}`);
+        if (bg) st.push(`background:${bg}`);
+        if (bold) st.push("font-weight:600");
+        return st.length ? ` style="${st.join(";")}"` : "";
+    };
+    for (const part of parts) {
+        const m = part.match(/^\x1b\[([0-9;]*)m$/);
+        if (m) {
+            const codes = (m[1] || "0").split(";").map(n => parseInt(n || "0", 10));
+            for (const code of codes) {
+                if (code === 0) { fg = ""; bg = ""; bold = false; }
+                else if (code === 1) bold = true;
+                else if (code === 22) bold = false;
+                else if (code === 39) fg = "";
+                else if (code === 49) bg = "";
+                else if (ANSI_FG[code]) fg = ANSI_FG[code];
+                else if (ANSI_BG[code]) bg = ANSI_BG[code];
+            }
+            // 关掉所有开着的 span,重开(简单正确,不追求最小标签)
+            while (open.length) out.push("</span>");
+            const st = spanStyle();
+            if (st) { out.push(`<span${st}>`); open.push("1"); }
+            continue;
+        }
+        if (part) {
+            const st = spanStyle();
+            if (st) { out.push(`<span${st}>${part}</span>`); }
+            else out.push(part);
+        }
+    }
+    while (open.length) out.push("</span>");
+    return out.join("");
+}
 
 // blockId → 正在跑的进程(用于「停止」)
 const running = new Map<string, RunHandle>();
@@ -87,7 +154,10 @@ function ensureRunButton(block: HTMLElement): void {
     if (!action) return;
 
     const btn = document.createElement("span");
-    btn.className = `block__icon ariaLabel ${BTN_CLASS}`;
+    // 类名对齐思源原生动作按钮(protyle-icon):思源对代码块动作区的显隐规则是
+    // 「默认 opacity:0,悬停代码块时 .protyle-icon 才淡入到 .86」(typography.scss)。
+    // 之前用 block__icon 不在这套规则里,悬停时呈半透明灰的中间态,看起来像被禁用。
+    btn.className = `ariaLabel protyle-icon ${BTN_CLASS}`;
     btn.setAttribute("aria-label", "运行此 Python 代码块");
     btn.setAttribute("data-position", "4north");
     btn.innerHTML = `<svg><use xlink:href="#iconPlay"></use></svg>`;
@@ -192,6 +262,15 @@ function renderPanel(block: HTMLElement): HTMLElement | null {
     // 归属标记:思源重渲染会换掉块元素,补面板时靠它确认没串到别的块上
     panel.dataset.blockId = id;
 
+    // 面板在思源的 contenteditable 里:声明为非编辑区 + 拦下 mousedown,
+    // 否则思源会抢走选择,输出没法用鼠标选中复制(声明只做一次,防监听器叠加)
+    panel.setAttribute("contenteditable", "false");
+    if (panel.dataset.syfeSelectable !== "1") {
+        panel.dataset.syfeSelectable = "1";
+        panel.addEventListener("mousedown", (e) => e.stopPropagation());
+        panel.addEventListener("dblclick", (e) => e.stopPropagation());
+    }
+
     const record = getCodeBlockOutput(id);
     const isRunning = running.has(id);
 
@@ -225,7 +304,9 @@ function renderPanel(block: HTMLElement): HTMLElement | null {
         + `<span class="fn__flex-1"></span>`
         + `<span class="syfe-cb-run__btn2" data-act="run">${isRunning ? "■ 停止" : "▶ 运行"}</span>`
         + `<span class="syfe-cb-run__btn2" data-act="mode" title="切换运行模式(内核模式变量跨块保留;干净模式有独立 stdin,支持 input())">${kernelMode ? "▸ 干净运行" : "▸ 内核运行"}</span>`
+        + (kernelMode ? `<span class="syfe-cb-run__btn2" data-act="kernel" title="选择运行内核(内置 Python / Jupyter kernelspec / conda 环境)">⚙ 内核:${escHTML(kernelChoiceLabel(docKeyOf(block)))}</span>` : "")
         + (kernelMode ? `<span class="syfe-cb-run__btn2" data-act="reset-kernel" title="销毁内核实例:变量与导入清空,下次执行自动重启">↺ 重置内核</span>` : "")
+        + `<span class="syfe-cb-run__btn2" data-act="copy" title="复制全部输出(纯文本)">⧉ 复制</span>`
         + `<span class="syfe-cb-run__btn2" data-act="fold">${collapsed ? "▾ 展开" : "▴ 折叠"}</span>`
         + `<span class="syfe-cb-run__btn2" data-act="clear">✕ 清除</span>`;
 
@@ -233,7 +314,12 @@ function renderPanel(block: HTMLElement): HTMLElement | null {
     body.className = "syfe-cb-run__body";
     if (!collapsed) {
         const text = record ? record.output : "";
-        body.textContent = text;   // textContent:输出里有尖括号/HTML 片段也不会被解析
+        // 带 ANSI 颜色码的输出渲染成彩色(转义后上色);超长输出退回纯文本保性能
+        if (/\x1b\[/.test(text) && text.length <= 400000) {
+            body.innerHTML = ansiToHtml(text);
+        } else {
+            body.textContent = text;   // textContent:输出里有尖括号/HTML 片段也不会被解析
+        }
         body.scrollTop = body.scrollHeight;
     } else {
         body.style.display = "none";
@@ -294,8 +380,27 @@ function renderPanel(block: HTMLElement): HTMLElement | null {
         } else if (act === "mode") {
             toggleRunMode(block);
             renderPanel(block);
+        } else if (act === "kernel") {
+            // 内核菜单:按文档记忆选择(与笔记本共用同一份注册表),切换会销毁旧实例,
+            // 下次执行自动按新选择启动 —— 变量会清空,这是换后端的必然代价。
+            const btn = target.closest(".syfe-cb-run__btn2") as HTMLElement | null;
+            const r = btn?.getBoundingClientRect();
+            void openKernelChoiceMenu({
+                x: r ? r.left : 0,
+                y: r ? r.bottom + 4 : 0,
+                docId: docKeyOf(block),
+                beforeSwitch: () => running.has(id) ? "有代码正在执行,请先等它完成或中断" : null,
+                onAfter: () => renderPanel(block),
+            });
         } else if (act === "reset-kernel") {
             void resetDocKernel(docKeyOf(block)).then(() => showMessage("内核已重置,变量已清空", 2500, "info"));
+        } else if (act === "copy") {
+            // 复制纯文本(去掉 ANSI 颜色码,剪贴板里是干净内容)
+            const text = (record?.output || "").replace(/\x1b\[[0-9;]*m/g, "");
+            void navigator.clipboard.writeText(text).then(
+                () => showMessage("输出已复制", 2000, "info"),
+                () => showMessage("复制失败(剪贴板不可用)", 2500, "error"),
+            );
         } else if (act === "fold") {
             const cur = getCodeBlockOutput(id);
             setCodeBlockCollapsed(id, !(cur?.collapsed === true));
@@ -333,8 +438,9 @@ async function startRun(block: HTMLElement, clean = false): Promise<void> {
     let handle: RunHandle;
     try {
         if (useKernel) {
-            const khandle = runKernelCode({
+            const khandle = await runKernelCode({
                 docId: docKeyOf(block),
+                cwd: docDirOf(block),
                 code,
                 onOutput: (chunk) => {
                     appendCodeBlockOutput(id, chunk);
