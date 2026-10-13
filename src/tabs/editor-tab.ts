@@ -1,6 +1,7 @@
 import {openTab, confirm, showMessage, Menu} from "siyuan";
 import {TAB_TYPE, isMarkdownFile} from "../constants";
-import {basename, extname, dirname, joinPath, sepFor} from "../utils/path";
+import {basename, extname, dirname, joinPath} from "../utils/path";
+import {renderPathSegments, showPathSwitchMenu, enableCrumbScroll} from "../components/path-crumbs";
 import {EditorConfig, DirEntry} from "../types";
 import {createEditor, getLanguageByPath} from "../editor/monaco";
 import {readDir} from "../api/file";
@@ -15,8 +16,11 @@ import {
     saveModel,
     markDirty,
     isDirty,
+    isChangedExternally,
+    reloadModel,
     consumePendingReveal,
 } from "../editor/model-manager";
+import {getGlobalDefaultChoice, kernelPythonOf} from "../utils/kernel/registry";
 import {createBacklinkPanel} from "../components/backlink-panel";
 import {addRecent} from "../recent-files";
 import {registerPythonEditor, unregisterPythonEditor} from "../utils/python-lsp-bridge";
@@ -70,7 +74,10 @@ function addPythonRunButton(
     path: string,
     pathEl: HTMLElement,
 ): void {
-    const py = resolvePythonInterpreter();
+    // 全局默认内核若指向 conda/Jupyter 环境,kernel.json argv[0] 就是该环境的 python,
+    // ▶ 运行直接用它;否则退回自动探测
+    const override = kernelPythonOf(getGlobalDefaultChoice());
+    const py = override ? {cmd: override, args: [] as string[]} : resolvePythonInterpreter();
     if (!py) return; // 环境里没有 Python:不显示按钮
     const btn = document.createElement("span");
     btn.className = "syfe-editor__run";
@@ -114,92 +121,6 @@ interface EditorTabInstance {
 
 function escapeHTML(s: string): string {
     return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
-
-// 把完整路径拆成可点击的分段(面包屑):[{label: "E:", fullPath: "E:\\"}, ...]
-// 根目录(盘符 E:\ / POSIX /)也作为一段,basename 为空时回退用完整路径
-function pathSegments(path: string): Array<{label: string; fullPath: string}> {
-    const segs: Array<{label: string; fullPath: string}> = [];
-    let cur = path;
-    while (cur) {
-        segs.unshift({label: basename(cur) || cur, fullPath: cur});
-        const parent = dirname(cur);
-        if (!parent || parent === cur) break;
-        cur = parent;
-    }
-    return segs;
-}
-
-// 渲染路径分段 HTML(每段 data-dir 为"其所在目录",点击即列出同级条目以切换)
-function renderPathSegments(path: string): string {
-    const segs = pathSegments(path);
-    if (segs.length === 0) return escapeHTML(path);
-    const sep = sepFor(path);
-    const out: string[] = [];
-    segs.forEach((s, i) => {
-        if (i > 0) {
-            // 前一段本身就以分隔符结尾时不能再插一个 ——
-            // POSIX 根分段(basename 为空、回退成完整路径)的 label 就是 "/",
-            // 无脑 join 会渲染出 "//data/templates/xxx.py" 这种多一个斜杠的路径。
-            const prev = segs[i - 1].label;
-            if (!prev.endsWith(sep)) {
-                out.push(`<span class="syfe-editor__sep">${escapeHTML(sep)}</span>`);
-            }
-        }
-        const parentDir = dirname(s.fullPath) || s.fullPath;
-        out.push(`<span class="syfe-editor__seg" data-dir="${escapeHTML(parentDir)}" title="点击切换文件或文件夹">${escapeHTML(s.label)}</span>`);
-    });
-    return out.join("");
-}
-
-// 顶部路径点击:列出某目录下的条目(文件夹优先),可切换到同级/下级文件或文件夹
-// 点文件夹 → 进入该文件夹继续选;点文件 → 直接打开
-async function showPathSwitchMenu(
-    plugin: IPluginForTab,
-    dirPath: string,
-    anchor: HTMLElement,
-    currentPath: string,
-): Promise<void> {
-    let raw: any;
-    try {
-        raw = await readDir(dirPath);
-    } catch (e) {
-        showMessage(`读取目录失败: ${e}`, 3000, "error");
-        return;
-    }
-    const entries = (Array.isArray(raw) ? raw : []) as DirEntry[];
-    if (entries.length === 0) {
-        showMessage("该目录为空", 2000, "info");
-        return;
-    }
-    const byName = (a: DirEntry, b: DirEntry) => a.name.localeCompare(b.name);
-    const dirs = entries.filter(e => e.isDir).sort(byName);
-    const files = entries.filter(e => !e.isDir).sort(byName);
-
-    const menu = new Menu();
-    const rect = anchor.getBoundingClientRect();
-    const enter = (p: string) => {
-        void showPathSwitchMenu(plugin, p, anchor, currentPath);
-    };
-    // 条目过多时截断,避免菜单过长卡顿
-    const MAX = 200;
-    let shown = 0;
-    for (const d of dirs) {
-        if (shown++ >= MAX) break;
-        const p = joinPath(dirPath, d.name);
-        menu.addItem({icon: "iconFolder", label: d.name, click: () => enter(p)});
-    }
-    for (const f of files) {
-        if (shown++ >= MAX) break;
-        const p = joinPath(dirPath, f.name);
-        const mark = p === currentPath ? " · 当前" : "";
-        menu.addItem({icon: "iconFile", label: f.name + mark, click: () => openFileTab(plugin, p)});
-    }
-    if (entries.length > MAX) {
-        menu.addSeparator();
-        menu.addItem({label: `仅显示前 ${MAX} 项(共 ${entries.length} 项)`, click: () => {}});
-    }
-    menu.open({x: rect.left, y: rect.bottom});
 }
 
 // 打开文件时的额外选项:position 用于"在分栏打开"(SiYuan openTab 的 right/bottom 拆分)
@@ -253,6 +174,10 @@ export function openFileTab(plugin: IPluginForTab, path: string, opts?: OpenTabO
         if (tab?.headElement) {
             (tab.headElement as HTMLElement).click();
         }
+        // 文件在思源之外被改过(别的编辑器/git 切换分支/脚本生成)时,
+        // 只切标签会一直显示旧内容 —— 这里同步一次。有未保存修改时**不动**,
+        // 避免把用户正在编辑的内容冲掉,只提示他先保存。
+        void syncExternalChange(path);
         return;
     }
     openTab({
@@ -265,6 +190,39 @@ export function openFileTab(plugin: IPluginForTab, path: string, opts?: OpenTabO
         },
         position: opts?.position,
     } as any);
+}
+
+// 把所有已打开、且外部改过的编辑器一次同步(供面板「刷新」调用)。
+// 只处理没未保存修改的 —— 有改动的不动,避免覆盖用户正在编辑的内容。
+export async function syncOpenEditors(plugin: any): Promise<void> {
+    try {
+        const opened = plugin?.getOpenedTab?.()[TAB_TYPE] || [];
+        for (const c of opened) {
+            const p = c?.data?.path;
+            if (typeof p === "string" && p && !isDirty(p) && isChangedExternally(p)) {
+                await syncExternalChange(p);
+            }
+        }
+    } catch {
+        // 同步失败不影响刷新本身
+    }
+}
+
+// 文件被思源之外的程序改过后,把磁盘上的新内容拉回已打开的模型。
+// 触发点在"再次点开同一个文件":打开动作本来只是切标签(openFileTab 的复用分支),
+// 不重新读盘,所以外部改动永远看不见 —— 用户看到的就是"还是旧的"。
+export async function syncExternalChange(path: string): Promise<void> {
+    try {
+        if (!isChangedExternally(path)) return;
+        if (isDirty(path)) {
+            showMessage("文件在外部已被修改,但你有未保存的修改 —— 保存后再打开即会同步", 4000, "info");
+            return;
+        }
+        await reloadModel(path);
+        showMessage("文件在外部已修改,已重新加载最新内容", 3000, "info");
+    } catch {
+        // 刷新失败不打断用户(内容保持原样)
+    }
 }
 
 // 创建 addTab 配置(捕获 plugin 闭包)
@@ -300,7 +258,7 @@ export function createEditorTabConfig(plugin: IPluginForTab) {
                 <div class="syfe-editor">
                     <div class="syfe-editor__path" data-path="${escapeHTML(path)}">
                         <span class="syfe-editor__dirty" style="display:none;">●</span>
-                        <span class="syfe-editor__pathtext">${renderPathSegments(path)}</span>
+                        <span class="syfe-editor__pathtext syfe-crumbs-scroll">${renderPathSegments(path)}</span>
                     </div>
                     <div class="syfe-editor__backlink"></div>
                     <div class="syfe-editor__container"></div>
@@ -308,6 +266,7 @@ export function createEditorTabConfig(plugin: IPluginForTab) {
             const container = this.element.querySelector(".syfe-editor__container") as HTMLElement;
             const dirtyDot = this.element.querySelector(".syfe-editor__dirty") as HTMLElement;
             const pathEl = this.element.querySelector(".syfe-editor__path") as HTMLElement;
+            enableCrumbScroll(this.element.querySelector(".syfe-editor__pathtext") as HTMLElement);
             const self = this;
 
             // 点击顶部分段:列出同级条目,可切换到其他文件或文件夹
@@ -316,7 +275,7 @@ export function createEditorTabConfig(plugin: IPluginForTab) {
                 if (!seg) return;
                 const dir = seg.dataset.dir;
                 if (!dir) return;
-                void showPathSwitchMenu(plugin, dir, seg, path);
+                void showPathSwitchMenu((p) => openFileTab(plugin, p), dir, seg, path);
             };
             pathEl.addEventListener("click", pathClickHandler);
             this._disposables!.push(() => pathEl.removeEventListener("click", pathClickHandler));

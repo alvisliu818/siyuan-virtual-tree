@@ -1,6 +1,7 @@
 import {getNativeRequire} from "../utils/native-require";
 import {DirEntry} from "../types";
-import {joinPath} from "../utils/path";
+import {isSiyuanPath, joinPath} from "../utils/path";
+import {toSystemPath, getWorkspacePath} from "../utils/system-path";
 import {decodeAuto} from "../utils/encoding";
 
 // 工作空间外文件的原生后端:直接走 Node.js 的 fs
@@ -30,6 +31,21 @@ function getFs(): any {
         throw new Error("当前环境不支持访问工作空间外的文件(无法加载 fs)");
     }
     return cachedFs;
+}
+
+// 取文件状态(修改时间 + 大小),用于判断文件是否在思源之外被改动过。
+// 与 isDirectory 同理:思源虚拟路径 /data/... 要先转成系统绝对路径再 stat。
+// 拿不到就返回 null(环境不支持/文件不存在),调用方按"无法判断"处理,不要误判成"已改"。
+export function nativeStat(path: string): {mtimeMs: number; size: number} | null {
+    try {
+        const f = getFs();
+        const sysPath = isSiyuanPath(path) ? toSystemPath(path, getWorkspacePath()) : path;
+        const st = f.statSync(sysPath);
+        if (!st || typeof st.mtimeMs !== "number") return null;
+        return {mtimeMs: st.mtimeMs, size: st.size};
+    } catch {
+        return null;
+    }
 }
 
 // 检测原生 fs 是否可用(不抛异常)

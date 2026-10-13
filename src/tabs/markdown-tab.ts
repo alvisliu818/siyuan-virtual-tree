@@ -7,6 +7,8 @@ import {createEditor, getCurrentMode} from "../editor/monaco";
 import {getModel, saveModel, markDirty, isDirty, consumePendingReveal} from "../editor/model-manager";
 import {readBinaryFile} from "../api/file";
 import {createBacklinkPanel, BacklinkPanel} from "../components/backlink-panel";
+import {renderPathSegments, showPathSwitchMenu, enableCrumbScroll} from "../components/path-crumbs";
+import {openFileTab} from "./editor-tab";
 import {highlightMatches, clearFindHighlights, setCurrentFindHit} from "../components/markdown-find";
 // vditor 与思源共用 window.Lute,且 vditor 那份缺 SetTabs —— 详见 utils/lute-guard 的说明
 import {ensureSiyuanLute} from "../utils/lute-guard";
@@ -121,6 +123,17 @@ function resolveAssetSrc(mdPath: string, src: string): string | null {
 function processImages(tab: MarkdownTabInstance): void {
     processMdImages(tab);
     processHtmlInlineImages(tab);
+}
+
+// 把跨行的 <img ...> 标签压成单行。
+// 场景:Word/pandoc 导出的 md 属性分行写(<img src="media/x.png"\n style="..."/>),
+// Lute 不认跨行的内联 HTML,图片直接显示成源码文本。加两道护栏防误伤:
+// 标签最长 500 字符 + 至少含一个换行才处理(避免把代码块里的长示例一起吞)。
+function normalizeMultilineImgs(md: string): string {
+    return md.replace(/<img\b[^>]{0,500}>/gi, (tag) => {
+        if (tag.indexOf("\n") < 0) return tag;
+        return tag.replace(/\s*[\r\n]+\s*/g, " ");
+    });
 }
 
 // Markdown 语法图片(![](path)):Lute 已渲染为真实 <img>,仅需替换 src
@@ -291,7 +304,7 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                 <div class="syfe-md">
                     <div class="syfe-md__bar">
                         <span class="syfe-md__dirty" style="display:none;">●</span>
-                        <span class="syfe-md__path">${escapeHTML(path)}</span>
+                        <span class="syfe-md__path syfe-md__crumbs syfe-crumbs-scroll">${renderPathSegments(path)}</span>
                         <span class="fn__flex-1"></span>
                         <button class="b3-button b3-button--small b3-button--outline syfe-md__findbtn" title="在文档内查找(Ctrl+F)">
                             <svg class="syfe-md__findicon"><use xlink:href="#iconSearch"></use></svg>
@@ -316,6 +329,19 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
             this._contentEl = this.element.querySelector(".syfe-md__content") as HTMLElement;
             this._dirtyDot = this.element.querySelector(".syfe-md__dirty") as HTMLElement;
             const self = this;
+
+            // 顶栏面包屑(与编辑器 Tab 同款):点某段路径列出同级文件/文件夹,
+            // 点文件直接切换打开。之前这里是纯文本路径,看起来像面包屑但点不动。
+            const crumbEl = this.element.querySelector(".syfe-md__path") as HTMLElement;
+            enableCrumbScroll(crumbEl);
+            const crumbClick = (e: MouseEvent) => {
+                const seg = (e.target as HTMLElement).closest(".syfe-editor__seg") as HTMLElement | null;
+                if (!seg) return;
+                const dir = seg.dataset.dir;
+                if (!dir) return;
+                void showPathSwitchMenu((p) => openFileTab(plugin, p), dir, seg, path);
+            };
+            crumbEl.addEventListener("click", crumbClick);
 
             // 反向链接面板(默认收起,展开时懒扫描)
             this._backlink = createBacklinkPanel(plugin as any, path);
@@ -544,7 +570,7 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                 ensureVditorCSS();
                 const vditor = new Vditor(self._contentEl!, {
                     mode: vdMode,
-                    value: self._model?.getValue() ?? "",
+                    value: normalizeMultilineImgs(self._model?.getValue() ?? ""),
                     cdn: VDITOR_CDN,
                     lang: "zh_CN",
                     theme: isDark ? "dark" : "classic",

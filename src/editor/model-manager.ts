@@ -1,5 +1,6 @@
 import * as monaco from "monaco-editor";
 import {readTextFile, writeFile} from "../api/file";
+import {nativeStat} from "../api/native-fs";
 import {getLanguageByPath} from "./monaco";
 import {isSiyuanPath} from "../utils/path";
 
@@ -11,6 +12,9 @@ const dirtyMap = new Map<string, boolean>();
 const pendingReveals = new Map<string, number>();
 // path → 上次落盘内容(相同则跳过写盘:data 下文件每次写入都会触发思源自动同步)
 const lastSavedMap = new Map<string, string>();
+// path → 文件在"我们认知里"的状态(首次加载/保存/重载时的 mtime+size)。
+// 用来判断文件是否被思源之外的程序改过 —— 见 isChangedExternally。
+const statMap = new Map<string, {mtimeMs: number; size: number}>();
 
 function uriForPath(path: string): monaco.Uri {
     // 思源虚拟路径走专用 scheme;工作空间外的系统绝对路径(如 E:\HOME\BaiduSyncdisk)
@@ -36,7 +40,24 @@ export async function getModel(path: string): Promise<monaco.editor.ITextModel> 
     models.set(path, model);
     dirtyMap.set(path, false);
     lastSavedMap.set(path, content);
+    recordStat(path);
     return model;
+}
+
+// 记下当前文件的 mtime+size 作为"已同步"基线
+function recordStat(path: string): void {
+    const st = nativeStat(path);
+    if (st) statMap.set(path, st);
+}
+
+// 文件是否被思源之外的程序改过(外部编辑器、git 切换分支、脚本生成…)。
+// 拿不到 stat(环境不支持/文件已删)时返回 false —— 宁可不刷新,也不能凭空覆盖用户内容。
+export function isChangedExternally(path: string): boolean {
+    const base = statMap.get(path);
+    if (!base) return false;
+    const now = nativeStat(path);
+    if (!now) return false;
+    return now.mtimeMs !== base.mtimeMs || now.size !== base.size;
 }
 
 export function isDirty(path: string): boolean {
@@ -59,6 +80,7 @@ export async function saveModel(path: string): Promise<void> {
     await writeFile(path, value);
     lastSavedMap.set(path, value);
     markDirty(path, false);
+    recordStat(path);
 }
 
 // 重新加载文件内容到已有模型(外部修改后刷新)
@@ -78,6 +100,7 @@ export async function reloadModel(path: string): Promise<void> {
     }]);
     markDirty(path, false);
     lastSavedMap.set(path, content);
+    recordStat(path);
 }
 
 export function disposeModel(path: string): void {
@@ -87,6 +110,7 @@ export function disposeModel(path: string): void {
         models.delete(path);
         dirtyMap.delete(path);
         lastSavedMap.delete(path);
+        statMap.delete(path);
     }
 }
 
