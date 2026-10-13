@@ -458,30 +458,160 @@ function listKernelSpecsFs(req: NativeRequire, interpreter: JupyterInterpreter):
 export async function listKernelSpecs(opts: ResolveOptions = {}): Promise<KernelSpecInfo[]> {
     const interpreter = await resolveJupyterInterpreter(opts);
     const req = getNativeRequire();
-    if (!interpreter || !req) return [];
 
-    const fast = listKernelSpecsFs(req, interpreter);
-    if (fast.length) return fast;
-
-    try {
-        const rows = await runPythonJson(req, interpreter, LIST_SPECS_SCRIPT, opts.timeoutMs ?? 30000);
-        if (!Array.isArray(rows)) return [];
-        return rows.map((r: any) => ({
-            name: String(r?.name ?? ""),
-            resourceDir: String(r?.resourceDir ?? ""),
-            displayName: String(r?.displayName ?? r?.name ?? ""),
-            language: String(r?.language ?? ""),
-        }));
-    } catch {
-        return [];
+    let registered: KernelSpecInfo[] = [];
+    if (interpreter && req) {
+        const fast = listKernelSpecsFs(req, interpreter);
+        if (fast.length) {
+            registered = fast;
+        } else {
+            try {
+                const rows = await runPythonJson(req, interpreter, LIST_SPECS_SCRIPT, opts.timeoutMs ?? 30000);
+                if (Array.isArray(rows)) {
+                    registered = rows.map((r: any) => ({
+                        name: String(r?.name ?? ""),
+                        resourceDir: String(r?.resourceDir ?? ""),
+                        displayName: String(r?.displayName ?? r?.name ?? ""),
+                        language: String(r?.language ?? ""),
+                    }));
+                }
+            } catch {
+                registered = [];
+            }
+        }
     }
+    // conda 环境自带的 kernelspec 与解释器解析无关(启动只依赖 kernel.json + 纯 Node
+    // 生成的 connection.json),所以即使没找到 jupyter 解释器也要合并进来
+    return mergeCondaSpecs(req, registered);
 }
 
 /** 只扫目录、不 spawn,用于 UI 需要立刻出结果的场合 */
 export function listKernelSpecsFast(): KernelSpecInfo[] {
     const req = getNativeRequire();
-    if (!req || !cached) return [];
-    return listKernelSpecsFs(req, cached);
+    const fast = req && cached ? listKernelSpecsFs(req, cached) : [];
+    return mergeCondaSpecs(req, fast);
+}
+
+/**
+ * 扫描 conda 环境,把每个环境里 ipykernel 自带的 kernelspec 也算作可选项。
+ *
+ * 为什么能免注册:装了 ipykernel 的 conda 环境自带一份现成的 kernelspec
+ * (<env>/share/jupyter/kernels/python3/kernel.json),argv 直接指向该环境的 python。
+ * JupyterKernel 用 specResourceDir 启动时只读这份 kernel.json,connection.json 也是
+ * 纯 Node 生成的 —— 全程不需要"注册 kernelspec"也不需要 base 环境里有 jupyter。
+ *
+ * 环境清单来源:`~/.conda/environments.txt`(conda 标准文件,一行一个绝对路径);
+ * 缺失时用 CONDA_EXE 反推安装根,扫 <root>/envs/*。
+ */
+function scanCondaKernelSpecs(req: NativeRequire): KernelSpecInfo[] {
+    const fs = req("fs") as typeof import("fs");
+    const pathMod = req("path") as typeof import("path");
+    const out: KernelSpecInfo[] = [];
+    const seenResDir = new Set<string>();
+
+    let envs: string[] = [];
+    const home = process.env.USERPROFILE || process.env.HOME || "";
+    const envFile = home ? pathMod.join(home, ".conda", "environments.txt") : "";
+    try {
+        if (envFile && fs.existsSync(envFile)) {
+            envs = fs.readFileSync(envFile, "utf8").split(/\r?\n/)
+                .map((l: string) => l.trim())
+                .filter((l: string) => l && !l.startsWith("#"));
+        }
+    } catch {
+        return [];
+    }
+    if (envs.length === 0 && process.env.CONDA_EXE) {
+        // CONDA_EXE 形如 <root>\Scripts\conda.exe → 上两级是安装根
+        const root = pathMod.dirname(pathMod.dirname(process.env.CONDA_EXE));
+        const envsDir = pathMod.join(root, "envs");
+        try {
+            if (fs.existsSync(envsDir)) {
+                envs = [root, ...fs.readdirSync(envsDir).map((n: string) => pathMod.join(envsDir, n))];
+            }
+        } catch {
+            return [];
+        }
+    }
+
+    for (const env of envs) {
+        const envName = pathMod.basename(env) || "base";
+        const kroot = pathMod.join(env, "share", "jupyter", "kernels");
+        let names: string[];
+        try {
+            if (!fs.existsSync(kroot)) continue;
+            names = fs.readdirSync(kroot);
+        } catch {
+            continue;
+        }
+        for (const name of names) {
+            const resDir = pathMod.join(kroot, name);
+            const key = resDir.toLowerCase();
+            if (seenResDir.has(key)) continue;
+            let display = name;
+            let language = "";
+            try {
+                const jsonPath = pathMod.join(resDir, "kernel.json");
+                if (fs.existsSync(jsonPath)) {
+                    const raw = JSON.parse(fs.readFileSync(jsonPath, "utf8"));
+                    display = String(raw?.display_name || name);
+                    language = String(raw?.language || "");
+                } else {
+                    continue;
+                }
+            } catch {
+                continue; // spec 损坏:跳过这个
+            }
+            seenResDir.add(key);
+            out.push({
+                name: `conda-${envName}-${name}`,
+                resourceDir: resDir,
+                displayName: `conda:${envName} · ${display}`,
+                language,
+            });
+        }
+    }
+    return out;
+}
+
+/**
+ * 合并 conda 环境的 kernelspec 到已注册清单,并按"内核解释器"去重:
+ * 用户手动注册过某个环境(ipykernel install)时,注册 spec 与环境自带的 spec
+ * argv 指向同一个 python,只保留注册的那条(它是用户显式动作的产物)。
+ */
+function mergeCondaSpecs(req: NativeRequire | null, registered: KernelSpecInfo[]): KernelSpecInfo[] {
+    if (!req) return registered;
+    let conda: KernelSpecInfo[] = [];
+    try {
+        conda = scanCondaKernelSpecs(req);
+    } catch {
+        return registered;
+    }
+    if (conda.length === 0) return registered;
+    const fs = req("fs") as typeof import("fs");
+    const pathMod = req("path") as typeof import("path");
+    // 取 spec 的内核解释器(argv[0])并归一化,用于跨来源去重
+    const exeOf = (s: KernelSpecInfo): string => {
+        try {
+            const raw = JSON.parse(fs.readFileSync(pathMod.join(s.resourceDir, "kernel.json"), "utf8"));
+            const exe = String(raw?.argv?.[0] || "");
+            if (!exe) return "resdir:" + s.resourceDir.toLowerCase();
+            try {
+                return fs.realpathSync.native(exe).toLowerCase();
+            } catch {
+                return exe.toLowerCase();
+            }
+        } catch {
+            return "resdir:" + s.resourceDir.toLowerCase();
+        }
+    };
+    const merged = new Map<string, KernelSpecInfo>();
+    for (const s of registered) merged.set(exeOf(s), s);
+    for (const s of conda) {
+        const k = exeOf(s);
+        if (!merged.has(k)) merged.set(k, s);
+    }
+    return Array.from(merged.values()).sort((a, b) => a.name.localeCompare(b.name));
 }
 
 /** 用户改了 Python 配置后清缓存,下次调用重新探测 */

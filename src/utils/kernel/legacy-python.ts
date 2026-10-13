@@ -82,6 +82,11 @@ export class LegacyPythonKernel implements KernelClient {
     /** 内核工作目录:设为笔记本所在目录,让相对路径读写与用户预期一致 */
     workspaceCwd = "";
 
+    /** 设置内核进程工作目录(notebook 所在目录;Jupyter 标准语义) */
+    setCwd(cwd: string): void {
+        if (cwd) this.workspaceCwd = cwd;
+    }
+
     // ===== 状态与监听 =====
 
     get currentStatus(): KernelStatus {
@@ -561,6 +566,14 @@ export class LegacyPythonKernel implements KernelClient {
 
     /** 关闭内核(不重放) */
     async shutdown(): Promise<void> {
+        this.disposed = true;
+        this.killProcess();
+        this.failAllPending("内核已关闭");
+        this.status = "stopped";
+    }
+
+    /** 同步紧急清理:beforeunload 场景 */
+    shutdownSync(): void {
         this.disposed = true;
         this.killProcess();
         this.failAllPending("内核已关闭");

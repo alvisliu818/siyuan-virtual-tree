@@ -119,6 +119,12 @@ export interface KernelClient {
 
     /** 启动内核(幂等:已就绪直接返回 true) */
     start(): Promise<boolean>;
+    /** 设置内核进程工作目录(单元格里的相对路径按它解析)。须在 start 之前调用;
+     *  已启动的内核改 cwd 需重启进程才生效(用「重启当前内核」)。 */
+    setCwd(cwd: string): void;
+    /** 同步紧急清理(beforeunload 里 await 不会完成):杀进程 + 关套接字。
+     *  渲染进程退出时必须调,否则原生句柄随进程异常卸载会触发 0xC0000409 崩溃。 */
+    shutdownSync?(): void;
     execute(code: string, opts?: {silent?: boolean; timeoutMs?: number}): Promise<ExecuteOutcome | null>;
     complete(code: string, cursor: number): Promise<CompleteOutcome | null>;
     /**

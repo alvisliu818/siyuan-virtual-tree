@@ -169,6 +169,11 @@ export class JupyterKernel implements KernelClient {
     /** 内核工作目录,与 Legacy 同义 */
     workspaceCwd = "";
 
+    /** 设置内核进程工作目录(notebook 所在目录;Jupyter 标准语义) */
+    setCwd(cwd: string): void {
+        if (cwd) this.workspaceCwd = cwd;
+    }
+
     // ===== 状态与监听(与 Legacy 同名同语义) =====
 
     get currentStatus(): KernelStatus {
@@ -701,6 +706,29 @@ export class JupyterKernel implements KernelClient {
             // 确定性兜底:中断必须让单元格停下来
             this.killProcess();
         }, 1500);
+    }
+
+    /** 同步紧急清理:beforeunload 场景(没有事件循环让 await 走完) */
+    shutdownSync(): void {
+        if (this.disposed) return;
+        this.disposed = true;
+        if (this.useLauncher && this.proc?.stdin?.writable) {
+            try { this.proc.stdin.write("quit" + String.fromCharCode(10)); } catch { /* ignore */ }
+        }
+        this.failAllPending("内核已关闭");
+        if (this.interruptWatchdog) {
+            clearInterval(this.interruptWatchdog);
+            this.interruptWatchdog = null;
+        }
+        try {
+            this.shellSock?.close();
+            this.iopubSock?.close();
+            this.controlSock?.close();
+        } catch { /* ignore */ }
+        this.shellSock = this.iopubSock = this.controlSock = null;
+        this.killProcess();
+        this.connPath = "";
+        this.setStatus("stopped");
     }
 
     async shutdown(): Promise<void> {

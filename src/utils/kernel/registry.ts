@@ -16,6 +16,7 @@ import {KernelClient, KernelKind} from "./types";
 import {LegacyPythonKernel} from "./legacy-python";
 import {JupyterKernel} from "./jupyter/jupyter-kernel";
 import {KernelSpecInfo, listKernelSpecs} from "./interpreter";
+import {getNativeRequire} from "../native-require";
 
 /**
  * 没传 docId 时的默认 key。
@@ -97,18 +98,43 @@ function createInstance(choice?: KernelChoice): KernelClient {
     }
 }
 
-/** 取该文档的内核,不存在则按需创建。等价于原来的 getPythonKernel() */
+/** 取该文档的内核,不存在则按需创建(无文档级选择时用全局默认) */
 export function getKernel(docId: string = DEFAULT_KERNEL_ID): KernelClient {
     const existing = instances.get(docId);
     if (existing) return existing;
-    const created = createInstance(choices.get(docId));
+    const created = createInstance(choices.get(docId) ?? choices.get(DEFAULT_KERNEL_ID));
     instances.set(docId, created);
     return created;
 }
 
-/** 该文档当前选择的内核 */
+/** 该文档当前选择的内核;没有文档级选择时**回退到全局默认**(设置里的「默认运行内核」) */
 export function getKernelChoice(docId: string = DEFAULT_KERNEL_ID): KernelChoice | null {
-    return choices.get(docId) ?? null;
+    return choices.get(docId) ?? choices.get(DEFAULT_KERNEL_ID) ?? null;
+}
+
+/** 全局默认选择(设置里配置;代码块/代码文件/ipynb 在没有文档级选择时都用它) */
+export function getGlobalDefaultChoice(): KernelChoice | null {
+    return choices.get(DEFAULT_KERNEL_ID) ?? null;
+}
+
+/**
+ * 解析某个选择对应的内核进程解释器。
+ * jupyter 选择 → 读其 kernelspec 的 kernel.json argv[0](conda 环境即该环境的 python);
+ * 内置选择 / 解析失败 → null(调用方退回 resolvePythonInterpreter 的默认探测)。
+ */
+export function kernelPythonOf(choice: KernelChoice | null | undefined): string | null {
+    if (!choice || choice.kind !== "jupyter" || !choice.specResourceDir) return null;
+    try {
+        const req = getNativeRequire();
+        if (!req) return null;
+        const fs = req("fs") as typeof import("fs");
+        const pathMod = req("path") as typeof import("path");
+        const raw = JSON.parse(fs.readFileSync(pathMod.join(choice.specResourceDir, "kernel.json"), "utf8"));
+        const exe = String(raw?.argv?.[0] || "").trim();
+        return exe || null;
+    } catch {
+        return null;
+    }
 }
 
 /**
@@ -147,6 +173,20 @@ export async function disposeAllKernels(): Promise<void> {
     for (const [, kernel] of all) {
         try {
             await kernel.shutdown();
+        } catch {
+            // ignore
+        }
+    }
+}
+
+/** 同步紧急清理:beforeunload 里 await 不会完成,必须走纯同步路径 */
+export function disposeAllKernelsSync(): void {
+    const all = Array.from(instances.entries());
+    instances.clear();
+    for (const [, kernel] of all) {
+        try {
+            if (kernel.shutdownSync) kernel.shutdownSync();
+            else void kernel.shutdown();
         } catch {
             // ignore
         }
