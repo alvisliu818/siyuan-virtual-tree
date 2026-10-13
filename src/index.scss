@@ -586,8 +586,6 @@
 
 .syfe-md__path {
     font-family: var(--b3-font-family-code);
-    overflow: hidden;
-    text-overflow: ellipsis;
     white-space: nowrap;
     max-width: 40%;
 }
@@ -772,9 +770,38 @@
 
 // 路径分段(面包屑):点击可切换到同级其他文件或文件夹
 .syfe-editor__pathtext {
-    overflow: hidden;
-    text-overflow: ellipsis;
     white-space: nowrap;
+}
+
+// 面包屑横向滚动:悬停时滚轮纵向滚动映射为横向滚动(见 path-crumbs.enableCrumbScroll),
+// 滚动条隐藏保持视觉干净
+.syfe-crumbs-scroll {
+    min-width: 0;
+    flex: 0 1 auto;
+    overflow-x: auto;
+    overflow-y: hidden;
+    white-space: nowrap;
+    scrollbar-width: none;
+
+    &::-webkit-scrollbar {
+        display: none;
+    }
+}
+
+// 窄面板:次要功能折叠进「更多」(仅留 搜索 + 更多),避免工具栏换行占多行
+.syfe-mtree__toolbar--narrow {
+    [data-action="tag-filter"],
+    [data-action="drag-mode"],
+    [data-action="refresh"],
+    [data-action="collapse"],
+    [data-action="locate-mount"],
+    [data-rel-action="refresh"],
+    [data-rel-action="collapse-all"],
+    [data-rel-action="expand-all"],
+    [data-rel-action="locate"],
+    [data-rel-action="focus"] {
+        display: none !important;
+    }
 }
 
 .syfe-editor__seg {
@@ -3006,6 +3033,12 @@
     color: var(--b3-theme-primary);
 }
 
+// 顶栏面包屑(点分段切换文件):复用 .syfe-editor__seg 的全局样式,这里只管布局
+.syfe-nb__crumbs {
+    margin: 0 6px;
+    white-space: nowrap;
+}
+
 .syfe-nb__meta {
     color: var(--b3-theme-on-surface);
     font-size: 12px;
@@ -3249,6 +3282,8 @@
 .syfe-nb__outs {
     border-top: 1px dashed var(--b3-border-color);
     padding: 4px 10px;
+    // 输出允许鼠标选中复制(上游可能有 user-select: none 的继承)
+    user-select: text;
     // 输出区不是 monaco 渲染的,拿不到 codeEditorOptions 的值,只能靠
     // TS 侧注入的同名 CSS 变量跟代码区保持同一字号/行高。
     // 这两个变量由 notebook-tab.ts 从同一份 config 算出,与 monaco 的一致。
@@ -3316,7 +3351,6 @@
 .syfe-cb-run__btn {
     color: var(--b3-theme-primary);
     cursor: pointer;
-
     &--stop {
         color: var(--b3-theme-danger);
     }
@@ -3332,6 +3366,8 @@
     font-size: var(--b3-font-size-code, 13px);
     line-height: var(--b3-line-height-code, 20px);
     overflow: hidden;
+    // 输出允许鼠标选中复制(面板在思源 contenteditable 里,显式声明可选中)
+    user-select: text;
 
     &__head {
         display: flex;

@@ -108,6 +108,12 @@ function zeromqPatterns() {
         {from: path.join(ZEROMQ_SRC, "package.json"), to: `${ZEROMQ_DEST}/`},
         {from: path.join(ZEROMQ_SRC, "lib"), to: `${ZEROMQ_DEST}/lib`, globOptions: {ignore: ["**/*.map"]}},
         {from: path.join(ZEROMQ_SRC, "build"), to: `${ZEROMQ_DEST}/build`, globOptions: {ignore: ["**/*.pdb"]}},
+        // zeromq/lib/load-addon.js 运行时 require("cmake-ts/build/loader") 来定位
+        // 预编译 .node —— cmake-ts 是它的构建期工具但**运行时也要**,缺了整个
+        // zeromq 加载失败 → 所有 Jupyter/conda 内核起不来(实测踩过)。loader 只
+        // 依赖 Node 内置模块,复制包本体(package.json + build)即可
+        {from: path.join(path.dirname(ZEROMQ_SRC), "cmake-ts", "package.json"), to: "node_modules/cmake-ts/"},
+        {from: path.join(path.dirname(ZEROMQ_SRC), "cmake-ts", "build"), to: "node_modules/cmake-ts/build", globOptions: {ignore: ["**/*.map"]}},
     ];
 }
 
