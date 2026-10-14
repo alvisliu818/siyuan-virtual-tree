@@ -266,7 +266,11 @@ function getVditorValue(tab: MarkdownTabInstance): string {
 }
 
 // 打开 Markdown Tab(同文件去重,聚焦已有 Tab;mode 指定初始模式)
-export function openMarkdownTab(plugin: IPluginForMarkdownTab, path: string, mode?: MarkdownMode, opts?: { position?: "right" | "bottom" }): void {
+export function openMarkdownTab(plugin: IPluginForMarkdownTab, rawPath: string, mode?: MarkdownMode, opts?: { position?: "right" | "bottom" }): void {
+    // 统一正斜杠:入口(资源管理器/挂载配置/接管/反链)可能带反斜杠。不归一会
+    // 同一文件两种 key 并存 —— Monaco URI 相同(Map key 不同)→ createModel 抛
+    // "Cannot add model because it already exists",且页签复用检查也失效(实测)
+    const path = (rawPath || "").replace(/\\/g, "/");
     const opened = plugin.getOpenedTab()[MARKDOWN_TAB_TYPE] || [];
     const existing = opened.find((c: any) => c?.data?.path === path);
     if (existing) {

@@ -135,7 +135,11 @@ export interface OpenTabOptions {
 // 文件夹走 revealInFileTree(在文件树里展开定位),不开编辑器 Tab ——
 // 少了这个分支时,新标签页里固定的文件夹一点击就会开出编辑器 Tab,
 // 内容是内核返回的 {"code":409,"msg":"path is a directory"}。
-export function openFileTab(plugin: IPluginForTab, path: string, opts?: OpenTabOptions): void {
+export function openFileTab(plugin: IPluginForTab, rawPath: string, opts?: OpenTabOptions): void {
+    // 统一正斜杠:入口(资源管理器/挂载配置/接管)可能带反斜杠。不归一会同一文件
+    // 两种 key 并存 —— Monaco URI 相同(Map key 不同)→ createModel 抛
+    // "Cannot add model because it already exists",且页签复用检查也失效(实测)
+    const path = (rawPath || "").replace(/\\/g, "/");
     if (isDirectory(path)) {
         void addRecent(plugin as any, path);
         openFolderInTree(path);

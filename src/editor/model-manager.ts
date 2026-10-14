@@ -7,6 +7,11 @@ import {recordVersion} from "../version-control/file-versions";
 
 // path → Monaco 文本模型(同一文件多 Tab 共享)
 const models = new Map<string, monaco.editor.ITextModel>();
+// path → 正在加载中的 getModel(并发去重):快速双击/接管与点击委托叠加时,
+// 两个页签会几乎同时调 getModel,而 readTextFile 是异步的 —— 第一个还没
+// models.set,第二个就 models.get 未命中也跟着 createModel,monaco 抛
+// "Cannot add model because it already exists"(实测:文档内链接接管打开即中招)
+const inflight = new Map<string, Promise<monaco.editor.ITextModel>>();
 // path → 是否有未保存修改
 const dirtyMap = new Map<string, boolean>();
 // path → 待跳转行号(搜索结果点击后,编辑器创建时消费)
@@ -27,22 +32,40 @@ function uriForPath(path: string): monaco.Uri {
 }
 
 // 获取或创建模型;不存在则从文件加载内容
-export async function getModel(path: string): Promise<monaco.editor.ITextModel> {
+export function getModel(path: string): Promise<monaco.editor.ITextModel> {
     const existing = models.get(path);
-    if (existing) return existing;
-    let content = "";
-    try {
-        content = await readTextFile(path);
-    } catch {
-        // 读取失败(文件不存在等),使用空内容,允许新建后保存
-        content = "";
-    }
-    const model = monaco.editor.createModel(content, getLanguageByPath(path), uriForPath(path));
-    models.set(path, model);
-    dirtyMap.set(path, false);
-    lastSavedMap.set(path, content);
-    recordStat(path);
-    return model;
+    if (existing) return Promise.resolve(existing);
+    // 同一路径正在加载:直接复用同一个 promise,避免并发 createModel 撞车
+    const pending = inflight.get(path);
+    if (pending) return pending;
+    const p = (async () => {
+        let content = "";
+        try {
+            content = await readTextFile(path);
+        } catch {
+            // 读取失败(文件不存在等),使用空内容,允许新建后保存
+            content = "";
+        }
+        // 兜底:await 期间别的路径可能已按同一 URI 建好 model(Map key 不同,
+        // 如正/反斜杠两种形式),直接复用,不重复 createModel
+        const uri = uriForPath(path);
+        const byUri = monaco.editor.getModel(uri);
+        if (byUri) {
+            models.set(path, byUri);
+            return byUri;
+        }
+        const model = monaco.editor.createModel(content, getLanguageByPath(path), uri);
+        models.set(path, model);
+        dirtyMap.set(path, false);
+        lastSavedMap.set(path, content);
+        recordStat(path);
+        return model;
+    })();
+    inflight.set(path, p);
+    p.finally(() => inflight.delete(path)).catch(() => {
+        // 失败清理交给调用方;这里只保证不留死 promise
+    });
+    return p;
 }
 
 // 记下当前文件的 mtime+size 作为"已同步"基线

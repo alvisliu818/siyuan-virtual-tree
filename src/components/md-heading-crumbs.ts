@@ -24,32 +24,52 @@ export interface HeadingCrumb {
     hasChildren?: boolean;
 }
 
-/** 标题路径 → HTML。复用编辑器路径面包屑的 seg/sep 样式,不维护第二套 CSS */
+/**
+ * 标题路径 → HTML。复用编辑器路径面包屑的 seg/sep 样式,不维护第二套 CSS
+ *
+ * 结构对齐思源原生面包屑(siyuan-breadcrumb 接管的 .protyle-breadcrumb):
+ * 每一项之间是同一个 `#iconRight` 右箭头,既是分隔符;**有下级时它本身就是
+ * 可点按钮**,点开子级菜单 —— 即"展开子级"与"箭头"是同一个控件,不分开渲染。
+ * 最后一级(当前所在标题)之后不加箭头;它有下级时仍保留可展开按钮。
+ */
 export function renderHeadingSegments(crumbs: HeadingCrumb[], doc?: {icon: boolean; hasChildren: boolean}): string {
     const out: string[] = [];
-    // 文档根(对齐思源原生面包屑的首项):点击回文档顶部,箭头列出所有一级标题
+    // 可展开的箭头:按钮形态,点击列出子级(data-hexp/data-hdocexp 由调用方绑定)
+    const expArrow = (attrs: string) =>
+        `<button class="syfe-editor__arrow syfe-editor__arrow--exp" ${attrs} type="button" tabindex="-1">` +
+        `<svg><use xlink:href="#iconRight"></use></svg></button>`;
+    // 纯装饰的箭头:仅分隔,不可点
+    const sepArrow = () =>
+        `<span class="syfe-editor__sep"><svg class="syfe-editor__arrow"><use xlink:href="#iconRight"></use></svg></span>`;
+    // 文档根(对齐思源原生面包屑的首项):点击回文档顶部
     if (doc?.icon) {
         out.push(
             `<span class="syfe-editor__seg syfe-md__hdoc" data-hdoc="1" title="文档开头">` +
             `<svg class="syfe-md__docicon"><use xlink:href="#iconFile"></use></svg></span>`,
         );
-        if (doc.hasChildren) {
-            out.push(`<span class="syfe-editor__seg syfe-md__hexp" data-hdocexp="1" title="展开一级标题">▾</span>`);
+        // 根与第一级之间:有子级渲染可展开按钮,否则纯装饰箭头;没有标题时连箭头都不要
+        if (crumbs.length > 0) {
+            out.push(doc.hasChildren
+                ? expArrow(`data-hdocexp="1" title="展开一级标题" aria-label="展开一级标题"`)
+                : sepArrow());
         }
-        out.push(`<span class="syfe-editor__sep">›</span>`);
     }
     crumbs.forEach((c, i) => {
-        if (i > 0) out.push(`<span class="syfe-editor__sep">›</span>`);
+        const isLast = i === crumbs.length - 1;
         const label = c.text.length > 40 ? c.text.slice(0, 40) + "…" : c.text;
         out.push(
             `<span class="syfe-editor__seg" data-hidx="${i}" title="H${c.level} · 点击定位">${escapeHTML(label)}</span>`,
         );
-        // 展开箭头:点它列出该标题的**直接下级标题**,选中即跳转并把面包屑延伸到那一级
-        if (c.hasChildren) {
-            out.push(
-                `<span class="syfe-editor__seg syfe-md__hexp" data-hexp="${i}" title="展开下级标题">▾</span>`,
-            );
+        // 最后一级之后不加箭头(对齐原生);它有下级时仍保留可展开按钮
+        if (isLast) {
+            if (c.hasChildren) {
+                out.push(expArrow(`data-hexp="${i}" title="展开下级标题" aria-label="展开下级标题"`));
+            }
+            return;
         }
+        out.push(c.hasChildren
+            ? expArrow(`data-hexp="${i}" title="展开下级标题" aria-label="展开下级标题"`)
+            : sepArrow());
     });
     return out.join("");
 }

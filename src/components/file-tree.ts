@@ -566,6 +566,17 @@ export function promptDialog(title: string, defaultVal: string = ""): Promise<st
     });
 }
 
+// 通知各面板:文件系统已变动(虚拟文档树/标签面板监听后清缓存重绘)。
+// file-tree 的新建/重命名/删除原来只刷自己的 rootEl,不派发事件 —— 虚拟文档树
+// (mount-tree-dock 复用这套菜单)里操作完看不到变化,必须手动刷新(实测)
+function notifyFilesChanged(): void {
+    try {
+        window.dispatchEvent(new CustomEvent("syfe:files-changed"));
+    } catch {
+        // 非浏览器环境忽略
+    }
+}
+
 // 新建文件
 export async function createNewFile(parentDir: string, rootEl: HTMLElement | null, rootPath: string): Promise<void> {
     const name = await promptDialog("新建文件", "untitled.md");
@@ -576,6 +587,7 @@ export async function createNewFile(parentDir: string, rootEl: HTMLElement | nul
         showMessage("文件已创建", 2000, "info");
         await refreshPath(rootEl, parentDir, rootPath);
         await syncDirToggleInParent(rootEl, parentDir, rootPath);
+        notifyFilesChanged();
     } catch (e) {
         showMessage(`创建失败: ${e}`, 5000, "error");
     }
@@ -591,6 +603,7 @@ export async function createNewFolder(parentDir: string, rootEl: HTMLElement | n
         showMessage("文件夹已创建", 2000, "info");
         await refreshPath(rootEl, parentDir, rootPath);
         await syncDirToggleInParent(rootEl, parentDir, rootPath);
+        notifyFilesChanged();
     } catch (e) {
         showMessage(`创建失败: ${e}`, 5000, "error");
     }
@@ -609,6 +622,7 @@ export async function renameEntry(path: string, rootEl: HTMLElement | null, root
         await refreshPath(rootEl, dirname(newPath), rootPath);
         await syncDirToggleInParent(rootEl, dirname(path), rootPath);
         await syncDirToggleInParent(rootEl, dirname(newPath), rootPath);
+        notifyFilesChanged();
     } catch (e) {
         showMessage(`重命名失败: ${e}`, 5000, "error");
     }
@@ -627,6 +641,7 @@ export function deleteEntry(path: string, isDir: boolean, rootEl: HTMLElement | 
                 showMessage("已删除", 2000, "info");
                 await refreshPath(rootEl, dirname(path), rootPath);
                 await syncDirToggleInParent(rootEl, dirname(path), rootPath);
+                notifyFilesChanged();
             } catch (e) {
                 showMessage(`删除失败: ${e}`, 5000, "error");
             }

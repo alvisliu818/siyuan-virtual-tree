@@ -103,6 +103,8 @@ export default class FileEditorPlugin extends Plugin {
     private docOpenTakeoverSelect?: HTMLSelectElement;
     private docOpenTakeoverExtsInput?: HTMLInputElement;
     private _unregisterDocOpenTakeover?: () => void;
+    // 切换思源文档后刷新文件树的防抖 timer(见 switch-protyle 监听)
+    private _docSwitchRefreshTimer?: number;
     // 全局阅读模式:Markdown 默认只读打开
     private globalReadingModeInput?: HTMLInputElement;
     // 版本控制:每文件保留的历史版本条数
@@ -410,6 +412,15 @@ export default class FileEditorPlugin extends Plugin {
             const rootID = protyle?.block?.rootID;
             if (!rootID) return;
             void this.recordRecentDoc(rootID, protyle?.path);
+            // 思源文档结构变化(新建文档/新建子文档/重命名/移动)没有独立的
+            // docs-changed 事件,但发生后必然会打开目标文档 —— switch-protyle
+            // 就是可靠的刷新信号。防抖避免连续切文档时反复重绘;
+            // 不刷的后果:虚拟文档树里新建的文档不出现,要手动刷新才看得到(实测)
+            if (this._docSwitchRefreshTimer) window.clearTimeout(this._docSwitchRefreshTimer);
+            this._docSwitchRefreshTimer = window.setTimeout(() => {
+                this._docSwitchRefreshTimer = undefined;
+                this.refreshFileTrees();
+            }, 800);
         });
         // 加载已安装的 VSCode 扩展
         try {
@@ -483,6 +494,10 @@ export default class FileEditorPlugin extends Plugin {
         // 注销文档内文件打开接管的事件监听
         try {
             this._unregisterDocOpenTakeover?.();
+            if (this._docSwitchRefreshTimer) {
+                window.clearTimeout(this._docSwitchRefreshTimer);
+                this._docSwitchRefreshTimer = undefined;
+            }
         } catch {
             // ignore
         }

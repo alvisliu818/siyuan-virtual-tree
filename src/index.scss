@@ -612,11 +612,36 @@
     border-radius: 4px;
 }
 
-/* 展开箭头:点它列出该标题的直接下级标题 */
-.syfe-md__hexp {
-    opacity: 0.6;
-    font-size: 10px;
-    padding: 1px 2px;
+/* 面包屑分隔箭头(对齐思源原生 .protyle-breadcrumb__arrow):iconRight 右箭头,
+   纯装饰用;有下级时升级为按钮形态(--exp),点开子级菜单 */
+.syfe-editor__arrow {
+    height: 14px;
+    width: 14px;
+    color: var(--b3-theme-on-surface-light);
+    margin: 0 2px;
+    flex-shrink: 0;
+    display: inline-block;
+    vertical-align: middle;
+}
+
+button.syfe-editor__arrow--exp {
+    align-items: center;
+    background-color: rgba(0, 0, 0, 0);
+    border: 0;
+    border-radius: var(--b3-border-radius);
+    box-sizing: border-box;
+    color: var(--b3-theme-on-surface);
+    cursor: pointer;
+    display: inline-flex;
+    justify-content: center;
+    height: 24px;
+    padding: 5px;
+    width: 24px;
+}
+
+button.syfe-editor__arrow--exp:hover {
+    background-color: var(--b3-list-hover);
+    color: var(--b3-theme-on-background);
 }
 
 /* 文档根图标(面包屑首项):点击回文档顶部 */
@@ -761,6 +786,16 @@
 }
 
 .syfe-md__content--reading {
+    // 阅读态 disabled() 会把内容区设成 contenteditable=false,触发 vditor 自带的
+    // `.vditor-wysiwyg pre.vditor-reset[contenteditable="false"]`(特异性 0,3,1,
+    // 压过普通 0,3,0 覆盖)→ 整体发灰像蒙了遮挡层、光标变禁止标。
+    // 纯渲染阅读不该有这些编辑态反馈,同特异性 + !important 覆盖掉
+    .vditor-wysiwyg pre.vditor-reset[contenteditable="false"],
+    .vditor-ir pre.vditor-reset[contenteditable="false"] {
+        opacity: 1 !important;
+        cursor: default !important;
+    }
+
     .vditor-toolbar,
     .vditor-ir__marker,
     .vditor-reset [contenteditable] {
@@ -853,7 +888,8 @@
 }
 
 .syfe-editor__sep {
-    opacity: 0.5;
+    display: inline-flex;
+    align-items: center;
     padding: 0 1px;
 }
 
