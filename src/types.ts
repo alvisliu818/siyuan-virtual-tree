@@ -16,9 +16,11 @@ export interface SearchResult {
     lineNo: number;
     line: string;
     preview: string;
-    kind?: "name" | "content"; // 命中类型:名称匹配(文件名/文件夹名) / 内容匹配
+    // 命中类型:名称匹配(文件名/文件夹名) / 内容匹配 / 虚拟文档树(思源文档或块)命中
+    kind?: "name" | "content" | "sydoc";
     name?: string;              // 名称匹配时的条目名
     isDir?: boolean;            // 名称匹配时是否为文件夹
+    docId?: string;             // kind=sydoc:思源文档/块 id(点击走 openSiyuanDoc 定位)
 }
 
 // 插件配置
