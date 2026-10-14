@@ -30,6 +30,7 @@ import {loadTagData} from "./tags/tag-store";
 import {openTagManagerDialog} from "./tags/tag-ui";
 import {loadOpenWithData} from "./open-with/open-with-store";
 import {openOpenWithManagerDialog} from "./open-with/open-with-ui";
+import {registerDocOpenTakeover} from "./open-takeover/doc-open-takeover";
 import {loadRecents, addRecent, addRecentDoc, flushRecents} from "./recent-files";
 import {loadStartPage, itemFromPath, itemFromDoc, toggleInGroup} from "./start-page";
 import {isVirtualPath, virtualId, initMountStore, getMountList, dropSyDocMounts} from "./utils/virtual-tree";
@@ -97,6 +98,10 @@ export default class FileEditorPlugin extends Plugin {
     private newTabShowFavoritesInput?: HTMLInputElement;
     // 导入 md 到思源时,是否在文档顶部插入源文件资源引述块
     private importMdSourceAssetInput?: HTMLInputElement;
+    // 接管思源文档内文件打开:模式下拉 + 扩展名白名单
+    private docOpenTakeoverSelect?: HTMLSelectElement;
+    private docOpenTakeoverExtsInput?: HTMLInputElement;
+    private _unregisterDocOpenTakeover?: () => void;
     // 默认运行内核(代码块/代码文件/ipynb 共用的全局兜底)
     private kernelDefaultSelect?: HTMLSelectElement;
     // 引用关系树(移植自 siyuan-virtual-tree)
@@ -233,6 +238,11 @@ export default class FileEditorPlugin extends Plugin {
         // 注册 Tab 类型
         this.addTab(asSiyuanCustom(createEditorTabConfig(this as any)));
         this.addTab(asSiyuanCustom(createImageTabConfig(this as any)));
+        // 接管思源文档内打开文件(open-asset/open-link 事件,配置热读,卸载时注销)
+        this._unregisterDocOpenTakeover = registerDocOpenTakeover(this as any, () => ({
+            mode: this.config.docOpenTakeover || "off",
+            exts: this.config.docOpenTakeoverExts || "",
+        }));
         this.addTab(asSiyuanCustom(createOfficeTabConfig(this as any)));
         this.addTab(asSiyuanCustom(createMarkdownTabConfig(this as any)));
         this.addTab(asSiyuanCustom(createMediaTabConfig(this as any)));
@@ -458,6 +468,12 @@ export default class FileEditorPlugin extends Plugin {
     }
 
     onunload(): void {
+        // 注销文档内文件打开接管的事件监听
+        try {
+            this._unregisterDocOpenTakeover?.();
+        } catch {
+            // ignore
+        }
         // 停掉 Python 语言服务与持久内核:两者都是常驻子进程,
         // 不显式关的话思源禁用插件后它们会一直挂在后台吃内存
         try {
@@ -696,6 +712,27 @@ actionElement: tagManageBtn,
             description: "为文件与文件夹配置「用 XX 打开」的入口(预置 VS Code / Cursor / Windsurf / 记事本 / 资源管理器,可自行增删改命令与参数);配置后出现在文件树、虚拟文档树、搜索结果的右键「打开方式」里",
             actionElement: openWithBtn,
    });
+
+        // 接管思源文档内打开文件(open-asset/open-link 事件)
+        this.docOpenTakeoverSelect = document.createElement("select");
+        this.docOpenTakeoverSelect.className = "b3-select fn__size200";
+        this.docOpenTakeoverSelect.innerHTML =
+            `<option value="off">不接管</option>` +
+            `<option value="exts">指定扩展名</option>` +
+            `<option value="all">全部接管</option>`;
+        this.setting!.addItem({
+            title: "接管文档内打开文件",
+            description: "点击文档里的 assets/ 链接、file:// 或本地路径文件时,改用本插件的编辑器打开(按扩展名自动分派 markdown/图片/媒体/office 页签);仅思源文档内的链接生效",
+            actionElement: this.docOpenTakeoverSelect,
+        });
+        this.docOpenTakeoverExtsInput = document.createElement("input");
+        this.docOpenTakeoverExtsInput.className = "b3-text-field fn__size200";
+        this.docOpenTakeoverExtsInput.placeholder = "md,txt,log";
+        this.setting!.addItem({
+            title: "接管扩展名",
+            description: "「指定扩展名」模式下生效,逗号分隔,如 md,txt,log;留空则不接管任何类型",
+            actionElement: this.docOpenTakeoverExtsInput,
+        });
 
 // 百度网盘(接入方式配置 + 挂载入口说明)
         const bdPanBtn = document.createElement("button");
@@ -1002,6 +1039,8 @@ actionElement: tagManageBtn,
         if (this.newTabShowRecentInput) this.newTabShowRecentInput.checked = this.config.newTabShowRecent !== false;
         if (this.newTabShowFavoritesInput) this.newTabShowFavoritesInput.checked = this.config.newTabShowFavorites !== false;
         if (this.importMdSourceAssetInput) this.importMdSourceAssetInput.checked = this.config.importMdSourceAsset === true;
+        if (this.docOpenTakeoverSelect) this.docOpenTakeoverSelect.value = this.config.docOpenTakeover || "off";
+        if (this.docOpenTakeoverExtsInput) this.docOpenTakeoverExtsInput.value = this.config.docOpenTakeoverExts || "";
         // 引用关系设置回填(只回填设置项;collapsed 由面板维护,拖拽顺序在挂载配置里)
         const rel = this.config.mountTreeRelation || DEFAULT_CONFIG.mountTreeRelation;
         if (this.mountTreeRelationEnabledInput) this.mountTreeRelationEnabledInput.checked = rel.enabled === true;
@@ -1041,6 +1080,8 @@ actionElement: tagManageBtn,
             newTabShowRecent: this.newTabShowRecentInput?.checked ?? true,
             newTabShowFavorites: this.newTabShowFavoritesInput?.checked ?? true,
             importMdSourceAsset: this.importMdSourceAssetInput?.checked ?? false,
+            docOpenTakeover: ((this.docOpenTakeoverSelect?.value || "off") as "off" | "exts" | "all"),
+            docOpenTakeoverExts: (this.docOpenTakeoverExtsInput?.value || "").trim() || "md,txt",
             // 「文件」面板功能已移除(虚拟文档树全面承接);保留配置键兼容旧存储
             showFileTreeDock: false,
             mountTreeRelation: {

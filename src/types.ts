@@ -45,9 +45,15 @@ export interface EditorConfig {
     newTabShowFavorites: boolean;    // 新标签页显示「收藏」区
     // 导入 Markdown 到思源时,是否把源文件作为资源插入到文档顶部的引述块(保留出处,便于回溯原文件)
     importMdSourceAsset: boolean;
-    // 侧边栏是否显示「文件」面板。文件浏览/重命名/删除等能力已由「虚拟文档树」面板承接,
+    // 「文件」面板是否显示。文件浏览/重命名/删除等能力已由「虚拟文档树」面板承接,
     // 故**默认关闭**;打开后可恢复原来的文件树面板
     showFileTreeDock: boolean;
+    // 接管思源文档内打开文件:点击文档里的 assets/ 链接、file:// 本地链接、裸本地路径时,
+    // 不走思源默认查看器,改用本插件的对应页签(markdown/图片/媒体/office/文本)打开。
+    // off=不接管;exts=仅接管指定扩展名;all=全部接管
+    docOpenTakeover: "off" | "exts" | "all";
+    // 接管的扩展名白名单(仅 exts 模式生效),逗号分隔,如 "md,txt,log";忽略点/空格/大小写
+    docOpenTakeoverExts: string;
     // 「虚拟文档树」面板顶部的**引用关系树**(按文档首块引用链接自动构建,与手动挂载共存)。
     // 关系树结构是只读派生视图(不落盘,每次现查);这里只持久化用户的显式意图:
     // 开关、排序设置、折叠状态(collapsed)。拖拽顺序在挂载配置(virtual-tree.json 的 customOrder)。
@@ -225,6 +231,9 @@ export const DEFAULT_CONFIG: EditorConfig = {
     newTabShowFavorites: true,
     importMdSourceAsset: false,      // 默认不插入源文件资源引述块
     showFileTreeDock: false,         // 默认不显示「文件」面板(功能已由虚拟文档树承接)
+    // 默认不接管文档内文件打开(保持思源原生行为);开启后按扩展名或全部交给本插件
+    docOpenTakeover: "off",
+    docOpenTakeoverExts: "md,txt",
     // 引用关系树默认关闭(按需在设置里开启)
     mountTreeRelation: {
         enabled: false,
