@@ -815,10 +815,22 @@ button.syfe-editor__arrow--exp:hover {
     }
 
     .vditor-reset {
-        max-width: 820px;
-        margin: 0 auto;
+        // 通栏排版:之前限宽 820px 居中,宽窗口下左右(尤其右侧)大片空白,
+        // 看起来像"内容只显示了一半,另一半被空白挤占"(实测用户反馈)。
+        // 需要窄列阅读的用户可以直接拖窄窗口/分栏
+        max-width: none;
+        margin: 0;
         padding: 16px 24px 64px;
     }
+}
+
+.syfe-md__missing {
+    flex-shrink: 0;
+    padding: 6px 12px;
+    font-size: 12px;
+    color: var(--b3-theme-on-surface);
+    background: var(--b3-theme-surface);
+    border-bottom: 1px solid var(--b3-theme-warning);
 }
 
 .syfe-editor {

@@ -6,6 +6,8 @@ import {EditorConfig} from "../types";
 import {createEditor, getCurrentMode} from "../editor/monaco";
 import {getModel, saveModel, markDirty, isDirty, consumePendingReveal} from "../editor/model-manager";
 import {readBinaryFile} from "../api/file";
+import {nativeStat} from "../api/native-fs";
+import {isBaiduPath} from "../utils/baidu-path";
 import {createBacklinkPanel, BacklinkPanel} from "../components/backlink-panel";
 import {renderPathSegments, showPathSwitchMenu, enableCrumbScroll} from "../components/path-crumbs";
 import {enableHeadingCrumbs, flashHeading, scrollToTopOf, scrollParentOf, type HeadingCrumbsHandle} from "../components/md-heading-crumbs";
@@ -693,6 +695,11 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                     // 顺带让脏标记更及时。
                     undoDelay: 100,
                     preview: {
+                        // setPadding() 按 (容器宽 - maxWidth) / 2 设左右 padding,默认 800
+                        // 会把内容列钉死在 800px 居中 —— 窗口越宽两侧空白越大,用户看到的
+                        // "内容只显示一半,另一半被空白挤占" 就是它(阅读/实时预览都中招)。
+                        // 给超大值让 padding 恒取最小值(35px),内容随窗口通栏
+                        maxWidth: 1000000,
                         theme: {
                             current: isDark ? "dark" : "light",
                             path: `${VDITOR_CDN}/dist/css/content-theme`,
@@ -809,6 +816,16 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                 } catch (e) {
                     self._contentEl!.innerHTML = `<div class="syfe-editor__error">加载失败: ${escapeHTML(String(e))}</div>`;
                     return;
+                }
+                // 本地路径且文件不存在:getModel 会静默用空内容(便于新建),这里补一条
+                // 明确提示 —— 否则"打开一个空白页签"让人以为内容丢了(实测踩过:路径抄错)。
+                // 注意插在页签容器(bar 之下)而不是 contentEl:后续 enterXxx 会清空 contentEl
+                if (!self._model.getValue() && isSiyuanPath(path) === false && !isBaiduPath(path)) {
+                    const stat = nativeStat(path);
+                    if (!stat && !self.element.querySelector(".syfe-md__missing")) {
+                        self.element.querySelector(".syfe-md__bar")!.insertAdjacentHTML("afterend",
+                            `<div class="syfe-md__missing">⚠ 文件不存在或不可读: ${escapeHTML(path)}。可以直接输入内容并保存来创建它。</div>`);
+                    }
                 }
                 updateDirtyUI(isDirty(path));
 
