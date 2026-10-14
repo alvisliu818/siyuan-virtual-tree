@@ -17,6 +17,7 @@ import {createOfficeTabConfig, openOfficeTab} from "./tabs/office-tab";
 import {createMarkdownTabConfig, openMarkdownTab, MarkdownMode} from "./tabs/markdown-tab";
 import {createMediaTabConfig, openMediaTab} from "./tabs/media-tab";
 import {createNotebookTabConfig} from "./tabs/notebook-tab";
+import {createDiffTabConfig} from "./tabs/diff-tab";
 import {createStartTabConfig, openStartTab, installNewTabHijack} from "./tabs/start-tab";
 import {createTerminalTabConfig, openTerminalTab} from "./tabs/terminal-tab";
 import {createRecentDockConfig} from "./dock/recent-dock";
@@ -262,6 +263,8 @@ export default class FileEditorPlugin extends Plugin {
         // 新标签页(接管顶部「+」后打开的启动台:搜索 + 固定 + 最近打开 + 收藏)
         this.addTab(asSiyuanCustom(createStartTabConfig(this as any)));
         this.addTab(asSiyuanCustom(createSearchTabConfig(this as any)));
+        // 版本比较页签(历史版本 ↔ 当前内容,或两个历史版本互比)
+        this.addTab(asSiyuanCustom(createDiffTabConfig(this as any)));
         this.addTab(asSiyuanCustom(createTerminalTabConfig(this as any)));
 
         // 注册 Dock

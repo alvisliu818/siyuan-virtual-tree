@@ -68,6 +68,12 @@ export function getModel(path: string): Promise<monaco.editor.ITextModel> {
     return p;
 }
 
+// 已存在的模型(不创建、不读盘):版本比较要拿"编辑器里的当前内容",
+// 但文件没打开时不应该为此凭空建一个模型(会把 lastSavedMap/脏标记一起带出来)
+export function peekModel(path: string): monaco.editor.ITextModel | null {
+    return models.get(path) || null;
+}
+
 // 记下当前文件的 mtime+size 作为"已同步"基线
 function recordStat(path: string): void {
     const st = nativeStat(path);

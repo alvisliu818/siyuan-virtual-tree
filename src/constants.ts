@@ -6,6 +6,8 @@ export const TAB_TYPE = "siyuan-file-editor-tab";
 export const IMAGE_TAB_TYPE = "siyuan-file-editor-image";
 export const OFFICE_TAB_TYPE = "siyuan-file-editor-office";
 export const SEARCH_TAB_TYPE = "siyuan-file-editor-search";
+// 版本比较页签(历史版本 ↔ 当前内容,或两个历史版本互比)
+export const DIFF_TAB_TYPE = "siyuan-file-editor-diff";
 export const TERMINAL_TAB_TYPE = "siyuan-file-editor-terminal";
 export const MARKDOWN_TAB_TYPE = "siyuan-file-editor-markdown";
 // 音视频播放器 Tab(视频/音频文件不进文本编辑器,也不再提示"二进制文件")
