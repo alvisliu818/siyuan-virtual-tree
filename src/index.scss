@@ -590,6 +590,28 @@
     max-width: 40%;
 }
 
+/* 标题面包屑:H1 › H2 › …(点某项就地滚动定位到该标题,不跳走/不进入聚焦)。
+   分段复用 .syfe-editor__seg 的样式,这里只管这一行的布局;
+   没有标题时组件会把 display 置为 none,不占高度。 */
+.syfe-md__hcrumbs {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    flex-shrink: 0;
+    padding: 2px 12px;
+    font-size: 12px;
+    line-height: 18px;
+    color: var(--b3-theme-on-surface);
+    background: var(--b3-theme-surface);
+    border-bottom: 1px solid var(--b3-border-color);
+}
+
+/* 定位命中后给标题一次短暂高亮(复用文件树定位的闪烁动画) */
+.syfe-md__h--reveal {
+    animation: syfe-reveal-flash 1.6s ease;
+    border-radius: 4px;
+}
+
 .syfe-md__modebtn {
     flex-shrink: 0;
 }

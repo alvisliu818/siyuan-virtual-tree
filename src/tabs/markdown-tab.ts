@@ -8,6 +8,7 @@ import {getModel, saveModel, markDirty, isDirty, consumePendingReveal} from "../
 import {readBinaryFile} from "../api/file";
 import {createBacklinkPanel, BacklinkPanel} from "../components/backlink-panel";
 import {renderPathSegments, showPathSwitchMenu, enableCrumbScroll} from "../components/path-crumbs";
+import {enableHeadingCrumbs, flashHeading, type HeadingCrumbsHandle} from "../components/md-heading-crumbs";
 import {openFileTab} from "./editor-tab";
 import {highlightMatches, clearFindHighlights, setCurrentFindHit} from "../components/markdown-find";
 // vditor 与思源共用 window.Lute,且 vditor 那份缺 SetTabs —— 详见 utils/lute-guard 的说明
@@ -58,6 +59,8 @@ interface MarkdownTabInstance {
     _imgDebounce?: number;
     _blobUrlCache?: Map<string, string>;   // 解析后的绝对路径 → blob URL
     _blobUrlReverse?: Map<string, string>; // blob URL → 原始 markdown 路径(还原用)
+    // 标题面包屑(点某项就地滚动定位;语义同 siyuan-breadcrumb)
+    _hcrumbsHandle?: HeadingCrumbsHandle;
 }
 
 // Vditor 静态资源目录(webpack 已复制 vditor/dist 到插件目录)
@@ -314,6 +317,7 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                         <button class="b3-button b3-button--small syfe-md__modebtn" data-mode="reading">阅读</button>
                         <button class="b3-button b3-button--small b3-button--outline syfe-md__save">保存</button>
                     </div>
+                    <div class="syfe-md__hcrumbs syfe-crumbs-scroll" style="display:none;"></div>
                     <div class="syfe-md__find" style="display:none;">
                         <input class="b3-text-field syfe-md__findinput" placeholder="查找内容" />
                         <span class="syfe-md__findcount">0/0</span>
@@ -329,6 +333,32 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
             this._contentEl = this.element.querySelector(".syfe-md__content") as HTMLElement;
             this._dirtyDot = this.element.querySelector(".syfe-md__dirty") as HTMLElement;
             const self = this;
+
+            // 标题面包屑:显示光标所在位置的 H1 › H2 › … 路径,点某项就地滚动定位。
+            // 语义对齐 siyuan-breadcrumb(页内定位、不跳走、不进入聚焦);
+            // 对纯 markdown 文件而言"标题"就是天然的层级路径。
+            // 两种渲染引擎共用一套:Vditor 走 DOM 推导,Monaco 走文本推导。
+            this._hcrumbsHandle = enableHeadingCrumbs({
+                bar: this.element.querySelector(".syfe-md__hcrumbs") as HTMLElement,
+                contentEl: () => self._contentEl ?? null,
+                caretNode: () => {
+                    const sel = window.getSelection();
+                    return sel && sel.anchorNode ? sel.anchorNode : null;
+                },
+                isSource: () => self._mode === "source",
+                sourceText: () => self._model?.getValue() ?? "",
+                sourceLine: () => self._editor?.getPosition()?.lineNumber ?? 1,
+                jump: (crumb) => {
+                    if (crumb.element) {
+                        crumb.element.scrollIntoView({block: "start", behavior: "smooth"});
+                        flashHeading(crumb.element);
+                    } else if (crumb.line && self._editor) {
+                        self._editor.revealLineNearTop(crumb.line);
+                        self._editor.setPosition({lineNumber: crumb.line, column: 1});
+                        self._editor.focus();
+                    }
+                },
+            });
 
             // 顶栏面包屑(与编辑器 Tab 同款):点某段路径列出同级文件/文件夹,
             // 点文件直接切换打开。之前这里是纯文本路径,看起来像面包屑但点不动。
@@ -535,7 +565,11 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                 editor.onDidChangeModelContent(() => {
                     markDirty(path, true);
                     updateDirtyUI(true);
+                    // 标题增删/改名会改变面包屑内容
+                    self._hcrumbsHandle?.refresh();
                 });
+                // 光标移动:标题路径随位置变
+                editor.onDidChangeCursorPosition(() => self._hcrumbsHandle?.refresh());
                 // 搜索结果跳转
                 const revealLine = reveal !== undefined ? reveal : consumePendingReveal(path);
                 if (revealLine !== null) {
@@ -598,6 +632,8 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                     input: () => {
                         markDirty(path, true);
                         updateDirtyUI(true);
+                        // 编辑中标题结构会变,顺带刷新面包屑
+                        self._hcrumbsHandle?.refresh();
                     },
                     // 异步渲染完成后:补丁序列化方法 + 扫描初始图片 + 启动观察器
                     after: () => {
@@ -752,6 +788,8 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
         destroy(this: MarkdownTabInstance) {
             destroyVditor(this);
             destroyMonaco(this);
+            this._hcrumbsHandle?.dispose();
+            this._hcrumbsHandle = undefined;
             this._themeObserver?.disconnect();
             this._themeObserver = undefined;
             this._backlink?.dispose();
