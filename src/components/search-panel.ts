@@ -242,9 +242,7 @@ function appendGroup(container: HTMLElement, g: FileGroup, re: RegExp, keyword: 
     if (g.docId) li.dataset.docId = g.docId;
     li.dataset.kind = g.kind;
     const icon = g.kind === "sydoc" ? folderIconHTML(g.name, false) : fileIconHTML(g.name);
-    const head = g.kind === "sydoc"
-        ? `${escapeHTML(g.name)} <span class="syfe-search__group-count">${g.matches.length}</span> <span class="syfe-search__group-sub">${escapeHTML(g.subtitle)}</span>`
-        : `${escapeHTML(g.name)} <span class="syfe-search__group-count">${g.matches.length}</span> <span class="syfe-search__group-sub">${escapeHTML(g.subtitle)}</span>`;
+    const head = `${escapeHTML(g.name)} <span class="syfe-search__group-count">${g.matches.length}</span> <span class="syfe-search__group-sub">${escapeHTML(g.subtitle)}</span>`;
     li.innerHTML = `
         <div class="syfe-search__group-head">
             <span class="syfe-search__group-icon">${icon}</span>

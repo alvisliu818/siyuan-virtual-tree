@@ -111,14 +111,18 @@ export async function enumerateMountItems(): Promise<{items: MountSearchItem[]; 
         push({id: path, title: path.split("/").pop() || path, subtitle: path, kind: "file"});
     };
 
+    // 遍历整棵挂载树(含任意层级嵌套挂载的子项)
+    const walkTree = async (item: MountItem): Promise<void> => {
+        if (truncated) return;
+        await walkMountItem(item, walkDoc, walkBlock, walkFile);
+        for (const child of item.children || []) {
+            if (truncated) return;
+            await walkTree(child);
+        }
+    };
     for (const root of getRoots()) {
         if (truncated) break;
-        await walkMountItem(root, walkDoc, walkBlock, walkFile);
-        // 嵌套挂载的子项也要带上(它们没有"自动子项",是显式挂上去的)
-        for (const child of root.children || []) {
-            if (truncated) break;
-            await walkMountItem(child, walkDoc, walkBlock, walkFile);
-        }
+        await walkTree(root);
     }
     return {items, truncated};
 }
