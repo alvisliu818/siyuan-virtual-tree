@@ -383,8 +383,23 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                         self._editor.focus();
                         return;
                     }
-                    const sc = scrollParentOf(content);
-                    if (sc) sc.scrollTop = 0;
+                    // 滚动容器在 content 内部:ir 模式是 div.vditor-reset(wysiwyg/sv 是 pre.vditor-reset)。
+                    // 注意 pre.vditor-reset 与 div.vditor-reset 并存,pre 那个高度为 0 不可滚,
+                    // 所以候选里挑第一个真正可滚动的,而不是第一个匹配的。
+                    // 滚动容器是 content 内的 .vditor-reset(ir/sv 模式),但它与另一个同名的
+                    // 空元素(pre/div 不定,高度 0)并存,且哪个可滚会随渲染时机变化,
+                    // 所以枚举全部 .vditor-reset,挑第一个真正可滚动的。
+                    const resets = Array.from(content.querySelectorAll(".vditor-reset")) as HTMLElement[];
+                    const sc = resets.find(el => el.scrollHeight > el.clientHeight + 1) ??
+                        scrollParentOf((content.querySelector("h1,h2,h3,h4,h5,h6,p,div") as HTMLElement) || content);
+                    if (sc) {
+                        sc.scrollTop = 0;
+                    } else {
+                        // 兜底:content 自身或其可滚祖先也一并归零
+                        content.scrollTop = 0;
+                        const outer = scrollParentOf(content);
+                        if (outer) outer.scrollTop = 0;
+                    }
                     const first = content.querySelector("h1,h2,h3,h4,h5,h6") || content;
                     try {
                         const sel = window.getSelection();
