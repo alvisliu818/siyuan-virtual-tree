@@ -8,7 +8,7 @@ import {getModel, saveModel, markDirty, isDirty, consumePendingReveal} from "../
 import {readBinaryFile} from "../api/file";
 import {createBacklinkPanel, BacklinkPanel} from "../components/backlink-panel";
 import {renderPathSegments, showPathSwitchMenu, enableCrumbScroll} from "../components/path-crumbs";
-import {enableHeadingCrumbs, flashHeading, type HeadingCrumbsHandle} from "../components/md-heading-crumbs";
+import {enableHeadingCrumbs, flashHeading, scrollToTopOf, type HeadingCrumbsHandle} from "../components/md-heading-crumbs";
 import {openFileTab} from "./editor-tab";
 import {highlightMatches, clearFindHighlights, setCurrentFindHit} from "../components/markdown-find";
 // vditor 与思源共用 window.Lute,且 vditor 那份缺 SetTabs —— 详见 utils/lute-guard 的说明
@@ -350,7 +350,22 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                 sourceLine: () => self._editor?.getPosition()?.lineNumber ?? 1,
                 jump: (crumb) => {
                     if (crumb.element) {
-                        crumb.element.scrollIntoView({block: "start", behavior: "smooth"});
+                        // 顺序不能反:先把光标放进标题(面包屑路径随之延伸到这一级),
+                        // 再手动滚 —— scrollIntoView 的 smooth 动画会被 Vditor 的
+                        // 选区滚动同步抢回去(实测目标又被顶回视口外)
+                        try {
+                            const sel = window.getSelection();
+                            if (sel) {
+                                const r = document.createRange();
+                                r.selectNodeContents(crumb.element);
+                                r.collapse(false);
+                                sel.removeAllRanges();
+                                sel.addRange(r);
+                            }
+                        } catch {
+                            // 选区失败不影响定位本身
+                        }
+                        scrollToTopOf(crumb.element);
                         flashHeading(crumb.element);
                     } else if (crumb.line && self._editor) {
                         self._editor.revealLineNearTop(crumb.line);
@@ -570,6 +585,8 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                 });
                 // 光标移动:标题路径随位置变
                 editor.onDidChangeCursorPosition(() => self._hcrumbsHandle?.refresh());
+                // 初次进入源码态也补一次(此时面包屑可能还停留在 Vditor 的旧路径上)
+                self._hcrumbsHandle?.refresh();
                 // 搜索结果跳转
                 const revealLine = reveal !== undefined ? reveal : consumePendingReveal(path);
                 if (revealLine !== null) {
@@ -653,6 +670,9 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                         if (self._contentEl && !readOnly) {
                             self._imgObserver?.observe(self._contentEl, {childList: true, subtree: true});
                         }
+                        // Vditor 是异步渲染的:面包屑的首次 refresh 跑在它前面时拿不到任何标题,
+                        // 渲染完成这里必须补一次,否则刚打开的文档面包屑一直是空的
+                        self._hcrumbsHandle?.refresh();
                     },
                 });
                 self._vditor = vditor;
