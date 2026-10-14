@@ -10,6 +10,7 @@ import {createBacklinkPanel, BacklinkPanel} from "../components/backlink-panel";
 import {renderPathSegments, showPathSwitchMenu, enableCrumbScroll} from "../components/path-crumbs";
 import {enableHeadingCrumbs, flashHeading, scrollToTopOf, scrollParentOf, type HeadingCrumbsHandle} from "../components/md-heading-crumbs";
 import {openFileTab} from "./editor-tab";
+import {showVersionHistory} from "../version-control/version-ui";
 import {highlightMatches, clearFindHighlights, setCurrentFindHit} from "../components/markdown-find";
 // vditor 与思源共用 window.Lute,且 vditor 那份缺 SetTabs —— 详见 utils/lute-guard 的说明
 import {ensureSiyuanLute} from "../utils/lute-guard";
@@ -299,7 +300,12 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
             }
             this._path = path;
             // 兼容旧值:旧版"所见即所得"(wysiwyg)已并入"实时预览"(live)
-            const rawMode = (this.data?.mode || plugin.config.markdownDefaultMode || "live") as string;
+            // 全局阅读模式(默认开):优先级高于"Markdown 默认模式",打开即只读渲染;
+            // 显式指定 mode(如搜索跳转路径)时仍以显式值为准
+            const rawMode = (this.data?.mode ||
+                (plugin.config.globalReadingMode === true
+                    ? "reading"
+                    : (plugin.config.markdownDefaultMode || "live"))) as string;
             this._mode = (rawMode === "wysiwyg" ? "live" : rawMode) as MarkdownMode;
             this.element.classList.add("syfe-md-tab", "fn__flex-column");
 
@@ -315,6 +321,7 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                         <button class="b3-button b3-button--small syfe-md__modebtn" data-mode="live">实时预览</button>
                         <button class="b3-button b3-button--small syfe-md__modebtn" data-mode="source">源码</button>
                         <button class="b3-button b3-button--small syfe-md__modebtn" data-mode="reading">阅读</button>
+                        <button class="b3-button b3-button--small b3-button--outline syfe-md__verbtn" title="历史版本(每次保存自动保留修改前内容)">历史版本</button>
                         <button class="b3-button b3-button--small b3-button--outline syfe-md__save">保存</button>
                     </div>
                     <div class="syfe-md__hcrumbs syfe-crumbs-scroll" style="display:none;"></div>
@@ -733,6 +740,17 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                 const target = e.target as HTMLElement;
                 if (target.closest(".syfe-md__save")) {
                     save();
+                    return;
+                }
+                if (target.closest(".syfe-md__verbtn")) {
+                    showVersionHistory(plugin as any, path, {
+                        onRestore: () => {
+                            // 恢复写的是 model:渲染态(Vditor)需重进当前模式以反映新内容;
+                            // 源码模式 Monaco 直接跟着 model 走,无需处理
+                            if (self._mode === "reading") enterReading();
+                            else if (self._mode === "live") enterLive();
+                        },
+                    });
                     return;
                 }
                 const btn = target.closest(".syfe-md__modebtn") as HTMLElement | null;

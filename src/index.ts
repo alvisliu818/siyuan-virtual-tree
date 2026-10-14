@@ -31,6 +31,7 @@ import {openTagManagerDialog} from "./tags/tag-ui";
 import {loadOpenWithData} from "./open-with/open-with-store";
 import {openOpenWithManagerDialog} from "./open-with/open-with-ui";
 import {registerDocOpenTakeover} from "./open-takeover/doc-open-takeover";
+import {initFileVersions, setVersionKeepCount} from "./version-control/file-versions";
 import {loadRecents, addRecent, addRecentDoc, flushRecents} from "./recent-files";
 import {loadStartPage, itemFromPath, itemFromDoc, toggleInGroup} from "./start-page";
 import {isVirtualPath, virtualId, initMountStore, getMountList, dropSyDocMounts} from "./utils/virtual-tree";
@@ -102,6 +103,10 @@ export default class FileEditorPlugin extends Plugin {
     private docOpenTakeoverSelect?: HTMLSelectElement;
     private docOpenTakeoverExtsInput?: HTMLInputElement;
     private _unregisterDocOpenTakeover?: () => void;
+    // 全局阅读模式:Markdown 默认只读打开
+    private globalReadingModeInput?: HTMLInputElement;
+    // 版本控制:每文件保留的历史版本条数
+    private versionKeepCountInput?: HTMLInputElement;
     // 默认运行内核(代码块/代码文件/ipynb 共用的全局兜底)
     private kernelDefaultSelect?: HTMLSelectElement;
     // 引用关系树(移植自 siyuan-virtual-tree)
@@ -238,6 +243,10 @@ export default class FileEditorPlugin extends Plugin {
         // 注册 Tab 类型
         this.addTab(asSiyuanCustom(createEditorTabConfig(this as any)));
         this.addTab(asSiyuanCustom(createImageTabConfig(this as any)));
+        // 版本控制:接入独立存储(file-versions.json)并应用保留条数。
+        // 必须在任何保存动作发生前完成(保存快照走 saveModel → recordVersion)
+        void initFileVersions(this);
+        setVersionKeepCount(this.config.versionKeepCount ?? 10);
         // 接管思源文档内打开文件(open-asset/open-link 事件,配置热读,卸载时注销)
         this._unregisterDocOpenTakeover = registerDocOpenTakeover(this as any, () => ({
             mode: this.config.docOpenTakeover || "off",
@@ -325,6 +334,9 @@ export default class FileEditorPlugin extends Plugin {
     // 注:思源插件**没有 removeDock**,所以关闭开关后需要重启思源才真正隐藏。
     async onLayoutReady(): Promise<void> {
         this.config = await loadConfig(this);
+        // 版本控制保留条数以**磁盘配置**为准 —— onload 里那次跑在 loadConfig 之前,
+        // 拿到的是 DEFAULT_CONFIG 的值,改设置后不重启也不会生效,必须在这里补一次
+        setVersionKeepCount(this.config.versionKeepCount ?? 10);
         // 设置面板控件同步当前值
         this.syncSettingUI();
 // 加载标签数据(预设标签库 + 文件/文件夹打标记录)
@@ -1016,6 +1028,28 @@ actionElement: tagManageBtn,
             description: "打开 .md 文件时的默认模式,Tab 顶部可随时切换。实时预览=边写边渲染(光标行显示源码);源码=纯文本;阅读=完整渲染且只读。超过 512KB 的大文件始终以源码模式打开",
             actionElement: this.markdownModeSelect,
         });
+
+        // 全局阅读模式:Markdown 默认只读打开(优先级高于上面的默认模式)
+        this.globalReadingModeInput = document.createElement("input");
+        this.globalReadingModeInput.type = "checkbox";
+        this.globalReadingModeInput.className = "b3-switch";
+        this.setting!.addItem({
+            title: "全局阅读模式",
+            description: "开启后所有 Markdown 文件默认以「阅读」(只读渲染)方式打开,需要编辑时再用页签顶部的按钮切换;关闭则使用上面的「Markdown 默认模式」",
+            actionElement: this.globalReadingModeInput,
+        });
+
+        // 版本控制:每文件保留多少个修改前版本
+        this.versionKeepCountInput = document.createElement("input");
+        this.versionKeepCountInput.className = "b3-text-field fn__size200";
+        this.versionKeepCountInput.type = "number";
+        this.versionKeepCountInput.min = "0";
+        this.versionKeepCountInput.placeholder = "10";
+        this.setting!.addItem({
+            title: "版本控制:保留版本数",
+            description: "每次保存时自动把修改前的内容存为历史版本(文本文件通用,含代码文件),页签顶部「历史版本」可查看与恢复;0 = 关闭版本控制",
+            actionElement: this.versionKeepCountInput,
+        });
     }
 
     // 同步设置面板控件值为当前配置
@@ -1034,6 +1068,8 @@ actionElement: tagManageBtn,
         if (this.siyuanWorkspacePathInput) this.siyuanWorkspacePathInput.value = this.config.siyuanWorkspacePath;
         if (this.terminalShellSelect) this.terminalShellSelect.value = this.config.terminalShell || "auto";
         if (this.markdownModeSelect) this.markdownModeSelect.value = this.config.markdownDefaultMode || "live";
+        if (this.globalReadingModeInput) this.globalReadingModeInput.checked = this.config.globalReadingMode !== false;
+        if (this.versionKeepCountInput) this.versionKeepCountInput.value = String(this.config.versionKeepCount ?? 10);
         if (this.newTabReplacePlusInput) this.newTabReplacePlusInput.checked = this.config.newTabReplacePlus !== false;
         if (this.newTabShowPinnedInput) this.newTabShowPinnedInput.checked = this.config.newTabShowPinned !== false;
         if (this.newTabShowRecentInput) this.newTabShowRecentInput.checked = this.config.newTabShowRecent !== false;
@@ -1075,6 +1111,8 @@ actionElement: tagManageBtn,
             colorTheme: this.colorThemeSelect?.value || "",
             iconTheme: this.iconThemeSelect?.value || "",
             markdownDefaultMode: (this.markdownModeSelect?.value as "live" | "source" | "reading") || "live",
+            globalReadingMode: this.globalReadingModeInput?.checked ?? true,
+            versionKeepCount: Math.max(0, parseInt(this.versionKeepCountInput?.value || "10", 10) || 0),
             newTabReplacePlus: this.newTabReplacePlusInput?.checked ?? true,
             newTabShowPinned: this.newTabShowPinnedInput?.checked ?? true,
             newTabShowRecent: this.newTabShowRecentInput?.checked ?? true,
@@ -1112,6 +1150,8 @@ actionElement: tagManageBtn,
             // 解析失败保留原默认
         }
         await saveConfig(this, this.config);
+        // 版本控制保留条数跟随设置生效(0=关闭并清空历史)
+        setVersionKeepCount(this.config.versionKeepCount ?? 10);
         // 主题设置立即生效
         this.applyConfiguredThemes();
         // 导航窗格开关对已打开的编辑器立即生效

@@ -3,6 +3,7 @@ import {readTextFile, writeFile} from "../api/file";
 import {nativeStat} from "../api/native-fs";
 import {getLanguageByPath} from "./monaco";
 import {isSiyuanPath} from "../utils/path";
+import {recordVersion} from "../version-control/file-versions";
 
 // path → Monaco 文本模型(同一文件多 Tab 共享)
 const models = new Map<string, monaco.editor.ITextModel>();
@@ -76,6 +77,13 @@ export async function saveModel(path: string): Promise<void> {
     if (lastSavedMap.get(path) === value) {
         markDirty(path, false);
         return;
+    }
+    // 版本控制:落盘前把"修改前的磁盘内容"(lastSavedMap)存为历史版本。
+    // 所有走 saveModel 的保存路径(markdown 页签/代码页签/关闭确认)自动覆盖;
+    // 内容没变(lastSavedMap 与新值相同)时上面已提前 return,不会产生重复快照
+    const prevContent = lastSavedMap.get(path);
+    if (typeof prevContent === "string") {
+        recordVersion(path, prevContent);
     }
     await writeFile(path, value);
     lastSavedMap.set(path, value);

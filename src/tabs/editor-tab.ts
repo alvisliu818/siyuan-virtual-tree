@@ -29,6 +29,7 @@ import {runCommandInTerminal} from "./terminal-tab";
 import {toSystemPath} from "../utils/system-path";
 import {isDirectory} from "../utils/path-kind";
 import {revealInFileTree} from "../components/file-tree";
+import {showVersionHistory} from "../version-control/version-ui";
 
 // 打开文件夹:在文件树里展开定位。
 //
@@ -279,6 +280,15 @@ export function createEditorTabConfig(plugin: IPluginForTab) {
             };
             pathEl.addEventListener("click", pathClickHandler);
             this._disposables!.push(() => pathEl.removeEventListener("click", pathClickHandler));
+
+            // 历史版本入口:查看/恢复此前保存的版本(版本控制在 saveModel 落盘前自动快照,
+            // 文本文件通用)。恢复写进 model 而不直接落盘,Monaco 会立即反映,确认后手动保存
+            const verBtn = document.createElement("span");
+            verBtn.className = "syfe-editor__run";
+            verBtn.textContent = "⏱ 历史版本";
+            verBtn.title = "查看历史版本(每次保存自动保留修改前的内容)";
+            verBtn.addEventListener("click", () => showVersionHistory(plugin as any, path));
+            pathEl.appendChild(verBtn);
 
             // 反向链接面板(默认收起,展开时懒扫描)
             const backlinkEl = this.element.querySelector(".syfe-editor__backlink") as HTMLElement;
