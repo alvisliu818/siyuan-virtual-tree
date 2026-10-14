@@ -8,7 +8,7 @@ import {getModel, saveModel, markDirty, isDirty, consumePendingReveal} from "../
 import {readBinaryFile} from "../api/file";
 import {createBacklinkPanel, BacklinkPanel} from "../components/backlink-panel";
 import {renderPathSegments, showPathSwitchMenu, enableCrumbScroll} from "../components/path-crumbs";
-import {enableHeadingCrumbs, flashHeading, scrollToTopOf, type HeadingCrumbsHandle} from "../components/md-heading-crumbs";
+import {enableHeadingCrumbs, flashHeading, scrollToTopOf, scrollParentOf, type HeadingCrumbsHandle} from "../components/md-heading-crumbs";
 import {openFileTab} from "./editor-tab";
 import {highlightMatches, clearFindHighlights, setCurrentFindHit} from "../components/markdown-find";
 // vditor 与思源共用 window.Lute,且 vditor 那份缺 SetTabs —— 详见 utils/lute-guard 的说明
@@ -371,6 +371,32 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                         self._editor.revealLineNearTop(crumb.line);
                         self._editor.setPosition({lineNumber: crumb.line, column: 1});
                         self._editor.focus();
+                    }
+                },
+                // 点文档根图标:回到文档顶部,光标也放回去(面包屑随之回到根)
+                jumpDocStart: () => {
+                    const content = self._contentEl;
+                    if (!content) return;
+                    if (self._mode === "source" && self._editor) {
+                        self._editor.revealLineNearTop(1);
+                        self._editor.setPosition({lineNumber: 1, column: 1});
+                        self._editor.focus();
+                        return;
+                    }
+                    const sc = scrollParentOf(content);
+                    if (sc) sc.scrollTop = 0;
+                    const first = content.querySelector("h1,h2,h3,h4,h5,h6") || content;
+                    try {
+                        const sel = window.getSelection();
+                        if (sel) {
+                            const r = document.createRange();
+                            r.setStart(first, 0);
+                            r.collapse(true);
+                            sel.removeAllRanges();
+                            sel.addRange(r);
+                        }
+                    } catch {
+                        // 选区失败不影响回到顶部本身
                     }
                 },
             });

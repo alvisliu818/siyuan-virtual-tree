@@ -25,8 +25,19 @@ export interface HeadingCrumb {
 }
 
 /** 标题路径 → HTML。复用编辑器路径面包屑的 seg/sep 样式,不维护第二套 CSS */
-export function renderHeadingSegments(crumbs: HeadingCrumb[]): string {
+export function renderHeadingSegments(crumbs: HeadingCrumb[], doc?: {icon: boolean; hasChildren: boolean}): string {
     const out: string[] = [];
+    // 文档根(对齐思源原生面包屑的首项):点击回文档顶部,箭头列出所有一级标题
+    if (doc?.icon) {
+        out.push(
+            `<span class="syfe-editor__seg syfe-md__hdoc" data-hdoc="1" title="文档开头">` +
+            `<svg class="syfe-md__docicon"><use xlink:href="#iconFile"></use></svg></span>`,
+        );
+        if (doc.hasChildren) {
+            out.push(`<span class="syfe-editor__seg syfe-md__hexp" data-hdocexp="1" title="展开一级标题">▾</span>`);
+        }
+        out.push(`<span class="syfe-editor__sep">›</span>`);
+    }
     crumbs.forEach((c, i) => {
         if (i > 0) out.push(`<span class="syfe-editor__sep">›</span>`);
         const label = c.text.length > 40 ? c.text.slice(0, 40) + "…" : c.text;
@@ -118,8 +129,13 @@ export function headingPathFromText(text: string, caretLine: number): HeadingCru
  * 从该标题往后扫,收集层级 = 自身+1 的标题;遇到层级 ≤ 自身的就停(那是它的兄弟/长辈)。
  */
 export function childHeadingsOfDom(container: HTMLElement | null, crumb: HeadingCrumb): HeadingCrumb[] {
-    if (!container || !crumb.element) return [];
+    if (!container) return [];
     const all = Array.from(container.querySelectorAll<HTMLElement>("h1,h2,h3,h4,h5,h6"));
+    // level 0 = 文档根:所有一级标题都是它的孩子
+    if (crumb.level === 0) {
+        return all.filter(h => levelOf(h) === 1).map(h => ({level: 1, text: textOf(h), element: h}));
+    }
+    if (!crumb.element) return [];
     const start = all.indexOf(crumb.element);
     if (start < 0) return [];
     const out: HeadingCrumb[] = [];
@@ -133,12 +149,15 @@ export function childHeadingsOfDom(container: HTMLElement | null, crumb: Heading
 
 /** 某个标题的直接下级标题(文本版,Monaco 源码模式;同样跳过代码围栏) */
 export function childHeadingsOfText(text: string, crumb: HeadingCrumb): HeadingCrumb[] {
-    if (!text || !crumb.line) return [];
+    if (!text) return [];
+    if (!crumb.line && crumb.level !== 0) return [];
+    const isRoot = crumb.level === 0;
+    const startLine = isRoot ? 1 : (crumb.line as number);   // level 0 = 文档根,从头扫起
     const lines = text.split("\n");
     const re = /^(#{1,6})\s+(.*)$/;
     let fence: string | null = null;
     const out: HeadingCrumb[] = [];
-    for (let i = crumb.line; i < lines.length; i++) {
+    for (let i = startLine - 1; i < lines.length; i++) {
         const line = lines[i];
         const fenceMatch = /^\s{0,3}(```|~~~)/.exec(line);
         if (fenceMatch) {
@@ -148,12 +167,12 @@ export function childHeadingsOfText(text: string, crumb: HeadingCrumb): HeadingC
             continue;
         }
         if (fence !== null) continue;
-        // 起始行本身是当前标题,跳过
-        if (i + 1 <= crumb.line) continue;
+        // 非文档根时,起始行本身是当前标题,跳过
+        if (!isRoot && i + 1 <= startLine) continue;
         const m = re.exec(line);
         if (!m) continue;
         const lv = m[1].length;
-        if (lv <= crumb.level) break;
+        if (!isRoot && lv <= crumb.level) break;
         if (lv === crumb.level + 1) out.push({level: lv, text: m[2].trim() || `第 ${i + 1} 行`, line: i + 1});
     }
     return out;
@@ -174,6 +193,8 @@ export interface HeadingCrumbsHost {
     sourceLine: () => number;
     /** 点击后的滚动定位 */
     jump: (crumb: HeadingCrumb) => void;
+    /** 点文档图标:回到文档顶部(可选;不给则图标点了没反应) */
+    jumpDocStart?: () => void;
 }
 
 export interface HeadingCrumbsHandle {
@@ -225,7 +246,9 @@ export function enableHeadingCrumbs(host: HeadingCrumbsHost): HeadingCrumbsHandl
         for (let i = 0; i < crumbs.length; i++) {
             crumbs[i].hasChildren = i < crumbs.length - 1 || childrenOf(crumbs[i]).length > 0;
         }
-        bar.innerHTML = renderHeadingSegments(crumbs);
+        // 文档根图标:有一级标题才渲染展开箭头
+        const docHasChildren = crumbs.some(c => c.level === 1);
+        bar.innerHTML = renderHeadingSegments(crumbs, {icon: true, hasChildren: docHasChildren});
         bar.style.display = "";
         // 滚动到最右,保证最后一级(当前所在标题)可见
         requestAnimationFrame(() => { bar.scrollLeft = bar.scrollWidth; });
@@ -245,6 +268,29 @@ export function enableHeadingCrumbs(host: HeadingCrumbsHost): HeadingCrumbsHandl
 
     const onClick = (e: MouseEvent) => {
         const target = e.target as HTMLElement;
+        // 文档根图标:回到文档顶部
+        if (target.closest("[data-hdoc]")) {
+            e.stopPropagation();
+            e.preventDefault();
+            host.jumpDocStart?.();
+            return;
+        }
+        // 文档根的展开箭头:列出所有一级标题(同样级联下钻)
+        const docExp = target.closest("[data-hdocexp]") as HTMLElement | null;
+        if (docExp) {
+            e.stopPropagation();
+            e.preventDefault();
+            const menu = new Menu();
+            const items = buildChildItems({level: 0, text: "doc"});
+            if (items.length === 0) {
+                menu.addItem({label: "无一级标题", click: () => {}});
+            } else {
+                items.forEach(it => menu.addItem(it));
+            }
+            const rect = docExp.getBoundingClientRect();
+            menu.open({x: rect.left, y: rect.bottom + 4});
+            return;
+        }
         // 展开箭头:列出直接下级标题,选中即跳转(面包屑随之延伸到那一级);
         // 子项上继续悬浮还能展开它的下级 —— 级联子菜单,可一路钻到最深层
         const exp = target.closest("[data-hexp]") as HTMLElement | null;

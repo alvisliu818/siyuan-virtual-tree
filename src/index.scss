@@ -619,6 +619,14 @@
     padding: 1px 2px;
 }
 
+/* 文档根图标(面包屑首项):点击回文档顶部 */
+.syfe-md__docicon {
+    width: 14px;
+    height: 14px;
+    display: inline-block;
+    vertical-align: -2px;
+}
+
 .syfe-md__modebtn {
     flex-shrink: 0;
 }
