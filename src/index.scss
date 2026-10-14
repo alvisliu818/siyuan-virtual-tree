@@ -3616,3 +3616,405 @@ button.syfe-editor__arrow--exp:hover {
     border-radius: 4px;
   }
 }
+
+/* === 搜索面板:范围切换 / 匹配选项 / 结果分组 === */
+.syfe-search__row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 4px 12px;
+    border-bottom: 1px solid var(--b3-border-color);
+    flex-shrink: 0;
+    flex-wrap: wrap;
+}
+
+.syfe-search__modes,
+.syfe-search__scopes {
+    display: flex;
+    gap: 4px;
+    padding: 0;
+    border: none;
+}
+
+.syfe-search__scope {
+    border: 1px solid var(--b3-border-color);
+    background: transparent;
+    color: var(--b3-theme-on-surface);
+    padding: 2px 10px;
+    font-size: 12px;
+    line-height: 18px;
+    border-radius: 10px;
+    cursor: pointer;
+
+    &:hover {
+        background-color: var(--b3-list-hover);
+    }
+
+    &.active {
+        background-color: var(--b3-list-selected);
+        color: var(--b3-list-hover-on);
+        border-color: transparent;
+    }
+}
+
+.syfe-search__opts {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 12px;
+    border-bottom: 1px solid var(--b3-border-color);
+    flex-shrink: 0;
+    flex-wrap: wrap;
+    font-size: 12px;
+    color: var(--b3-theme-on-surface);
+}
+
+.syfe-search__opt {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    cursor: pointer;
+
+    input[type="text"].b3-text-field {
+        width: 120px;
+        padding: 2px 6px;
+        font-size: 12px;
+    }
+
+    select.b3-select {
+        padding: 2px 4px;
+        font-size: 12px;
+    }
+}
+
+/* 按文件分组的结果(点击组标题折叠/展开) */
+.syfe-search__group {
+    border-bottom: 1px solid var(--b3-border-color);
+
+    &--collapsed .syfe-search__group-items {
+        display: none;
+    }
+}
+
+.syfe-search__group-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    cursor: pointer;
+    background: var(--b3-theme-background-light);
+
+    &:hover {
+        background-color: var(--b3-list-hover);
+    }
+}
+
+.syfe-search__group-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 16px;
+    height: 16px;
+
+    svg {
+        width: 16px;
+        height: 16px;
+    }
+}
+
+.syfe-search__group-name {
+    font-size: 13px;
+    color: var(--b3-theme-on-background);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.syfe-search__group-count {
+    flex-shrink: 0;
+    font-size: 11px;
+    color: var(--b3-theme-on-background);
+    background: var(--b3-theme-background-light);
+    border: 1px solid var(--b3-border-color);
+    border-radius: 8px;
+    padding: 0 6px;
+    line-height: 16px;
+}
+
+.syfe-search__group-sub {
+    font-size: 11px;
+    color: var(--b3-theme-on-surface);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.syfe-search__group-items {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.syfe-search__hit {
+    font-size: 12px;
+    font-family: var(--b3-font-family-code);
+    color: var(--b3-theme-on-background);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+
+    .syfe-search__item-line {
+        display: inline-block;
+        width: 42px;
+        text-align: right;
+        margin-right: 8px;
+        color: var(--b3-font-color5);
+    }
+}
+
+/* 上下文行(匹配行的前后 N 行) */
+.syfe-search__ctx {
+    font-size: 12px;
+    font-family: var(--b3-font-family-code);
+    color: var(--b3-theme-on-surface);
+    opacity: 0.75;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    padding-left: 50px;
+}
+
+/* === 历史版本对话框 === */
+.syfe-ver__hint {
+    font-size: 12px;
+    color: var(--b3-theme-on-surface);
+}
+
+.syfe-ver__list {
+    width: 260px;
+    flex-shrink: 0;
+    overflow: auto;
+    border: 1px solid var(--b3-border-color);
+    border-radius: 4px;
+}
+
+.syfe-ver__empty {
+    padding: 12px;
+    color: var(--b3-theme-on-surface);
+    font-size: 12px;
+}
+
+.syfe-ver-item {
+    padding: 8px 10px;
+    cursor: pointer;
+    border-bottom: 1px solid var(--b3-border-color);
+    font-size: 12px;
+
+    &:hover {
+        background-color: var(--b3-list-hover);
+    }
+
+    &--on {
+        background-color: var(--b3-list-selected);
+    }
+}
+
+.syfe-ver-item__size {
+    color: var(--b3-theme-on-surface);
+}
+
+.syfe-ver__tabs {
+    display: flex;
+    gap: 4px;
+    flex-shrink: 0;
+}
+
+.syfe-ver__tab {
+    border: 1px solid var(--b3-border-color);
+    background: transparent;
+    color: var(--b3-theme-on-surface);
+    padding: 2px 12px;
+    font-size: 12px;
+    line-height: 18px;
+    border-radius: 10px;
+    cursor: pointer;
+
+    &:hover {
+        background-color: var(--b3-list-hover);
+    }
+
+    &--on {
+        background-color: var(--b3-list-selected);
+        color: var(--b3-list-hover-on);
+        border-color: transparent;
+    }
+}
+
+.syfe-ver__diffbar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    font-size: 12px;
+    flex-shrink: 0;
+
+    .b3-select {
+        max-width: 200px;
+        padding: 2px 4px;
+        font-size: 12px;
+    }
+}
+
+.syfe-ver__lb {
+    color: var(--b3-theme-on-surface);
+}
+
+.syfe-ver__chk {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    cursor: pointer;
+}
+
+.syfe-ver__stats {
+    margin-left: auto;
+    color: var(--b3-theme-on-surface);
+}
+
+.syfe-ver__preview {
+    margin: 0;
+    padding: 8px;
+    border: 1px solid var(--b3-border-color);
+    border-radius: 4px;
+    font-size: 12px;
+    white-space: pre-wrap;
+    word-break: break-all;
+    color: var(--b3-theme-on-background);
+    min-height: 100%;
+    box-sizing: border-box;
+}
+
+.syfe-ver__footer {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+    flex-shrink: 0;
+}
+
+/* === 版本比较(diff)视图:历史版本对话框与比较页签共用 === */
+.syfe-diff {
+    font-family: var(--b3-font-family-code);
+    font-size: 12px;
+    line-height: 19px;
+    overflow-x: auto;
+}
+
+.syfe-diff__row {
+    display: flex;
+    min-height: 19px;
+}
+
+.syfe-diff__cell {
+    flex: 1 1 50%;
+    min-width: 0;
+    display: flex;
+    gap: 8px;
+    padding: 0 8px;
+
+    &--del {
+        background: rgba(255, 82, 82, 0.13);
+    }
+
+    &--add {
+        background: rgba(56, 190, 100, 0.15);
+    }
+
+    &--empty {
+        background: rgba(127, 127, 127, 0.07);
+    }
+}
+
+.syfe-diff--inline {
+    .syfe-diff__row--del {
+        background: rgba(255, 82, 82, 0.13);
+    }
+
+    .syfe-diff__row--add {
+        background: rgba(56, 190, 100, 0.15);
+    }
+}
+
+.syfe-diff__no {
+    flex-shrink: 0;
+    width: 44px;
+    text-align: right;
+    color: var(--b3-theme-on-surface);
+    font-size: 11px;
+    user-select: none;
+}
+
+.syfe-diff__sign {
+    flex-shrink: 0;
+    width: 14px;
+    text-align: center;
+    color: var(--b3-theme-on-surface);
+    user-select: none;
+}
+
+.syfe-diff__text {
+    white-space: pre;
+    color: var(--b3-theme-on-background);
+}
+
+/* === 独立版本比较页签 === */
+.syfe-difftab {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+}
+
+.syfe-difftab__bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--b3-border-color);
+    flex-shrink: 0;
+    flex-wrap: wrap;
+    font-size: 12px;
+
+    .b3-select {
+        max-width: 200px;
+        padding: 2px 4px;
+        font-size: 12px;
+    }
+}
+
+.syfe-difftab__file {
+    font-weight: 500;
+    color: var(--b3-theme-on-background);
+}
+
+.syfe-difftab__lb,
+.syfe-difftab__stats {
+    color: var(--b3-theme-on-surface);
+}
+
+.syfe-difftab__chk {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    cursor: pointer;
+}
+
+.syfe-difftab__body {
+    overflow: auto;
+    min-height: 0;
+}
+
+.syfe-difftab__empty {
+    padding: 16px;
+    color: var(--b3-theme-on-surface);
+    font-size: 12px;
+}
