@@ -6,6 +6,7 @@ import {START_TAB_TYPE} from "../constants";
 import {EditorConfig} from "../types";
 import {basename, dirname} from "../utils/path";
 import {fileIconHTML} from "../utils/icons";
+import {docTreeIconHTML, cachedDocIcon, ensureDocIcons} from "../utils/siyuan-icon";
 import {enumerateAll} from "../components/search-panel";
 import {openEntry, showEntryMenu} from "../components/entry-menu";
 import {getRecentEntries, RECENTS_CHANGED_EVENT} from "../recent-files";
@@ -197,7 +198,8 @@ function groupToItems(items: StartPageItem[], group: StartGroup): PageItem[] {
 // 条目图标 HTML:文档用 iconFile,文件用扩展名图标
 function itemIconHTML(item: PageItem): string {
     if (item.kind === "doc") {
-        return `<svg class="b3-list-item__graphic"><use xlink:href="#iconFile"></use></svg>`;
+        // 思源文档:用虚拟文档树同款的文档图标(用户自定义图标优先;缓存未热时先给内置样式,异步补绘)
+        return docTreeIconHTML(cachedDocIcon(item.id) || "", "file");
     }
     return fileIconHTML(basename(item.path || ""));
 }
@@ -301,6 +303,9 @@ export function createStartTabConfig(plugin: IPluginForStartTab) {
                 } else {
                     bodyEl.innerHTML = sections.join("");
                 }
+                // 文档自定义图标异步补绘(ensureDocIcons 命中缓存时不会重复回调,无循环风险)
+                const docIds = items.filter(i => i.kind === "doc").map(i => (i as any).id as string);
+                if (docIds.length) ensureDocIcons(docIds, render);
             };
             render();
 

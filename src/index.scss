@@ -852,8 +852,11 @@ button.syfe-editor__arrow--exp:hover {
     font-family: var(--b3-font-family-code);
 }
 
-// 路径分段(面包屑):点击可切换到同级其他文件或文件夹
-.syfe-editor__pathtext {
+// 路径分段(面包屑):点击可切换到同级其他文件或文件夹。
+// flex:1 占满剩余空间 —— 顶栏按钮组(历史版本/更多/▶运行)才能收紧靠右;
+// 之前按钮各自的 margin-left:auto 均分了富余空间,把三个按钮扯散在整行
+.syfe-editor__path .syfe-editor__pathtext {
+    flex: 1 1 auto;
     white-space: nowrap;
 }
 
@@ -910,15 +913,24 @@ button.syfe-editor__arrow--exp:hover {
     font-size: 14px;
 }
 
-// 头部「▶ 运行」(仅 Python 文件):推到路径行最右,点击丢进终端执行
-.syfe-editor__run {
-    margin-left: auto;
+// 顶栏右侧按钮组(历史版本/更多/▶运行 共用):由 pathtext flex:1 推到最右。
+// 三个按钮内容形态不同(文本/14px svg),inline-flex + 统一行高做垂直居中,
+// 否则 svg 与文字基线不齐,视觉上三个按钮高低不一
+.syfe-editor__path .syfe-editor__run {
+    display: inline-flex;
+    align-items: center;
+    height: 22px;
+    margin-left: 0;
     flex-shrink: 0;
     cursor: pointer;
     color: var(--b3-theme-primary);
     padding: 1px 6px;
     border-radius: 3px;
     user-select: none;
+
+    svg {
+        display: block;
+    }
 
     &:hover {
         background: var(--b3-list-hover);
@@ -4106,4 +4118,41 @@ button.syfe-editor__arrow--exp:hover {
     display: flex;
     gap: 4px;
     flex-shrink: 0;
+}
+
+/* ===== 页签头:虚拟文件树同款图标(图标与文件名靠近) ===== */
+.layout-tab-bar .item svg.b3-list-item__graphic,
+.layout-tab-bar .item img.syfe-tree__ext-icon {
+    width: 14px;
+    height: 14px;
+    margin-right: 2px;
+    flex-shrink: 0;
+}
+
+/* 带主题图标的页签:文字自身 8px 左内边距收成 2px(视觉间隙 = 2+2 = 4px) */
+.layout-tab-bar .item:has(img.syfe-tree__ext-icon) .item__text {
+    padding-left: 2px;
+}
+
+/* 路径切换菜单(.syfe-pathmenu):行结构与样式完全复用虚拟文档树(syfe-mtree__*);
+   zoom 让菜单字号对齐面包屑字号:行字号 13px × 0.923 ≈ 12px(面包屑字号),
+   图标 16px → 14.8px 同步放大;宽度固定,超出横向滚动 */
+.b3-menu.syfe-pathmenu {
+    zoom: 0.923;
+}
+
+.b3-menu.syfe-pathmenu .syfe-mtree__row {
+    width: max-content;
+    min-width: 100%;
+    box-sizing: border-box;
+}
+
+.b3-menu.syfe-pathmenu .syfe-mtree__name {
+    overflow: visible;
+    text-overflow: clip;
+}
+
+.b3-menu.syfe-pathmenu .syfe-pathmenu__chev svg {
+    width: 12px;
+    height: 12px;
 }

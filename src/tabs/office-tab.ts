@@ -1,4 +1,6 @@
 import {openTab, confirm, showMessage} from "siyuan";
+import {applyFileTabHeadIconWhenReady} from "../utils/tab-icon";
+import {guardUnsavedClose} from "../utils/close-guard";
 import {OFFICE_TAB_TYPE, getOfficeKind} from "../constants";
 import {basename} from "../utils/path";
 import {openTreeFileWithExternalApp} from "../utils/external-app";
@@ -107,6 +109,8 @@ export function createOfficeTabConfig(_plugin: IPluginForOfficeTab) {
             const extraEl = this.element.querySelector(".syfe-office__extra") as HTMLElement;
             const saveBtn = this.element.querySelector("[data-act='save']") as HTMLElement | null;
             const self = this;
+            // 页签头图标 → 虚拟文件树同款(重试版)
+            applyFileTabHeadIconWhenReady(self, path, "iconFile");
 
             const setDirty = (d: boolean) => {
                 self._dirty = d;
@@ -256,20 +260,17 @@ export function createOfficeTabConfig(_plugin: IPluginForOfficeTab) {
                     // 已关闭
                 }
             };
-            confirm(
-                "未保存的修改",
-                `「${basename(this._path || "")}」有未保存的修改,是否保存?`,
-                () => {
-                    const engine = self._engine;
-                    if (!engine) {
-                        doClose();
-                        return;
-                    }
-                    engine.save().then(doClose).catch(() => showMessage("保存失败", 3000, "error"));
-                },
-                doClose,
-            );
-            return false; // 阻止本次关闭,等待用户选择
+            const saveThenClose = () => {
+                const engine = self._engine;
+                if (!engine) {
+                    doClose();
+                    return;
+                }
+                engine.save().then(doClose).catch(() => showMessage("保存失败", 3000, "error"));
+            };
+            // 行为由设置项「关闭未保存标签页时」决定:ask 弹确认 / discard 直接放弃 / save 直接保存
+            guardUnsavedClose(basename(this._path || ""), saveThenClose, doClose);
+            return false;
         },
         destroy(this: OfficeTabInstance) {
             if (this._onKey) {

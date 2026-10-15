@@ -90,7 +90,8 @@ export function registerDocOpenTakeover(
         const abs = toAbsolutePath(rawPath);
         if (!abs) return false; // 解析不了本地路径就别拦,交给思源
         try {
-            openFileTab(plugin as any, abs);
+            // 设置项「接管打开用分栏」:开启时用右侧分栏打开(文档与文件同屏);热生效(handler 每次读 getConfig)
+            openFileTab(plugin as any, abs, cfg.takeoverSplitOpen ? {position: "right"} : undefined);
         } catch (e) {
             console.warn("[doc-open-takeover] 打开失败,回退思源默认:", rawPath, e);
             return false;

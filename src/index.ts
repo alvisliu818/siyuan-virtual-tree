@@ -54,6 +54,7 @@ import {clearAllThemes, applyThemeByPreference, getLoadedThemes} from "./extensi
 import {clearAllSnippets} from "./extensions/snippet-loader";
 import {clearAllLsp} from "./extensions/lsp-loader";
 import {clearAllIconThemes, getIconThemesWithMissingIcons, getLoadedIconThemes, activateIconThemeByPreference} from "./extensions/icon-theme-loader";
+import {setCloseUnsavedAction} from "./utils/close-guard";
 import {registerPythonLsp, disposePythonLsp} from "./utils/python-lsp-bridge";
 import {disposePythonKernel} from "./utils/python-kernel";
 import {disposeAllKernels, disposeAllKernelsSync, getGlobalDefaultChoice, getKernelChoice, loadKernelChoices, registerKernelChoicePersistence, setKernelChoice, DEFAULT_KERNEL_ID} from "./utils/kernel/registry";
@@ -84,6 +85,10 @@ export default class FileEditorPlugin extends Plugin {
     private fontSizeInput?: HTMLInputElement;
     private tabSizeInput?: HTMLInputElement;
     private wordWrapSelect?: HTMLSelectElement;
+    // 「关闭未保存标签页时的行为」下拉
+    private closeUnsavedSelect?: HTMLSelectElement;
+    // 「接管打开用分栏」开关
+    private takeoverSplitOpenInput?: HTMLInputElement;
     private formatOnSaveInput?: HTMLInputElement;
     // 编辑器右侧导航窗格(minimap 缩略图)开关
     private showMinimapInput?: HTMLInputElement;
@@ -350,6 +355,8 @@ export default class FileEditorPlugin extends Plugin {
         setVersionKeepCount(this.config.versionKeepCount ?? 10);
         // 删除方式同理:以磁盘配置为准
         setTrashMode(this.config.deleteMode || "plugin");
+        // 关闭未保存行为跟随磁盘配置生效
+        setCloseUnsavedAction(this.config.closeUnsavedAction);
         // 设置面板控件同步当前值
         this.syncSettingUI();
 // 加载标签数据(预设标签库 + 文件/文件夹打标记录)
@@ -772,6 +779,29 @@ actionElement: tagManageBtn,
             actionElement: this.docOpenTakeoverExtsInput,
         });
 
+        // 关闭未保存标签页时的行为
+        this.closeUnsavedSelect = document.createElement("select");
+        this.closeUnsavedSelect.className = "b3-select fn__size200";
+        this.closeUnsavedSelect.innerHTML =
+            `<option value="ask">每次询问(保存 / 放弃)</option>` +
+            `<option value="discard">不提示,直接放弃修改</option>` +
+            `<option value="save">不提示,直接保存</option>`;
+        this.setting!.addItem({
+            title: "关闭未保存标签页时",
+            description: "关闭有未保存修改的编辑器 / Markdown / 笔记本 / Office 页签时的行为;「直接放弃」丢失的修改无法找回",
+            actionElement: this.closeUnsavedSelect,
+        });
+
+        // 文档内链接接管打开:是否用分栏
+        this.takeoverSplitOpenInput = document.createElement("input");
+        this.takeoverSplitOpenInput.type = "checkbox";
+        this.takeoverSplitOpenInput.className = "b3-switch";
+        this.setting!.addItem({
+            title: "接管打开用分栏",
+            description: "在思源文档里点击链接被本插件接管打开文件时,用右侧分栏打开(文档与文件同屏);关闭则在当前页签区打开",
+            actionElement: this.takeoverSplitOpenInput,
+        });
+
 // 百度网盘(接入方式配置 + 挂载入口说明)
         const bdPanBtn = document.createElement("button");
         bdPanBtn.className = "b3-button b3-button--outline fn__size200";
@@ -1109,6 +1139,8 @@ actionElement: tagManageBtn,
         if (this.tabSizeInput) this.tabSizeInput.value = String(this.config.tabSize);
         if (this.wordWrapSelect) this.wordWrapSelect.value = this.config.wordWrap;
         if (this.formatOnSaveInput) this.formatOnSaveInput.checked = this.config.formatOnSave;
+        if (this.closeUnsavedSelect) this.closeUnsavedSelect.value = this.config.closeUnsavedAction || "ask";
+        if (this.takeoverSplitOpenInput) this.takeoverSplitOpenInput.checked = this.config.takeoverSplitOpen === true;
         if (this.showMinimapInput) this.showMinimapInput.checked = this.config.showMinimap !== false;
         if (this.searchMaxSizeInput) {
             this.searchMaxSizeInput.value = String(Math.round(this.config.searchMaxFileSize / 1024));
@@ -1173,6 +1205,8 @@ actionElement: tagManageBtn,
             importMdSourceAsset: this.importMdSourceAssetInput?.checked ?? false,
             docOpenTakeover: ((this.docOpenTakeoverSelect?.value || "off") as "off" | "exts" | "all"),
             docOpenTakeoverExts: (this.docOpenTakeoverExtsInput?.value || "").trim() || "md,txt",
+            closeUnsavedAction: ((this.closeUnsavedSelect?.value || "ask") as "ask" | "discard" | "save"),
+            takeoverSplitOpen: this.takeoverSplitOpenInput?.checked ?? false,
             // 「文件」面板功能已移除(虚拟文档树全面承接);保留配置键兼容旧存储
             showFileTreeDock: false,
             mountTreeRelation: {
@@ -1207,6 +1241,8 @@ actionElement: tagManageBtn,
         setVersionKeepCount(this.config.versionKeepCount ?? 10);
         // 删除方式跟随设置生效
         setTrashMode(this.config.deleteMode || "plugin");
+        // 关闭未保存行为跟随设置生效
+        setCloseUnsavedAction(this.config.closeUnsavedAction);
         // 主题设置立即生效
         this.applyConfiguredThemes();
         // 导航窗格开关对已打开的编辑器立即生效

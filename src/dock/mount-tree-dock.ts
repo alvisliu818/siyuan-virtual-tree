@@ -521,6 +521,86 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 notInRange();
             };
 
+            /** 定位文件夹(新标签页固定文件夹点击):展开面板 → 找到目录行 → 展开并闪烁。
+             *  与文件版唯一的差异:挂载目录行自身也可作为精确命中(文件版只精确命中文件),
+             *  且命中目录后顺手展开(用户点文件夹就是为了看里面的东西)。 */
+            const locateFolderInMountTree = async (target: string) => {
+                // dock 图标的 data-type 是「插件名+type」的全键 → 用后缀匹配
+                const dockItem = document.querySelector(`.dock__item[data-type$="${MOUNT_TREE_DOCK_TYPE}"]`) as HTMLElement | null;
+                const dockVisible = !!document.querySelector(".syfe-mtree-dock")?.getClientRects().length;
+                if (!dockVisible && dockItem) dockItem.click();
+                await sleepMs(300);
+                const notInRange = () => showMessage("该目录不在虚拟文档树的挂载范围内,可右键该目录选择「挂载到虚拟文档树」", 3500, "info");
+                for (let guard = 0; guard < 12; guard++) {
+                    let bestDepth = -1;
+                    let bestRow: FileLocateRow | null = null;
+                    let exact: FileLocateRow | null = null;
+                    for (const r of (self._rows || [])) {
+                        if (r.kind === "file") {
+                            if (sameFsPath(r.path, target)) { exact = r; break; }
+                            if (r.isDir && fsPathUnder(r.path, target) && r.depth > bestDepth) { bestDepth = r.depth; bestRow = r; }
+                        } else if (r.kind === "mount" && r.item.kind === "file") {
+                            const p = r.item.path || "";
+                            if (!p) continue;
+                            // 目录自身也作为精确命中(文件版排除 isDir,这里不排除)
+                            if (sameFsPath(p, target)) { exact = r; break; }
+                            if (r.item.isDir && fsPathUnder(p, target) && r.depth > bestDepth) { bestDepth = r.depth; bestRow = r; }
+                        }
+                    }
+                    if (exact) {
+                        const isMount = exact.kind === "mount";
+                        const isDirRow = isMount ? !!(exact as any).item?.isDir : !!(exact as any).isDir;
+                        // 命中目录 → 顺手展开,children 立即可见
+                        if (isDirRow) {
+                            const src = rowChildSource(exact);
+                            if (src) {
+                                self._expanded!.add(src.key);
+                                void load(src.key, src.loader);
+                            }
+                        }
+                        if (isMount) {
+                            mountLocateFlashUid = (exact as any).uid;
+                        } else {
+                            fileLocateFlashPath = (exact as any).path;
+                        }
+                        render();
+                        window.setTimeout(() => {
+                            const el = isMount
+                                ? (listEl.querySelector(`[data-mount-uid="${CSS.escape((exact as any).uid)}"]`) as HTMLElement | null)
+                                : (() => {
+                                    const idx = (self._rows || []).findIndex(r => r.kind === "file" && sameFsPath((r as any).path, (exact as any).path));
+                                    return idx >= 0 ? (listEl.querySelector(`[data-idx="${idx}"]`) as HTMLElement | null) : null;
+                                })();
+                            if (el) el.scrollIntoView({block: "center"});
+                        }, 60);
+                        window.setTimeout(() => {
+                            mountLocateFlashUid = null;
+                            fileLocateFlashPath = null;
+                            render();
+                        }, 2000);
+                        return;
+                    }
+                    if (!bestRow) { notInRange(); return; }
+                    if (!bestRow.expanded) {
+                        const src = rowChildSource(bestRow);
+                        if (!src) { notInRange(); return; }
+                        self._expanded!.add(src.key);
+                        void load(src.key, src.loader);
+                        render();
+                        await sleepMs(700);
+                        continue;
+                    }
+                    notInRange();
+                    return;
+                }
+                notInRange();
+            };
+            // 外部触发:window.dispatchEvent(new CustomEvent("syfe:mount-tree-locate-folder", {detail:{path}}))
+            window.addEventListener("syfe:mount-tree-locate-folder", (e: Event) => {
+                const p = (e as CustomEvent).detail?.path;
+                if (typeof p === "string" && p) void locateFolderInMountTree(p);
+            });
+
             const locateActiveInMountTree = async () => {
                 // 面板不可见 → 先点 dock 图标展开
                 const dockItem = document.querySelector(`.dock__item[data-type="${MOUNT_TREE_DOCK_TYPE}"]`) as HTMLElement | null;

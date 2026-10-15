@@ -1,4 +1,5 @@
 import {openTab, showMessage} from "siyuan";
+import {applyFileTabHeadIconWhenReady} from "../utils/tab-icon";
 import {IMAGE_TAB_TYPE} from "../constants";
 import {getImageMime, formatFileSize, isImageFile} from "../constants";
 import {basename, dirname, joinPath, extname} from "../utils/path";
@@ -69,6 +70,8 @@ export function createImageTabConfig(plugin: IPluginForImageTab) {
             // 定位用:虚拟文档树面板的「定位」按钮靠该属性识别当前打开的文件
             this.element.dataset.syfePath = path;
             this._disposables = [];
+            // 页签头图标 → 虚拟文件树同款(重试版)
+            applyFileTabHeadIconWhenReady(this, path, "iconImage");
 
             const dom = buildViewerDOM(this.element);
 

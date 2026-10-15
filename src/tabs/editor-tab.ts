@@ -1,6 +1,8 @@
 import {openTab, confirm, showMessage, Menu} from "siyuan";
-import {TAB_TYPE, isMarkdownFile} from "../constants";
+import {TAB_TYPE, MOUNT_TREE_DOCK_TYPE, isMarkdownFile} from "../constants";
 import {basename, extname, dirname, joinPath} from "../utils/path";
+import {guardUnsavedClose} from "../utils/close-guard";
+import {applyFileTabHeadIcon, applyFileTabHeadIconWhenReady} from "../utils/tab-icon";
 import {renderPathSegments, showPathSwitchMenu, enableCrumbScroll} from "../components/path-crumbs";
 import {EditorConfig, DirEntry} from "../types";
 import {createEditor, getLanguageByPath} from "../editor/monaco";
@@ -40,6 +42,15 @@ import {showVersionHistory} from "../version-control/version-ui";
 // 补注册只能调一次(思源插件没有 removeDock),所以要等 DOM 里出现
 // .syfe-tree__root 才继续,否则定位会在面板还没建出来时空转。
 function openFolderInTree(path: string): void {
+    // 首选:虚拟文档树(默认注册的 dock)——展开面板、定位并顺手展开该文件夹。
+    // 用户点固定文件夹的预期是在虚拟文档树里看到它,而不是被逼去开「文件」面板;
+    // 目录不在挂载范围内时 dock 侧会给出挂载提示,不再出现「面板已关闭」的旧提示。
+    // dock 图标的 data-type 是「插件名+type」的全键 → 用后缀匹配
+    if (document.querySelector(`.dock__item[data-type$="${MOUNT_TREE_DOCK_TYPE}"]`)) {
+        window.dispatchEvent(new CustomEvent("syfe:mount-tree-locate-folder", {detail: {path}}));
+        return;
+    }
+    // 兜底:dock 图标不在(理论上不可能,插件加载即挂)才走「文件」面板旧流程。
     const locate = () => {
         // expandTarget:用户点文件夹是为了看里面的东西,定位后顺手展开
         void revealInFileTree(path, {expandTarget: true});
@@ -194,7 +205,7 @@ export function openFileTab(plugin: IPluginForTab, rawPath: string, opts?: OpenT
             data: {path},
         },
         position: opts?.position,
-    } as any);
+    } as any).then((t: any) => applyFileTabHeadIcon(t, path, "iconFile"));
 }
 
 // 把所有已打开、且外部改过的编辑器一次同步(供面板「刷新」调用)。
@@ -286,6 +297,8 @@ export function createEditorTabConfig(plugin: IPluginForTab) {
             };
             pathEl.addEventListener("click", pathClickHandler);
             this._disposables!.push(() => pathEl.removeEventListener("click", pathClickHandler));
+            // 页签头图标(重试版):新建与会话恢复的页签都覆盖
+            applyFileTabHeadIconWhenReady(self, path, "iconFile");
 
             // 历史版本入口:查看/恢复此前保存的版本(版本控制在 saveModel 落盘前自动快照,
             // 文本文件通用)。恢复写进 model 而不直接落盘,Monaco 会立即反映,确认后手动保存
@@ -384,34 +397,31 @@ export function createEditorTabConfig(plugin: IPluginForTab) {
                 return;
             }
             const self = this;
-            confirm(
-                "未保存的修改",
-                `「${basename(path)}」有未保存的修改,是否保存?`,
-                () => {
-                    // 保存后关闭
-                    saveModel(path)
-                        .then(() => {
-                            self._closing = true;
-                            try {
-                                self.parent?.close?.();
-                            } catch {
-                                // 已关闭
-                            }
-                        })
-                        .catch(() => showMessage("保存失败", 3000, "error"));
-                },
-                () => {
-                    // 不保存,放弃修改并关闭
-                    markDirty(path, false);
-                    self._closing = true;
-                    try {
-                        self.parent?.close?.();
-                    } catch {
-                        // 已关闭
-                    }
-                },
-            );
-            return false; // 阻止本次关闭,等待用户选择
+            const discardThenClose = () => {
+                // 不保存,放弃修改并关闭
+                markDirty(path, false);
+                self._closing = true;
+                try {
+                    self.parent?.close?.();
+                } catch {
+                    // 已关闭
+                }
+            };
+            const saveThenClose = () => {
+                // 保存后关闭
+                saveModel(path)
+                    .then(() => {
+                        self._closing = true;
+                        try {
+                            self.parent?.close?.();
+                        } catch {
+                            // 已关闭
+                        }
+                    })
+                    .catch(() => showMessage("保存失败", 3000, "error"));
+            };
+            // 行为由设置项「关闭未保存标签页时」决定:ask 弹确认 / discard 直接放弃 / save 直接保存
+            return guardUnsavedClose(basename(path), saveThenClose, discardThenClose);
         },
         destroy(this: EditorTabInstance) {
             // 先摘 LSP:必须在 editor.dispose() 之前,

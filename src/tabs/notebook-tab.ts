@@ -10,6 +10,8 @@
 //   所以存盘后用 Jupyter / VS Code 打开也是合法的。
 // 结构对齐 office-tab:独立 _dirty + 保存/重载 + beforeDestroy 确认。
 import {openTab, confirm, showMessage, Menu} from "siyuan";
+import {applyFileTabHeadIconWhenReady} from "../utils/tab-icon";
+import {guardUnsavedClose} from "../utils/close-guard";
 import * as monaco from "monaco-editor";
 import Vditor from "vditor";
 import {NOTEBOOK_TAB_TYPE} from "../constants";
@@ -433,6 +435,8 @@ export function createNotebookTabConfig(_plugin: IPluginForNotebookTab) {
             const dirtyEl = this.element.querySelector(".syfe-nb__dirty") as HTMLElement;
             const metaEl = this.element.querySelector(".syfe-nb__meta") as HTMLElement;
             const self = this;
+            // 页签头图标 → 虚拟文件树同款(重试版)
+            applyFileTabHeadIconWhenReady(self, path, "iconFile");
 
             // 字号/行高以 CSS 变量的形式挂在 Tab 根上。两态都用 monaco 实例后
             // 它们其实由 codeEditorOptions 直接传参决定了,但仍然挂出来 ——
@@ -1304,7 +1308,7 @@ const save = async () => {
                     // 已关闭
                 }
             };
-            confirm("未保存的修改", `「${basename(this._path || "")}」有未保存的修改,是否保存?`, () => {
+            const saveThenClose = () => {
                 const doSave = async () => {
                     if (self._rawMode) {
                         await writeFile(self._path || "", self._rawText ?? "");
@@ -1316,8 +1320,10 @@ const save = async () => {
                     }
                 };
                 doSave().then(doClose).catch(() => showMessage("保存失败", 3000, "error"));
-            }, doClose);
-            return false; // 阻止本次关闭,等待用户选择
+            };
+            // 行为由设置项「关闭未保存标签页时」决定:ask 弹确认 / discard 直接放弃 / save 直接保存
+            guardUnsavedClose(basename(this._path || ""), saveThenClose, doClose);
+            return false;
         },
         destroy(this: NotebookTabInstance) {
             // 退订内核状态,否则关掉 Tab 后内核事件还会往已销毁的 DOM 上写

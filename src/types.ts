@@ -44,6 +44,10 @@ export interface EditorConfig {
     newTabReplacePlus: boolean;      // 接管思源顶部「+」:点击改为打开新标签页(而非新建文档)
     newTabShowPinned: boolean;       // 新标签页显示「固定」区
     newTabShowRecent: boolean;       // 新标签页显示「最近打开」区
+    // 关闭未保存页签时的行为:ask = 提示保存或放弃(默认);discard = 不提示直接放弃;save = 不提示直接保存
+    closeUnsavedAction: "ask" | "discard" | "save";
+    // 思源文档内点击链接被接管打开文件时,用右侧分栏打开(文档与文件同屏);默认在当前页签区打开
+    takeoverSplitOpen: boolean;
     newTabShowFavorites: boolean;    // 新标签页显示「收藏」区
     // 导入 Markdown 到思源时,是否把源文件作为资源插入到文档顶部的引述块(保留出处,便于回溯原文件)
     importMdSourceAsset: boolean;
@@ -240,6 +244,8 @@ export const DEFAULT_CONFIG: EditorConfig = {
     newTabReplacePlus: true,        // 默认接管顶部「+」
     newTabShowPinned: true,
     newTabShowRecent: true,
+    closeUnsavedAction: "ask",      // 关闭未保存页签:默认每次询问
+    takeoverSplitOpen: false,       // 接管打开默认在当前页签区打开
     newTabShowFavorites: true,
     importMdSourceAsset: false,      // 默认不插入源文件资源引述块
     showFileTreeDock: false,         // 默认不显示「文件」面板(功能已由虚拟文档树承接)

@@ -10,6 +10,8 @@ import {nativeStat} from "../api/native-fs";
 import {isBaiduPath} from "../utils/baidu-path";
 import {createBacklinkPanel, BacklinkPanel} from "../components/backlink-panel";
 import {renderPathSegments, showPathSwitchMenu, enableCrumbScroll} from "../components/path-crumbs";
+import {applyFileTabHeadIconWhenReady} from "../utils/tab-icon";
+import {guardUnsavedClose} from "../utils/close-guard";
 import {showFileTreeMenu, findTreeRootEl, buildFileTreeActions} from "../components/file-tree";
 import {enableHeadingCrumbs, flashHeading, scrollToTopOf, scrollParentOf, type HeadingCrumbsHandle} from "../components/md-heading-crumbs";
 import {openFileTab} from "./editor-tab";
@@ -352,6 +354,8 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
             this._contentEl = this.element.querySelector(".syfe-md__content") as HTMLElement;
             this._dirtyDot = this.element.querySelector(".syfe-md__dirty") as HTMLElement;
             const self = this;
+            // 页签头图标 → 虚拟文件树同款(重试版:新建与会话恢复的页签都覆盖)
+            applyFileTabHeadIconWhenReady(self, path, "iconMarkdown");
 
             // 标题面包屑:显示光标所在位置的 H1 › H2 › … 路径,点某项就地滚动定位。
             // 语义对齐 siyuan-breadcrumb(页内定位、不跳走、不进入聚焦);
@@ -871,36 +875,33 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                 return;
             }
             const self = this;
-            confirm(
-                "未保存的修改",
-                `「${basename(path)}」有未保存的修改,是否保存?`,
-                () => {
-                    // 保存后关闭(仅 live 模式需把 Vditor 内容同步到 model)
-                    if (self._mode === "live" && self._vditor && self._model) {
-                        self._model.setValue(getVditorValue(self));
-                    }
-                    saveModel(path)
-                        .then(() => {
-                            self._closing = true;
-                            try {
-                                self.parent?.close?.();
-                            } catch {
-                                // 已关闭
-                            }
-                        })
-                        .catch(() => showMessage("保存失败", 3000, "error"));
-                },
-                () => {
-                    markDirty(path, false);
-                    self._closing = true;
-                    try {
-                        self.parent?.close?.();
-                    } catch {
-                        // 已关闭
-                    }
-                },
-            );
-            return false; // 阻止本次关闭,等待用户选择
+            const discardThenClose = () => {
+                markDirty(path, false);
+                self._closing = true;
+                try {
+                    self.parent?.close?.();
+                } catch {
+                    // 已关闭
+                }
+            };
+            const saveThenClose = () => {
+                // 保存后关闭(仅 live 模式需把 Vditor 内容同步到 model)
+                if (self._mode === "live" && self._vditor && self._model) {
+                    self._model.setValue(getVditorValue(self));
+                }
+                saveModel(path)
+                    .then(() => {
+                        self._closing = true;
+                        try {
+                            self.parent?.close?.();
+                        } catch {
+                            // 已关闭
+                        }
+                    })
+                    .catch(() => showMessage("保存失败", 3000, "error"));
+            };
+            // 行为由设置项「关闭未保存标签页时」决定:ask 弹确认 / discard 直接放弃 / save 直接保存
+            return guardUnsavedClose(basename(path), saveThenClose, discardThenClose);
         },
         destroy(this: MarkdownTabInstance) {
             destroyVditor(this);

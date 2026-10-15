@@ -1,4 +1,5 @@
 import {openTab, showMessage} from "siyuan";
+import {applyFileTabHeadIconWhenReady} from "../utils/tab-icon";
 import {
     MEDIA_TAB_TYPE,
     MediaKind,
@@ -91,6 +92,10 @@ export function createMediaTabConfig(plugin: IPluginForMediaTab) {
             // 定位用:虚拟文档树面板的「定位」按钮靠该属性识别当前打开的文件
             this.element.dataset.syfePath = path;
             this._disposables = [];
+
+            // 页签头图标 → 虚拟文件树同款(重试版)
+            const kind = getMediaKind(path) as MediaKind;
+            applyFileTabHeadIconWhenReady(this, path, kind === "audio" ? "iconRecord" : "iconVideo");
 
             const dom = buildPlayerDOM(this.element);
 
