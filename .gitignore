@@ -37,3 +37,12 @@ tools/__pycache__/
 
 # 内部方案文档不入公开仓库
 /docs/
+
+# 构建过程日志(根目录 build*.out,历史遗留的 webpack stdout 重定向)
+/build*.out
+# 一次性诊断/取证脚本与截图(_cdp-*.mjs、_patch_*.py、_shot-*.png 等)
+# 约定入库的长期探针(_cdp.mjs / pty-helper.js 等)不在此列
+tools/_cdp-*.mjs
+tools/_patch_*.py
+tools/_shot-*.png
+tools/_vc-*.png
