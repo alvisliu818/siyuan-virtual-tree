@@ -21,6 +21,9 @@ import {fileUrlToPath, getWorkspacePath} from "../utils/system-path";
 export interface DocOpenTakeoverConfig {
     mode: "off" | "exts" | "all";
     exts: string;
+    // 「接管打开用分栏」:开启时用右侧分栏打开(文档与文件同屏);
+    // 由 index.ts 的 getConfig 透传,缺了它 position 永远传不出去(实测踩过)
+    takeoverSplitOpen: boolean;
 }
 
 /** 解析白名单:"md, .txt; TXT" → {"md","txt"} */

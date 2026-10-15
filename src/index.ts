@@ -265,6 +265,9 @@ export default class FileEditorPlugin extends Plugin {
         this._unregisterDocOpenTakeover = registerDocOpenTakeover(this as any, () => ({
             mode: this.config.docOpenTakeover || "off",
             exts: this.config.docOpenTakeoverExts || "",
+            // 「接管打开用分栏」必须透传:漏了它 handler 里恒为 undefined,
+            // position 传不出去,设置项在链接点击路径完全失效(实测踩过)
+            takeoverSplitOpen: this.config.takeoverSplitOpen === true,
         }));
         this.addTab(asSiyuanCustom(createOfficeTabConfig(this as any)));
         this.addTab(asSiyuanCustom(createMarkdownTabConfig(this as any)));

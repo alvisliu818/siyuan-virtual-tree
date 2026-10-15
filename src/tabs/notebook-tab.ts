@@ -30,6 +30,7 @@ import {
 import {toSystemPath} from "../utils/system-path";
 import {renderPathSegments, showPathSwitchMenu, enableCrumbScroll} from "../components/path-crumbs";
 import {openFileTab} from "./editor-tab";
+import {wantsSplitOpen, pickTabOutsideActiveWnd} from "./split-open";
 import {
     getKernel, getKernelChoice, loadKernelChoices,
 } from "../utils/kernel/registry";
@@ -202,14 +203,21 @@ function fitEditorHeight(host: HTMLElement, editor: monaco.editor.IStandaloneCod
 // 打开 Notebook Tab(同文件去重,聚焦已有 Tab)
 export function openNotebookTab(plugin: IPluginForNotebookTab, path: string, opts?: { position?: "right" | "bottom" }): void {
     const opened = plugin.getOpenedTab()[NOTEBOOK_TAB_TYPE] || [];
-    const existing = opened.find((c: any) => c?.data?.path === path);
-    if (existing) {
-        const tab = (existing as any).parent;
-        if (tab?.headElement) {
-            (tab.headElement as HTMLElement).click();
+    const matches = opened.filter((c: any) => c?.data?.path === path);
+    if (matches.length) {
+        // 分栏请求时优先聚焦「活动分屏之外」的已有页签(文档与文件已同屏,不堆页签);
+        // 全在活动分屏(聚焦会盖住文档)且要求分栏 → 落到 openTab 新开分栏
+        const elsewhere = wantsSplitOpen(opts) ? pickTabOutsideActiveWnd(matches) : null;
+        if (!wantsSplitOpen(opts) || elsewhere) {
+            const tab = ((elsewhere || matches[0]) as any).parent;
+            if (tab?.headElement) {
+                (tab.headElement as HTMLElement).click();
+            }
+            return;
         }
-        return;
     }
+    // 新开分栏:openNewTab 绕过思源 openFile 的复用分支(allModels.custom /
+    // getUnInitTab 都无视 position),position 才能走到 wnd.split,见 tabs/split-open.ts
     openTab({
         app: plugin.app,
         custom: {
@@ -219,6 +227,7 @@ export function openNotebookTab(plugin: IPluginForNotebookTab, path: string, opt
             data: {path},
         },
         position: opts?.position,
+        openNewTab: wantsSplitOpen(opts) || undefined,
     } as any);
 }
 

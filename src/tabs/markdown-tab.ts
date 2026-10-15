@@ -15,6 +15,7 @@ import {guardUnsavedClose} from "../utils/close-guard";
 import {showFileTreeMenu, findTreeRootEl, buildFileTreeActions} from "../components/file-tree";
 import {enableHeadingCrumbs, flashHeading, scrollToTopOf, scrollParentOf, type HeadingCrumbsHandle} from "../components/md-heading-crumbs";
 import {openFileTab} from "./editor-tab";
+import {wantsSplitOpen, pickTabOutsideActiveWnd} from "./split-open";
 import {showVersionHistory} from "../version-control/version-ui";
 import {highlightMatches, clearFindHighlights, setCurrentFindHit} from "../components/markdown-find";
 // vditor 与思源共用 window.Lute,且 vditor 那份缺 SetTabs —— 详见 utils/lute-guard 的说明
@@ -277,14 +278,21 @@ export function openMarkdownTab(plugin: IPluginForMarkdownTab, rawPath: string, 
     // "Cannot add model because it already exists",且页签复用检查也失效(实测)
     const path = (rawPath || "").replace(/\\/g, "/");
     const opened = plugin.getOpenedTab()[MARKDOWN_TAB_TYPE] || [];
-    const existing = opened.find((c: any) => c?.data?.path === path);
-    if (existing) {
-        const tab = (existing as any).parent;
-        if (tab?.headElement) {
-            (tab.headElement as HTMLElement).click();
+    const matches = opened.filter((c: any) => c?.data?.path === path);
+    if (matches.length) {
+        // 分栏请求时优先聚焦「活动分屏之外」的已有页签(文档与文件已同屏,不堆页签);
+        // 全在活动分屏(聚焦会盖住文档)且要求分栏 → 落到 openTab 新开分栏
+        const elsewhere = wantsSplitOpen(opts) ? pickTabOutsideActiveWnd(matches) : null;
+        if (!wantsSplitOpen(opts) || elsewhere) {
+            const tab = ((elsewhere || matches[0]) as any).parent;
+            if (tab?.headElement) {
+                (tab.headElement as HTMLElement).click();
+            }
+            return;
         }
-        return;
     }
+    // 新开分栏:openNewTab 绕过思源 openFile 的复用分支(allModels.custom /
+    // getUnInitTab 都无视 position),position 才能走到 wnd.split,见 tabs/split-open.ts
     openTab({
         app: plugin.app,
         custom: {
@@ -294,6 +302,7 @@ export function openMarkdownTab(plugin: IPluginForMarkdownTab, rawPath: string, 
             data: {path, mode},
         },
         position: opts?.position,
+        openNewTab: wantsSplitOpen(opts) || undefined,
     } as any);
 }
 

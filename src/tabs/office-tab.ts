@@ -6,6 +6,7 @@ import {basename} from "../utils/path";
 import {openTreeFileWithExternalApp} from "../utils/external-app";
 import {OfficeEngine} from "../office/types";
 import {createBacklinkPanel, BacklinkPanel} from "../components/backlink-panel";
+import {wantsSplitOpen, pickTabOutsideActiveWnd} from "./split-open";
 
 // Office 文档 Tab:统一承载表格 / 文档 / 演示文稿 / 旧版兜底四类引擎
 
@@ -44,14 +45,21 @@ const KIND_LABEL: Record<string, string> = {
 // opts.position 指定时,在指定方向以分栏方式打开
 export function openOfficeTab(plugin: IPluginForOfficeTab, path: string, opts?: { position?: "right" | "bottom" }): void {
     const opened = plugin.getOpenedTab()[OFFICE_TAB_TYPE] || [];
-    const existing = opened.find((c: any) => c?.data?.path === path);
-    if (existing) {
-        const tab = (existing as any).parent;
-        if (tab?.headElement) {
-            (tab.headElement as HTMLElement).click();
+    const matches = opened.filter((c: any) => c?.data?.path === path);
+    if (matches.length) {
+        // 分栏请求时优先聚焦「活动分屏之外」的已有页签(文档与文件已同屏,不堆页签);
+        // 全在活动分屏(聚焦会盖住文档)且要求分栏 → 落到 openTab 新开分栏
+        const elsewhere = wantsSplitOpen(opts) ? pickTabOutsideActiveWnd(matches) : null;
+        if (!wantsSplitOpen(opts) || elsewhere) {
+            const tab = ((elsewhere || matches[0]) as any).parent;
+            if (tab?.headElement) {
+                (tab.headElement as HTMLElement).click();
+            }
+            return;
         }
-        return;
     }
+    // 新开分栏:openNewTab 绕过思源 openFile 的复用分支(allModels.custom /
+    // getUnInitTab 都无视 position),position 才能走到 wnd.split,见 tabs/split-open.ts
     openTab({
         app: plugin.app,
         custom: {
@@ -61,6 +69,7 @@ export function openOfficeTab(plugin: IPluginForOfficeTab, path: string, opts?: 
             data: {path},
         },
         position: opts?.position,
+        openNewTab: wantsSplitOpen(opts) || undefined,
     } as any);
 }
 

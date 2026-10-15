@@ -13,6 +13,7 @@ import {openImageTab} from "./image-tab";
 import {openOfficeTab} from "./office-tab";
 import {openMarkdownTab} from "./markdown-tab";
 import {openNotebookTab} from "./notebook-tab";
+import {wantsSplitOpen, pickTabOutsideActiveWnd} from "./split-open";
 import {
     getModel,
     saveModel,
@@ -184,18 +185,25 @@ export function openFileTab(plugin: IPluginForTab, rawPath: string, opts?: OpenT
         return;
     }
     const opened = plugin.getOpenedTab()[TAB_TYPE] || [];
-    const existing = opened.find((c: any) => c?.data?.path === path);
-    if (existing) {
-        const tab = (existing as any).parent;
-        if (tab?.headElement) {
-            (tab.headElement as HTMLElement).click();
+    const matches = opened.filter((c: any) => c?.data?.path === path);
+    if (matches.length) {
+        // 分栏请求时优先聚焦「活动分屏之外」的已有页签(文档与文件已同屏,不堆页签);
+        // 全在活动分屏(聚焦会盖住文档)且要求分栏 → 落到 openTab 新开分栏
+        const elsewhere = wantsSplitOpen(opts) ? pickTabOutsideActiveWnd(matches) : null;
+        if (!wantsSplitOpen(opts) || elsewhere) {
+            const tab = ((elsewhere || matches[0]) as any).parent;
+            if (tab?.headElement) {
+                (tab.headElement as HTMLElement).click();
+            }
+            // 文件在思源之外被改过(别的编辑器/git 切换分支/脚本生成)时,
+            // 只切标签会一直显示旧内容 —— 这里同步一次。有未保存修改时**不动**,
+            // 避免把用户正在编辑的内容冲掉,只提示他先保存。
+            void syncExternalChange(path);
+            return;
         }
-        // 文件在思源之外被改过(别的编辑器/git 切换分支/脚本生成)时,
-        // 只切标签会一直显示旧内容 —— 这里同步一次。有未保存修改时**不动**,
-        // 避免把用户正在编辑的内容冲掉,只提示他先保存。
-        void syncExternalChange(path);
-        return;
     }
+    // 新开分栏:openNewTab 绕过思源 openFile 的复用分支(allModels.custom /
+    // getUnInitTab 都无视 position),position 才能走到 wnd.split,见 tabs/split-open.ts
     openTab({
         app: plugin.app,
         custom: {
@@ -205,6 +213,7 @@ export function openFileTab(plugin: IPluginForTab, rawPath: string, opts?: OpenT
             data: {path},
         },
         position: opts?.position,
+        openNewTab: wantsSplitOpen(opts) || undefined,
     } as any).then((t: any) => applyFileTabHeadIcon(t, path, "iconFile"));
 }
 
