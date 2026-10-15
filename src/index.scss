@@ -4120,17 +4120,26 @@ button.syfe-editor__arrow--exp:hover {
     flex-shrink: 0;
 }
 
-/* ===== 页签头:虚拟文件树同款图标(图标与文件名靠近) ===== */
+/* ===== 页签头:虚拟文件树同款图标(左右留白对称) ===== */
+// 图标到文件名的距离 = 图标 2px 右外边距 + 文字 2px 左内边距 = 4px;
+// 左侧留白取同一个值,图标视觉上正好落在"页签左边缘→文件名"这段的中点。
+// box-sizing 显式钉成 content-box:原生思源没有全局 border-box,但外挂主题一旦加上,
+// 14px 宽会被新加的 4px 内边距吃掉一部分,图标会缩小。
+// 原生页签用的是 .item__graphic(不带 b3-list-item__ 前缀),这里不会命中。
 .layout-tab-bar .item svg.b3-list-item__graphic,
 .layout-tab-bar .item img.syfe-tree__ext-icon {
+    box-sizing: content-box;
     width: 14px;
     height: 14px;
+    padding-left: 4px;
     margin-right: 2px;
     flex-shrink: 0;
 }
 
-/* 带主题图标的页签:文字自身 8px 左内边距收成 2px(视觉间隙 = 2+2 = 4px) */
-.layout-tab-bar .item:has(img.syfe-tree__ext-icon) .item__text {
+/* 两种形态(主题图标 img / 无主题时的回退 svg)统一处理:
+   文字自身 8px 左内边距收成 2px,视觉间隙 = 2+2 = 4px,与左侧留白一致 */
+.layout-tab-bar .item:has(> svg.b3-list-item__graphic) .item__text,
+.layout-tab-bar .item:has(> img.syfe-tree__ext-icon) .item__text {
     padding-left: 2px;
 }
 
