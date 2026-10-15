@@ -2744,11 +2744,26 @@ button.syfe-editor__arrow--exp:hover {
     // (logo + 10 个按钮最宽 ~400px,窄面板 324px 放不下)
     flex-wrap: wrap;
     row-gap: 2px;
+    // 溢出保护:flex 子项的默认最小尺寸是 min-content,logo 文字 nowrap 时的
+    // min-content 就是整行文字宽度 —— 极窄面板下行放不下,最右侧的「更多」图标
+    // 会被挤出容器裁掉(点不到)。这里让溢出内容被裁住,同时下面的 logo 改成
+    // 可收缩 + 省略号,保证任何宽度下「更多」都完整留在面板内。
+    overflow: hidden;
 
     .block__logo {
         padding: 0 4px;
         gap: 4px;
         font-size: 12px;
+        min-width: 0;
+        overflow: hidden;
+    }
+
+    .block__logotext {
+        min-width: 0;
+        flex-shrink: 1;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
     }
 
     .block__icon {
