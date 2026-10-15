@@ -2041,6 +2041,13 @@ button.syfe-editor__arrow--exp:hover {
         width: 16px;
         height: 16px;
     }
+
+    // 图标主题的 SVG 没有 intrinsic 尺寸,不限定会被按缺省值撑到几百像素
+    img.syfe-tree__ext-icon {
+        width: 16px;
+        height: 16px;
+        object-fit: contain;
+    }
 }
 
 // 文件名为主行、父目录为次行;窄侧边栏下都要能截断
@@ -2337,6 +2344,12 @@ button.syfe-editor__arrow--exp:hover {
         flex: 0 0 auto;
         fill: var(--b3-theme-on-surface);
     }
+    img.syfe-tree__ext-icon {
+        width: 16px;
+        height: 16px;
+        flex: 0 0 auto;
+        object-fit: contain;
+    }
     &.syfe-start__suggest-item--active,
     &:hover {
         background: var(--b3-list-hover-background);
@@ -2441,11 +2454,20 @@ button.syfe-editor__arrow--exp:hover {
     }
 }
 
+/* 图标主题给的 SVG 只有 viewBox、没有 width/height(如 material-icon-theme),
+   不做限定的 <img> 会被浏览器按缺省尺寸(约 300px)渲染,条目排版直接崩。
+   这里与虚拟文档树保持同一套值,保证图标形态一致 */
 .syfe-start__card-icon {
     svg {
         width: 28px;
         height: 28px;
         fill: var(--b3-theme-on-surface);
+    }
+
+    img.syfe-tree__ext-icon {
+        width: 28px;
+        height: 28px;
+        object-fit: contain;
     }
 }
 
@@ -2508,10 +2530,22 @@ button.syfe-editor__arrow--exp:hover {
 
 .syfe-start__row-icon {
     flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+
     svg {
         width: 18px;
         height: 18px;
         fill: var(--b3-theme-on-surface);
+    }
+
+    img.syfe-tree__ext-icon {
+        width: 18px;
+        height: 18px;
+        object-fit: contain;
     }
 }
 

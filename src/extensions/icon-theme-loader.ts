@@ -1,5 +1,19 @@
 // 文件图标主题加载器
 // 解析 VSCode iconTheme JSON,将 SVG 图标应用到文件树和编辑器 Tab
+//
+// 时机说明:扩展是在 onLayoutReady 里异步加载的,加载完才有图标主题。
+// 而页签、新标签页可能早就渲染好了(会话恢复),那时 getExtFileIcon() 恒返回 null,
+// 画出来的是思源内置图标 —— 于是出现"要点一下才变成主题图标"。
+// 下面这个事件让"图标主题就绪/切换"能被所有已渲染界面听到,各自重绘即可。
+export const ICON_THEME_CHANGED_EVENT = "syfe:icon-theme-changed";
+
+function notifyIconThemeChanged(): void {
+    try {
+        window.dispatchEvent(new CustomEvent(ICON_THEME_CHANGED_EVENT));
+    } catch {
+        // 非浏览器环境忽略
+    }
+}
 // VSCode iconTheme JSON 结构:
 //   {
 //     "iconDefinitions": {
@@ -255,18 +269,23 @@ export function activateIconTheme(extensionId: string): boolean {
 export function activateIconThemeByPreference(pref: string): boolean {
     if (pref === "__none__") {
         activeIconTheme = null;
+        notifyIconThemeChanged();
         return false;
     }
     if (pref) {
-        if (activateIconTheme(pref)) return true;
+        if (activateIconTheme(pref)) {
+            notifyIconThemeChanged();
+            return true;
+        }
         // 指定的主题已不存在(扩展被卸载)→ 回退自动
     }
     if (loadedIconThemes.length > 0) {
         activeIconTheme = loadedIconThemes[0];
-        return true;
+    } else {
+        activeIconTheme = null;
     }
-    activeIconTheme = null;
-    return false;
+    notifyIconThemeChanged();
+    return activeIconTheme !== null;
 }
 
 // 当前激活的图标主题 id(无则 null)
@@ -283,6 +302,7 @@ export function removeExtensionIconThemes(extensionId: string): void {
             activeIconTheme = loadedIconThemes.find(t => t.extensionId !== extensionId) || null;
         }
         loadedIconThemes.splice(idx, 1);
+        notifyIconThemeChanged();
     }
 }
 

@@ -5,7 +5,7 @@ import {openTab, showMessage} from "siyuan";
 import {START_TAB_TYPE} from "../constants";
 import {EditorConfig} from "../types";
 import {basename, dirname} from "../utils/path";
-import {fileIconHTML} from "../utils/icons";
+import {fileIconHTML, folderIconHTML} from "../utils/icons";
 import {docTreeIconHTML, cachedDocIcon, ensureDocIcons} from "../utils/siyuan-icon";
 import {enumerateAll} from "../components/search-panel";
 import {openEntry, showEntryMenu} from "../components/entry-menu";
@@ -19,6 +19,8 @@ import {
     START_PAGE_CHANGED_EVENT,
 } from "../start-page";
 import {openFileTab} from "./editor-tab";
+// 图标主题就绪/切换后要重绘,否则一直是首次渲染时的思源内置图标
+import {ICON_THEME_CHANGED_EVENT} from "../extensions/icon-theme-loader";
 
 // 新标签页所需的插件接口
 export interface IPluginForStartTab {
@@ -45,6 +47,7 @@ interface StartTabInstance {
     _keyHandler?: (e: KeyboardEvent) => void;
     _inputHandler?: () => void;
     _changedHandler?: () => void;
+    _iconsHandler?: () => void;
     _suggest?: SuggestItem[];     // 当前搜索建议
     _suggestIndex?: number;
     _entries?: Array<{path: string; name: string; isDir: boolean}>; // 文件名索引
@@ -199,7 +202,7 @@ function groupToItems(items: StartPageItem[], group: StartGroup): PageItem[] {
 function itemIconHTML(item: PageItem): string {
     if (item.kind === "doc") {
         // 思源文档:用虚拟文档树同款的文档图标(用户自定义图标优先;缓存未热时先给内置样式,异步补绘)
-        return docTreeIconHTML(cachedDocIcon(item.id) || "", "file");
+        return docTreeIconHTML(cachedDocIcon(item.id || "") || "", "file");
     }
     return fileIconHTML(basename(item.path || ""));
 }
@@ -407,7 +410,7 @@ export function createStartTabConfig(plugin: IPluginForStartTab) {
                 }
                 suggestEl.innerHTML = list.map((it, i) => `
                     <div class="syfe-start__suggest-item${i === (self._suggestIndex ?? -1) ? " syfe-start__suggest-item--active" : ""}" data-i="${i}">
-                        ${fileIconHTML(it.name)}
+                        ${it.isDir ? folderIconHTML(it.name, false) : fileIconHTML(it.name)}
                         <span class="syfe-start__suggest-name">${escapeHTML(it.name)}</span>
                         <span class="syfe-start__suggest-path">${escapeHTML(dirname(it.path))}</span>
                     </div>`).join("");
@@ -499,6 +502,10 @@ export function createStartTabConfig(plugin: IPluginForStartTab) {
             this._changedHandler = changedHandler;
             window.addEventListener(START_PAGE_CHANGED_EVENT, changedHandler);
             window.addEventListener(RECENTS_CHANGED_EVENT, changedHandler);
+            // 图标主题是随扩展异步加载的,就绪后重绘一次,条目图标才是虚拟文档树同款
+            const iconsHandler = () => render();
+            this._iconsHandler = iconsHandler;
+            window.addEventListener(ICON_THEME_CHANGED_EVENT, iconsHandler);
         },
         resize() {
             // 无需特殊处理
@@ -519,6 +526,9 @@ export function createStartTabConfig(plugin: IPluginForStartTab) {
             if (this._changedHandler) {
                 window.removeEventListener(START_PAGE_CHANGED_EVENT, this._changedHandler);
                 window.removeEventListener(RECENTS_CHANGED_EVENT, this._changedHandler);
+            }
+            if (this._iconsHandler) {
+                window.removeEventListener(ICON_THEME_CHANGED_EVENT, this._iconsHandler);
             }
             this._bodyEl = undefined;
             this._suggestEl = undefined;

@@ -53,7 +53,7 @@ import {clearAllGrammars} from "./extensions/grammar-loader";
 import {clearAllThemes, applyThemeByPreference, getLoadedThemes} from "./extensions/theme-loader";
 import {clearAllSnippets} from "./extensions/snippet-loader";
 import {clearAllLsp} from "./extensions/lsp-loader";
-import {clearAllIconThemes, getIconThemesWithMissingIcons, getLoadedIconThemes, activateIconThemeByPreference} from "./extensions/icon-theme-loader";
+import {clearAllIconThemes, getIconThemesWithMissingIcons, getLoadedIconThemes, activateIconThemeByPreference, ICON_THEME_CHANGED_EVENT} from "./extensions/icon-theme-loader";
 import {setCloseUnsavedAction} from "./utils/close-guard";
 import {registerPythonLsp, disposePythonLsp} from "./utils/python-lsp-bridge";
 import {disposePythonKernel} from "./utils/python-kernel";
@@ -64,6 +64,7 @@ import {stopPythonLanguageServer} from "./utils/python-lsp";
 // 必须在任何 vditor 实例被创建之前装好守卫 —— 所以放在顶层 import 里(模块求值顺序)。
 import {installLuteGuard} from "./utils/lute-guard";
 import {refreshAllExpanded} from "./components/file-tree";
+import {refreshAllTabIcons} from "./utils/tab-icon";
 import "./index.scss";
 
 // 守卫必须在插件加载的第一时间生效 —— 早于任何 vditor 实例被创建。
@@ -307,6 +308,16 @@ export default class FileEditorPlugin extends Plugin {
 
         // 接管思源顶部「+」:点击改为打开新标签页(设置里可关闭,恢复原生新建文档)
         installNewTabHijack(this as any, () => this.config.newTabReplacePlus !== false);
+
+        // 图标主题就绪/切换:文件树、页签头、新标签页都要按新的主题重画。
+        // 扩展是异步加载的,它们首屏渲染时常还没有主题(画出来是思源内置图标),
+        // 这里补画一次即可保证「一开始就显示虚拟文档树同款图标」。
+        window.addEventListener(ICON_THEME_CHANGED_EVENT, () => {
+            // 文件树 / 虚拟文档树
+            this.refreshFileTrees();
+            // 已经打开的插件页签:重刷页签头图标
+            refreshAllTabIcons();
+        });
 
         // 命令:全局搜索
         this.addCommand({
@@ -648,6 +659,7 @@ export default class FileEditorPlugin extends Plugin {
         if (!applyThemeByPreference(this.config.colorTheme, isDark)) {
             applyTheme(getCurrentMode());
         }
+        // 内部会派发 ICON_THEME_CHANGED_EVENT,已在下方 onload 统一监听刷新
         activateIconThemeByPreference(this.config.iconTheme);
     }
 
