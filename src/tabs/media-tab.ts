@@ -14,6 +14,7 @@ import {createBacklinkPanel, BacklinkPanel} from "../components/backlink-panel";
 import {copyText} from "../components/file-tree";
 import {toFileLink} from "../utils/system-path";
 import {openTreeFileWithExternalApp} from "../utils/external-app";
+import {wantsSplitOpen, pickTabOutsideActiveWnd} from "./split-open";
 
 // 音视频播放器 Tab 所需的插件接口(结构化类型,避免循环依赖)
 export interface IPluginForMediaTab {
@@ -57,14 +58,21 @@ function formatDuration(sec: number): string {
 // opts.position 指定时,在指定方向以分栏方式打开
 export function openMediaTab(plugin: IPluginForMediaTab, path: string, opts?: { position?: "right" | "bottom" }): void {
     const opened = plugin.getOpenedTab()[MEDIA_TAB_TYPE] || [];
-    const existing = opened.find((c: any) => c?.data?.path === path);
-    if (existing) {
-        const tab = (existing as any).parent;
-        if (tab?.headElement) {
-            (tab.headElement as HTMLElement).click();
+    const matches = opened.filter((c: any) => c?.data?.path === path);
+    if (matches.length) {
+        // 分栏请求时优先聚焦「活动分屏之外」的已有页签(文档与文件已同屏,不堆页签);
+        // 全在活动分屏(聚焦会盖住文档)且要求分栏 → 落到 openTab 新开分栏
+        const elsewhere = wantsSplitOpen(opts) ? pickTabOutsideActiveWnd(matches) : null;
+        if (!wantsSplitOpen(opts) || elsewhere) {
+            const tab = ((elsewhere || matches[0]) as any).parent;
+            if (tab?.headElement) {
+                (tab.headElement as HTMLElement).click();
+            }
+            return;
         }
-        return;
     }
+    // 新开分栏:openNewTab 绕过思源 openFile 的复用分支(allModels.custom /
+    // getUnInitTab 都无视 position),position 才能走到 wnd.split,见 tabs/split-open.ts
     const kind = getMediaKind(path) as MediaKind;
     openTab({
         app: plugin.app,
@@ -75,6 +83,7 @@ export function openMediaTab(plugin: IPluginForMediaTab, path: string, opts?: { 
             data: {path},
         },
         position: opts?.position,
+        openNewTab: wantsSplitOpen(opts) || undefined,
     } as any);
 }
 
@@ -220,7 +229,7 @@ function createPlayer(dom: PlayerDOM, plugin: IPluginForMediaTab, tab: MediaTabI
     let siblings: string[] = [];
     let siblingIndex = -1;
     // 加载令牌,避免快速切换时旧请求覆盖新媒体
-    let loadToken = 0;
+    let loadEpoch = 0;
 
     const currentMedia = () => dom.stage.querySelector("video, audio") as HTMLMediaElement | null;
 
@@ -294,7 +303,7 @@ function createPlayer(dom: PlayerDOM, plugin: IPluginForMediaTab, tab: MediaTabI
 
     // ---- 加载媒体 ----
     async function load(target: string): Promise<void> {
-        const token = ++loadToken;
+        const loadSeq = ++loadEpoch;
         path = target;
         kind = getMediaKind(target) || "video";
         tab._path = target;
@@ -320,7 +329,7 @@ function createPlayer(dom: PlayerDOM, plugin: IPluginForMediaTab, tab: MediaTabI
         try {
             buf = await readBinaryFile(target);
         } catch (e) {
-            if (token !== loadToken) return;
+            if (loadSeq !== loadEpoch) return;
             dom.stage.innerHTML = `
                 <div class="syfe-media__error">
                     <div>读取失败: ${escapeHTML(String(e))}</div>
@@ -329,7 +338,7 @@ function createPlayer(dom: PlayerDOM, plugin: IPluginForMediaTab, tab: MediaTabI
             dom.stage.querySelector("[data-retry]")?.addEventListener("click", () => load(target));
             return;
         }
-        if (token !== loadToken) return;
+        if (loadSeq !== loadEpoch) return;
 
         if (tab._objectUrl) {
             try {
@@ -352,11 +361,11 @@ function createPlayer(dom: PlayerDOM, plugin: IPluginForMediaTab, tab: MediaTabI
             (media as HTMLVideoElement).playsInline = true;
         }
         media.addEventListener("loadedmetadata", () => {
-            if (token !== loadToken) return;
+            if (loadSeq !== loadEpoch) return;
             updateInfo();
         });
         media.addEventListener("error", () => {
-            if (token !== loadToken) return;
+            if (loadSeq !== loadEpoch) return;
             dom.stage.innerHTML = `
                 <div class="syfe-media__error">
                     <div>无法播放该文件,浏览器不支持此编码格式(如 H.265/HEVC 或部分 AVI/FLV)</div>

@@ -5,6 +5,7 @@ import {getImageMime, formatFileSize, isImageFile} from "../constants";
 import {basename, dirname, joinPath, extname} from "../utils/path";
 import {readBinaryFile, readDir} from "../api/file";
 import {createBacklinkPanel, BacklinkPanel} from "../components/backlink-panel";
+import {wantsSplitOpen, pickTabOutsideActiveWnd} from "./split-open";
 
 // 图片查看 Tab 所需的插件接口(结构化类型,避免循环依赖)
 export interface IPluginForImageTab {
@@ -36,14 +37,21 @@ function escapeHTML(s: string): string {
 // opts.position 指定时,在指定方向以分栏方式打开
 export function openImageTab(plugin: IPluginForImageTab, path: string, opts?: { position?: "right" | "bottom" }): void {
     const opened = plugin.getOpenedTab()[IMAGE_TAB_TYPE] || [];
-    const existing = opened.find((c: any) => c?.data?.path === path);
-    if (existing) {
-        const tab = (existing as any).parent;
-        if (tab?.headElement) {
-            (tab.headElement as HTMLElement).click();
+    const matches = opened.filter((c: any) => c?.data?.path === path);
+    if (matches.length) {
+        // 分栏请求时优先聚焦「活动分屏之外」的已有页签(文档与文件已同屏,不堆页签);
+        // 全在活动分屏(聚焦会盖住文档)且要求分栏 → 落到 openTab 新开分栏
+        const elsewhere = wantsSplitOpen(opts) ? pickTabOutsideActiveWnd(matches) : null;
+        if (!wantsSplitOpen(opts) || elsewhere) {
+            const tab = ((elsewhere || matches[0]) as any).parent;
+            if (tab?.headElement) {
+                (tab.headElement as HTMLElement).click();
+            }
+            return;
         }
-        return;
     }
+    // 新开分栏:openNewTab 绕过思源 openFile 的复用分支(allModels.custom /
+    // getUnInitTab 都无视 position),position 才能走到 wnd.split,见 tabs/split-open.ts
     openTab({
         app: plugin.app,
         custom: {
@@ -53,6 +61,7 @@ export function openImageTab(plugin: IPluginForImageTab, path: string, opts?: { 
             data: {path},
         },
         position: opts?.position,
+        openNewTab: wantsSplitOpen(opts) || undefined,
     } as any);
 }
 
@@ -193,7 +202,7 @@ function createViewer(dom: ViewerDOM, plugin: IPluginForImageTab, tab: ImageTabI
     let siblings: string[] = [];
     let siblingIndex = -1;
     // 加载令牌,避免快速切换时旧请求覆盖新图片
-    let loadToken = 0;
+    let loadEpoch = 0;
 
     // ---- 缩放计算 ----
     const clampZoom = (z: number) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z));
@@ -308,7 +317,7 @@ function createViewer(dom: ViewerDOM, plugin: IPluginForImageTab, tab: ImageTabI
 
     // ---- 加载图片 ----
     async function load(target: string): Promise<void> {
-        const token = ++loadToken;
+        const loadSeq = ++loadEpoch;
         path = target;
         tab._path = target;
         tab.data.path = target;
@@ -333,7 +342,7 @@ function createViewer(dom: ViewerDOM, plugin: IPluginForImageTab, tab: ImageTabI
         try {
             buf = await readBinaryFile(target);
         } catch (e) {
-            if (token !== loadToken) return;
+            if (loadSeq !== loadEpoch) return;
             dom.stage.innerHTML = `
                 <div class="syfe-image__error">
                     <div>读取失败: ${escapeHTML(String(e))}</div>
@@ -342,7 +351,7 @@ function createViewer(dom: ViewerDOM, plugin: IPluginForImageTab, tab: ImageTabI
             dom.stage.querySelector("[data-retry]")?.addEventListener("click", () => load(target));
             return;
         }
-        if (token !== loadToken) return;
+        if (loadSeq !== loadEpoch) return;
 
         releaseObjectUrl(tab);
         const blob = new Blob([buf], {type: getImageMime(target)});
@@ -356,7 +365,7 @@ function createViewer(dom: ViewerDOM, plugin: IPluginForImageTab, tab: ImageTabI
         img.alt = basename(target);
         img.draggable = false;
         img.addEventListener("load", () => {
-            if (token !== loadToken) return;
+            if (loadSeq !== loadEpoch) return;
             // 无固有尺寸(如部分 SVG)时回退到容器尺寸
             naturalW = img.naturalWidth || img.clientWidth || 300;
             naturalH = img.naturalHeight || img.clientHeight || 150;
@@ -365,7 +374,7 @@ function createViewer(dom: ViewerDOM, plugin: IPluginForImageTab, tab: ImageTabI
             updateInfo();
         });
         img.addEventListener("error", () => {
-            if (token !== loadToken) return;
+            if (loadSeq !== loadEpoch) return;
             dom.stage.innerHTML = `<div class="syfe-image__error">图片解码失败,格式可能不受支持</div>`;
         });
         img.src = url;

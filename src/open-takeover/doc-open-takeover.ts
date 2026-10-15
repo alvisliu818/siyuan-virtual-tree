@@ -16,6 +16,7 @@
 // 即"是否被 preventDefault"。所以**必须调 event.preventDefault() 来取消默认打开**,
 // listener 的 return false 无效(实测踩过:只 return false 时思源照样打开)。
 import {openFileTab} from "../tabs/editor-tab";
+import {currentWndId, hasTabIn, hasTabOutsideWnd, tabsInWnd} from "../tabs/split-open";
 import {fileUrlToPath, getWorkspacePath} from "../utils/system-path";
 
 export interface DocOpenTakeoverConfig {
@@ -94,7 +95,41 @@ export function registerDocOpenTakeover(
         if (!abs) return false; // 解析不了本地路径就别拦,交给思源
         try {
             // 设置项「接管打开用分栏」:开启时用右侧分栏打开(文档与文件同屏);热生效(handler 每次读 getConfig)
-            openFileTab(plugin as any, abs, cfg.takeoverSplitOpen ? {position: "right"} : undefined);
+            const position = cfg.takeoverSplitOpen ? ({position: "right"} as const) : undefined;
+            // 自愈:思源 Wnd.split 在退化态(活动分屏模型只有一个无头页签,如整窗重载后
+            // 页签未实例化,Wnd.ts 的 children.length===1 && !headElement 早退守卫)会返回 this,
+            // 新页签落回当前分屏。先记下活动分屏,打开后若同文件的页签全部仍在原活动分屏
+            // (没有一份落在别的分屏),紧跟着补一次打开 —— 此时页签模型已存在,
+            // openNewTab+position 必然分栏(实测二次打开必中)。
+            const activeWndId = position ? currentWndId() : "";
+            const cols0 = position ? document.querySelectorAll(".layout__center .layout-tab-container").length : 0;
+            openFileTab(plugin as any, abs, position);
+            if (position && activeWndId) {
+                // 自愈:思源 Wnd.split 在退化态(活动分屏模型首个页签无 head,如整窗重载后)会返回
+                // this 不拆分,新页签落回当前分屏。页签模型注册是异步的 —— 轮询等注册,
+                // 确认「分栏未发生且页签都还在原分屏」后补一次打开(openNewTab+position 必然分栏),
+                // 成功后关掉首次留下的同文件页签(那份是本流程刚创建的,留着只会堆重复页签)。
+                const heal = (left: number) => {
+                    const splitDone = document.querySelectorAll(".layout__center .layout-tab-container").length > cols0
+                        || hasTabOutsideWnd(plugin as any, abs, activeWndId);
+                    if (splitDone) return;
+                    if (!hasTabIn(plugin as any, abs)) {
+                        if (left > 0) setTimeout(() => heal(left - 1), 150);
+                        return;
+                    }
+                    const stale = tabsInWnd(plugin as any, abs, activeWndId);
+                    openFileTab(plugin as any, abs, position);
+                    const closeStale = (left2: number) => {
+                        if (hasTabOutsideWnd(plugin as any, abs, activeWndId)) {
+                            for (const t of stale) { try { (t as any).parent?.close?.(); } catch { /* 关不掉就留着 */ } }
+                            return;
+                        }
+                        if (left2 > 0) setTimeout(() => closeStale(left2 - 1), 150);
+                    };
+                    setTimeout(() => closeStale(8), 150);
+                };
+                setTimeout(() => heal(5), 150);
+            }
         } catch (e) {
             console.warn("[doc-open-takeover] 打开失败,回退思源默认:", rawPath, e);
             return false;
