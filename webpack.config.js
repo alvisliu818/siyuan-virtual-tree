@@ -230,6 +230,15 @@ module.exports = (env, argv) => {
         entry: {
             index: "./src/index.ts",
         },
+        // 关闭体积性能提示。webpack 的默认阈值(244 KiB)假设的是"浏览器网络下载、
+        // 缓存敏感"的 Web 场景;本插件是思源桌面端本地 require 加载,无网络传输,
+        // 警告列出的"大文件"(Monaco worker、vditor 静态资源、4.7MB 入口)都是
+        // 桌面插件的正常产物。按建议拆 runtime/initial vendor chunk 会引入固定名
+        // 文件,与下方"chunkFilename 带 contenthash 防陈旧缓存"的设计相冲突
+        // (思源内核不发 Cache-Control,靠 Last-Modified 启发式缓存,见 output 注释)。
+        performance: {
+            hints: false,
+        },
         optimization: {
             minimize: production,
             minimizer: [
