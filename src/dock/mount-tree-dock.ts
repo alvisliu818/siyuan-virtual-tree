@@ -12,12 +12,9 @@ import {toFileLink} from "../utils/system-path";
 import {virtualListDir, virtualId, isNotebookRoot} from "../utils/virtual-tree";
 import {docTreeIconHTML, cachedDocIcon, ensureDocIcons, getNotebookIcon} from "../utils/siyuan-icon";
 import {listChildBlocks, blockTitle, BlockNode} from "../utils/blocks";
-import {copyText, revealInFileTree, pickMountTargetDialog, showFileTreeMenu, findTreeRootEl, createNewFile, createNewFolder, IFileTreeActions} from "../components/file-tree";
+import {copyText, revealInFileTree, pickMountTargetDialog, showFileTreeMenu, findTreeRootEl, createNewFile, createNewFolder, buildFileTreeActions} from "../components/file-tree";
 import {openBaiduPanDialog} from "../components/baidu-pan-dialog";
-import {openImageTab} from "../tabs/image-tab";
-import {openOfficeTab} from "../tabs/office-tab";
-import {openMediaTab} from "../tabs/media-tab";
-import {openTagMenu, tagIconHTML} from "../tags/tag-ui";
+import {tagIconHTML} from "../tags/tag-ui";
 import {
     getAllTags,
     sortTagsTree,
@@ -61,11 +58,23 @@ import type {RelationTreeConfig} from "../types";
 
 /**
  * 取当前激活文档的 rootID(多标签页下优先激活 tab 里的编辑器)。
- * 移植自 siyuan-virtual-tree 的同名工具:1) 激活 tab 的编辑器 2) 激活 tab 的
- * protyle[data-doc-id] 3) 可见编辑器 4) 唯一编辑器 5) 任意有 rootID 的编辑器。
+ * 移植自 siyuan-virtual-tree 的同名工具:0) 3.8.7 激活页签元素(头 → data-id 反查)
+ * 1) 激活 tab 的编辑器 2) 激活 tab 的 protyle[data-doc-id] 3) 可见编辑器
+ * 4) 唯一编辑器 5) 任意有 rootID 的编辑器。
  */
 function currentDocRootId(): string | null {
     try {
+        // 3.8.7+:激活页签内容元素 → 里面的 protyle(protyle 可能是元素本身,也可能是后代)
+        for (const el of activeTabEls()) {
+            const py = el.classList.contains("protyle")
+                ? el
+                : el.querySelector<HTMLElement>(".protyle");
+            if (!py) continue;
+            const rootId = py.hasAttribute("data-doc-id")
+                ? py.dataset.docId
+                : (py.querySelector("[data-doc-id]") as HTMLElement | null)?.dataset?.docId;
+            if (rootId) return rootId;
+        }
         const editors = (getAllEditor?.() || []) as any[];
         for (const ed of editors) {
             const el = ed?.protyle?.element;
@@ -101,6 +110,53 @@ function currentDocRootId(): string | null {
     return null;
 }
 
+/**
+ * 取「当前激活页签」的内容元素(每个聚焦 pane 一个)。
+ * 3.8.7 起 DOM 变了:激活页签头是 .layout-tab-bar .item--focus(带 data-id),
+ * 内容元素是 .layout-tab-container 下同 data-id 的直接子元素(未激活的挂 fn__none);
+ * 旧版 .layout-tab__item--focus 类已不存在 —— 两种都探,谁命中用谁。
+ */
+function activeTabEls(): HTMLElement[] {
+    const out: HTMLElement[] = [];
+    try {
+        // 3.8.7+:头 → data-id → 内容元素
+        document.querySelectorAll(".layout-tab-bar .item--focus").forEach(head => {
+            const id = (head as HTMLElement).dataset?.id;
+            if (!id) return;
+            const el = document.querySelector(`.layout-tab-container [data-id="${CSS.escape(id)}"]`) as HTMLElement | null;
+            if (el) out.push(el);
+        });
+        if (out.length === 0) {
+            // 旧版(<3.8.7)兼容:激活页签内容元素自带 --focus 类
+            document.querySelectorAll(".layout-tab__item--focus").forEach(el => out.push(el as HTMLElement));
+        }
+    } catch {
+        // ignore
+    }
+    return out;
+}
+
+/**
+ * 取当前激活页签打开的本地文件路径(虚拟树打开的外部文件)。
+ * 各文件类页签(markdown/editor/notebook/office/image/media)在挂载时会把自己的
+ * 根元素打上 data-syfe-path 属性;拿到即说明当前激活的是本插件的文件编辑页签
+ * (思源文档页签没有该属性,返回 null)。
+ */
+function currentFilePath(): string | null {
+    try {
+        for (const el of activeTabEls()) {
+            // data-syfe-path 打在页签根元素上:activeTabEls 返回的就是它自己,
+            // querySelector 只查后代 —— 必须先 matches 自身再查后代
+            const hit = (el.matches("[data-syfe-path]") ? el : el.querySelector<HTMLElement>("[data-syfe-path]"));
+            const p = hit?.dataset?.syfePath;
+            if (p) return p;
+        }
+        return null;
+    } catch {
+        return null;
+    }
+}
+
 export interface IPluginForMountTree {
     app: any;
     name: string;
@@ -118,6 +174,14 @@ type Row =
     | {kind: "block"; blockId: string; name: string; depth: number; expanded: boolean}
     | {kind: "empty"; depth: number}
     | {kind: "loading"; depth: number};
+
+// 「外部文件定位」涉及的行种类:file 行 + 挂载了真实文件的 mount 行。
+// 抽成别名而不是在函数里写 Extract<Row, ...>:函数内 `let exact: typeof bestRow = null`
+// 会取到 bestRow 此刻的控制流窄化类型(null),把 exact 的声明类型钉成 null,
+// 之后 exact = r 全报 TS2322(实测踩过)。
+type FileLocateRow = Extract<Row, {kind: "file"}> | Extract<Row, {kind: "mount"}>;
+// 「文档定位」涉及的行种类:挂载行 + doc 行 + 引用关系树的 auto 行
+type DocLocateRow = Extract<Row, {kind: "doc"}> | Extract<Row, {kind: "auto"}> | Extract<Row, {kind: "mount"}>;
 
 interface MountTreeDockInstance {
     element: HTMLElement;
@@ -280,6 +344,8 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
             let relationLocateFlash: string | null = null;
             // 「定位」按钮:挂载行 / doc 行的闪烁标记(与 relationLocateFlash 同一套 CSS)
             let mountLocateFlashUid: string | null = null;
+            // 「定位」按钮:外部文件行(file 行)的闪烁标记
+            let fileLocateFlashPath: string | null = null;
             const sleepMs = (ms: number) => new Promise(r => window.setTimeout(r, ms));
             const relKey = (docId: string) => "rel:" + docId;
 
@@ -376,12 +442,95 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
             /** 「定位」按钮:在挂载树里定位当前打开的思源文档。
              *  逐层展开挂载链(notebook/doc 挂载 → 子文档行),滚动到目标行并闪烁。
              *  展开键一律取 rowChildSource(与渲染同源),不手写键格式。 */
+            // 路径比较:统一正斜杠 + 去尾分隔符;Windows 本地路径再比一层小写
+            // (文件树里的路径与页签里的路径来源不同,盘符/目录大小写可能不一致)
+            const normFsPath = (p: string) => p.replace(/\\/g, "/").replace(/\/+$/, "");
+            const sameFsPath = (a: string, b: string) => {
+                const x = normFsPath(a), y = normFsPath(b);
+                return x === y || x.toLowerCase() === y.toLowerCase();
+            };
+            // target 是否在 dir 之下(严格子路径,按目录边界切分)
+            const fsPathUnder = (dir: string, target: string) => {
+                const d = normFsPath(dir), t = normFsPath(target);
+                if (!d) return false;
+                const pre = d + "/";
+                return (t.startsWith(pre) || t.toLowerCase().startsWith(pre.toLowerCase())) && t.length > d.length;
+            };
+
+            /** 「定位」按钮(外部文件):在挂载树里定位当前打开的本地文件。
+             *  与文档版同思路:找最深已渲染的目录行(挂载行/file 行)逐层展开,
+             *  最后在 file 行/挂载文件行上闪烁 + 滚动。 */
+            const locateFileInMountTree = async (target: string) => {
+                const notInRange = () => showMessage("当前文件不在虚拟文档树的挂载范围内", 3000, "info");
+                for (let guard = 0; guard < 12; guard++) {
+                    let bestDepth = -1;
+                    let bestRow: FileLocateRow | null = null;
+                    let exact: FileLocateRow | null = null;
+                    for (const r of (self._rows || [])) {
+                        if (r.kind === "file") {
+                            if (sameFsPath(r.path, target)) { exact = r; break; }
+                            if (r.isDir && fsPathUnder(r.path, target) && r.depth > bestDepth) { bestDepth = r.depth; bestRow = r; }
+                        } else if (r.kind === "mount" && r.item.kind === "file") {
+                            const p = r.item.path || "";
+                            if (!p) continue;
+                            if (!r.item.isDir && sameFsPath(p, target)) { exact = r; break; }
+                            if (r.item.isDir && fsPathUnder(p, target) && r.depth > bestDepth) { bestDepth = r.depth; bestRow = r; }
+                        }
+                    }
+                    if (exact) {
+                        // 目标层:闪烁 + 滚动(mount 行用 uid 标记,file 行用路径标记)
+                        if (exact.kind === "mount") {
+                            mountLocateFlashUid = exact.uid;
+                        } else {
+                            fileLocateFlashPath = exact.path;
+                        }
+                        const want = exact.kind === "mount" ? exact.uid : exact.path;
+                        render();
+                        window.setTimeout(() => {
+                            const el = exact!.kind === "mount"
+                                ? (listEl.querySelector(`[data-mount-uid="${CSS.escape(want)}"]`) as HTMLElement | null)
+                                : (() => {
+                                    const idx = (self._rows || []).findIndex(r => r.kind === "file" && sameFsPath((r as any).path, want));
+                                    return idx >= 0 ? (listEl.querySelector(`[data-idx="${idx}"]`) as HTMLElement | null) : null;
+                                })();
+                            if (el) el.scrollIntoView({block: "center"});
+                        }, 60);
+                        window.setTimeout(() => {
+                            mountLocateFlashUid = null;
+                            fileLocateFlashPath = null;
+                            render();
+                        }, 2000);
+                        return;
+                    }
+                    if (!bestRow) { notInRange(); return; }
+                    // 中间层:未展开 → 展开(键取 rowChildSource,与渲染同源)
+                    if (!bestRow.expanded) {
+                        const src = rowChildSource(bestRow);
+                        if (!src) { notInRange(); return; }
+                        self._expanded!.add(src.key);
+                        void load(src.key, src.loader);
+                        render();
+                        await sleepMs(700);
+                        continue;
+                    }
+                    // 已展开但下一层没出现:目标不在挂载范围
+                    notInRange();
+                    return;
+                }
+                notInRange();
+            };
+
             const locateActiveInMountTree = async () => {
                 // 面板不可见 → 先点 dock 图标展开
                 const dockItem = document.querySelector(`.dock__item[data-type="${MOUNT_TREE_DOCK_TYPE}"]`) as HTMLElement | null;
                 const dockVisible = !!document.querySelector(".syfe-mtree-dock")?.getClientRects().length;
                 if (!dockVisible && dockItem) dockItem.click();
                 await sleepMs(300);
+
+                // 焦点页签是本插件的文件页签(markdown/editor/notebook/office/image/media)
+                // → 按文件路径定位;否则按思源文档定位
+                const file = currentFilePath();
+                if (file) { await locateFileInMountTree(file); return; }
 
                 const cur = currentDocRootId();
                 if (!cur) { showMessage("请先打开一个思源文档", 2500, "info"); return; }
@@ -399,7 +548,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 for (let guard = 0; guard < 12; guard++) {
                     // 找"最深匹配"的已渲染行:挂载行按 targetId,doc/auto 行按 docId
                     let bestK = -1;
-                    let bestRow: Extract<Row, {kind: "doc"}> | Extract<Row, {kind: "auto"}> | Extract<Row, {kind: "mount"}> | null = null;
+                    let bestRow: DocLocateRow | null = null;
                     for (const r of (self._rows || [])) {
                         if (r.kind === "mount") {
                             const t = r.item.targetId || "";
@@ -913,6 +1062,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                     : manualRows;
                 self._rows = shown;
                 renderChips();
+                const curFile = currentFilePath(); // 焦点页签打开的本地文件(file 行高亮用)
                 listEl.innerHTML = shown.map((r, i) => {
                     const pad = 6 + r.depth * 14;
                     if (r.kind === "loading") {
@@ -976,8 +1126,11 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                     }
                     if (r.kind === "file") {
                         const icon = r.isDir ? folderIconHTML(r.name, r.expanded) : fileIconHTML(r.name);
+                        // 定位闪烁 + 当前打开文件高亮(与 doc 行的 --flash/--current 同款)
+                        const flashing = fileLocateFlashPath && sameFsPath(fileLocateFlashPath, r.path) ? " syfe-mtree__row--flash" : "";
+                        const cur = curFile && sameFsPath(curFile, r.path) ? " syfe-mtree__row--current" : "";
                         return `
-                        <li class="syfe-mtree__row syfe-mtree__row--file${r.isDir ? " syfe-mtree__row--dir" : ""}"
+                        <li class="syfe-mtree__row syfe-mtree__row--file${r.isDir ? " syfe-mtree__row--dir" : ""}${flashing}${cur}"
                             data-idx="${i}" style="padding-left:${pad}px" title="${escapeHTML(r.path)}">
                             ${arrow}
                             <span class="syfe-mtree__icon">${icon}</span>
@@ -1165,22 +1318,8 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
             // 文件/文件夹:直接复用**文件树的完整右键菜单**(一份实现两处用,功能自动同步)。
             // rootEl 传文件树里对应的根(找不到就传 null——refreshPath 对 null 直接返回,
             // 重命名/删除仍会执行,只是不刷新文件树);操作完通过 syfe:files-changed 自行重绘。
-            const fileTreeActions: IFileTreeActions = {
-                plugin,
-                openFile: (p) => openFileTab(plugin as any, p),
-                openImage: (p) => openImageTab(plugin as any, p),
-                openOffice: (p) => openOfficeTab(plugin as any, p),
-                openMedia: (p) => openMediaTab(plugin as any, p),
-                openMarkdown: (p, mode) => (plugin as any).openMarkdown(p, mode),
-                openSearch: (rp) => (plugin as any).openSearch(rp),
-                openTerminal: (cwd) => (plugin as any).openTerminal(cwd),
-                openFileSplit: (p, pos) => openFileTab(plugin as any, p, {position: pos}),
-                togglePin: (p) => (plugin as any).togglePin(p),
-                toggleFavorite: (p) => (plugin as any).toggleFavorite(p),
-                manageTags: (p, ev) => {
-                    void openTagMenu(plugin as any, p, ev, () => render());
-                },
-            };
+            // actions 统一由 buildFileTreeActions 构建(与编辑器页签的面包屑「更多」菜单共用)。
+            const fileTreeActions = buildFileTreeActions(plugin as any, () => render());
 
             // 面板内挂载入口(挂到顶层,或挂到右键命中的那个挂载节点下)。
             // 返回菜单项描述,供空白处菜单直接 addItem,也供文档/笔记本菜单的 extra 追加。
@@ -1544,6 +1683,11 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
             const actionHandler = (e: MouseEvent) => {
                 const actionEl = (e.target as HTMLElement).closest("[data-action]") as HTMLElement | null;
                 if (!actionEl) return;
+                // 「更多」分支会同步弹出菜单;若让 click 继续冒泡到 window,
+                // 思源的全局点击处理器(globalClickHideMenu)会因为"点击目标不在菜单内"
+                // 把刚弹出的菜单立刻关掉 —— 表现就是「更多」图标点不开。
+                // 思源原生同类按钮(如大纲的展开级别菜单)也是弹出后 stopPropagation。
+                if (actionEl.dataset.action === "more") e.stopPropagation();
                 runToolbarAction(actionEl.dataset.action || "");
             };
             this._actionHandler = actionHandler;
