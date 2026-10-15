@@ -46,3 +46,7 @@ tools/_cdp-*.mjs
 tools/_patch_*.py
 tools/_shot-*.png
 tools/_vc-*.png
+# 回收站/CDP 实测脚本与诊断脚本(验证完即弃,文件留磁盘不入库)
+tools/_trash-*
+tools/_diag*
+tools/_reload.mjs
