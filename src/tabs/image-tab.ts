@@ -66,6 +66,8 @@ export function createImageTabConfig(plugin: IPluginForImageTab) {
                 return;
             }
             this.element.classList.add("syfe-image-tab");
+            // 定位用:虚拟文档树面板的「定位」按钮靠该属性识别当前打开的文件
+            this.element.dataset.syfePath = path;
             this._disposables = [];
 
             const dom = buildViewerDOM(this.element);

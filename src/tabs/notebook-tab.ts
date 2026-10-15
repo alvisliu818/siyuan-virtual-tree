@@ -393,6 +393,8 @@ export function createNotebookTabConfig(_plugin: IPluginForNotebookTab) {
             // 比不给更糟,用户会以为插件坏了。
             this._canRun = isPythonAvailable() && isPythonNotebook(this._nb);
             this.element.classList.add("syfe-nb-tab");
+            // 定位用:虚拟文档树面板的「定位」按钮靠该属性识别当前打开的文件
+            this.element.dataset.syfePath = path;
 
             const name = basename(path);
             this.element.innerHTML = `

@@ -10,6 +10,7 @@ import {nativeStat} from "../api/native-fs";
 import {isBaiduPath} from "../utils/baidu-path";
 import {createBacklinkPanel, BacklinkPanel} from "../components/backlink-panel";
 import {renderPathSegments, showPathSwitchMenu, enableCrumbScroll} from "../components/path-crumbs";
+import {showFileTreeMenu, findTreeRootEl, buildFileTreeActions} from "../components/file-tree";
 import {enableHeadingCrumbs, flashHeading, scrollToTopOf, scrollParentOf, type HeadingCrumbsHandle} from "../components/md-heading-crumbs";
 import {openFileTab} from "./editor-tab";
 import {showVersionHistory} from "../version-control/version-ui";
@@ -305,6 +306,8 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                 return;
             }
             this._path = path;
+            // 定位用:虚拟文档树面板的「定位」按钮靠该属性识别当前打开的文件
+            this.element.dataset.syfePath = path;
             // 兼容旧值:旧版"所见即所得"(wysiwyg)已并入"实时预览"(live)
             // 全局阅读模式(默认开):优先级高于"Markdown 默认模式",打开即只读渲染;
             // 显式指定 mode(如搜索跳转路径)时仍以显式值为准
@@ -329,6 +332,9 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                         <button class="b3-button b3-button--small syfe-md__modebtn" data-mode="reading">阅读</button>
                         <button class="b3-button b3-button--small b3-button--outline syfe-md__verbtn" title="历史版本(每次保存自动保留修改前内容)">历史版本</button>
                         <button class="b3-button b3-button--small b3-button--outline syfe-md__save">保存</button>
+                        <button class="b3-button b3-button--small b3-button--outline syfe-md__morebtn" title="更多操作(与文件树右键菜单一致)">
+                            <svg class="syfe-md__findicon"><use xlink:href="#iconMore"></use></svg>
+                        </button>
                     </div>
                     <div class="syfe-md__hcrumbs syfe-crumbs-scroll" style="display:none;"></div>
                     <div class="syfe-md__find" style="display:none;">
@@ -441,6 +447,17 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                 void showPathSwitchMenu((p) => openFileTab(plugin, p), dir, seg, path);
             };
             crumbEl.addEventListener("click", crumbClick);
+
+            // 顶栏最右侧「更多」:弹出与文件树右键一致的完整文件菜单,
+            // 对齐原生思源面包屑的「更多」按钮 —— 不用回树里也能重命名/复制链接等
+            const moreBtn = this.element.querySelector(".syfe-md__morebtn") as HTMLElement;
+            const fileTreeActions = buildFileTreeActions(plugin as any);
+            moreBtn.addEventListener("click", (e: MouseEvent) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const rootEl = findTreeRootEl(path);
+                showFileTreeMenu(e, path, false, rootEl, rootEl?.dataset.path || "", fileTreeActions);
+            });
 
             // 反向链接面板(默认收起,展开时懒扫描)
             this._backlink = createBacklinkPanel(plugin as any, path);

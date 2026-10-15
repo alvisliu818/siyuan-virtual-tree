@@ -28,7 +28,7 @@ import {resolvePythonInterpreter} from "../utils/python-kernel";
 import {runCommandInTerminal} from "./terminal-tab";
 import {toSystemPath} from "../utils/system-path";
 import {isDirectory} from "../utils/path-kind";
-import {revealInFileTree} from "../components/file-tree";
+import {revealInFileTree, showFileTreeMenu, findTreeRootEl, buildFileTreeActions} from "../components/file-tree";
 import {showVersionHistory} from "../version-control/version-ui";
 
 // 打开文件夹:在文件树里展开定位。
@@ -241,6 +241,8 @@ export function createEditorTabConfig(plugin: IPluginForTab) {
                 return;
             }
             this._path = path;
+            // 定位用:虚拟文档树面板的「定位」按钮靠该属性识别当前打开的文件
+            this.element.dataset.syfePath = path;
             this._disposables = [];
             this.element.classList.add("syfe-editor-tab");
 
@@ -293,6 +295,20 @@ export function createEditorTabConfig(plugin: IPluginForTab) {
             verBtn.title = "查看历史版本(每次保存自动保留修改前的内容)";
             verBtn.addEventListener("click", () => showVersionHistory(plugin as any, path));
             pathEl.appendChild(verBtn);
+
+            // 顶栏最右侧「更多」:弹出与文件树右键一致的完整文件菜单
+            // (对齐原生思源面包屑的「更多」;markdown Tab 也有同款按钮)
+            const moreBtn = document.createElement("span");
+            moreBtn.className = "syfe-editor__run syfe-editor__more";
+            moreBtn.title = "更多操作(与文件树右键菜单一致)";
+            moreBtn.innerHTML = `<svg style="width:14px;height:14px;"><use xlink:href="#iconMore"></use></svg>`;
+            moreBtn.addEventListener("click", (e: MouseEvent) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const rootEl = findTreeRootEl(path);
+                showFileTreeMenu(e, path, false, rootEl, rootEl?.dataset.path || "", buildFileTreeActions(plugin as any));
+            });
+            pathEl.appendChild(moreBtn);
 
             // 反向链接面板(默认收起,展开时懒扫描)
             const backlinkEl = this.element.querySelector(".syfe-editor__backlink") as HTMLElement;

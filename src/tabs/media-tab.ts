@@ -88,6 +88,8 @@ export function createMediaTabConfig(plugin: IPluginForMediaTab) {
                 return;
             }
             this.element.classList.add("syfe-media-tab");
+            // 定位用:虚拟文档树面板的「定位」按钮靠该属性识别当前打开的文件
+            this.element.dataset.syfePath = path;
             this._disposables = [];
 
             const dom = buildPlayerDOM(this.element);

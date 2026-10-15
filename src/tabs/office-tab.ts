@@ -77,6 +77,8 @@ export function createOfficeTabConfig(_plugin: IPluginForOfficeTab) {
             this._saving = false;
             this._closing = false;
             this.element.classList.add("syfe-office-tab");
+            // 定位用:虚拟文档树面板的「定位」按钮靠该属性识别当前打开的文件
+            this.element.dataset.syfePath = path;
 
             const kind = getOfficeKind(path) || "document";
             const name = basename(path);

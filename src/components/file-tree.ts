@@ -13,7 +13,7 @@ import {nativeCopyToTemp, nativeWriteTempFile, isNativeFsAvailable} from "../api
 import {isPinned, isFavorite, itemFromPath} from "../start-page";
 import {fileIconHTML, folderIconHTML} from "../utils/icons";
 import {addMountMenuItem} from "./mount-menu";
-import {tagBadgesHTML} from "../tags/tag-ui";
+import {openTagMenu, tagBadgesHTML} from "../tags/tag-ui";
 import {expandWithDescendants, pathMatchesFilter, pathHasAnyTag} from "../tags/tag-store";
 import {getOpenWithItems, openWithMatches} from "../open-with/open-with-store";
 import {DirEntry} from "../types";
@@ -39,6 +39,30 @@ export interface IFileTreeActions {
     toggleFavorite?(path: string): void;
     // 取消挂载:移除某真实目录下的百度网盘挂载记录
     unmountDoc?(parentDir: string, vPath: string): void;
+}
+
+// 统一构建 IFileTreeActions:全部委托给插件实例的同名方法。
+// 之前只有虚拟文档树面板内联构建过这份接口;编辑器页签(面包屑「更多」菜单)
+// 也要弹同一套文件右键菜单,抽到这里共用,避免两份实现漂移。
+// onTagsChanged:标签操作完成后的回调(面板传自己的重绘;页签可不传,
+// 标签变化本身会派发 TAGS_CHANGED_EVENT 让各面板自行刷新)。
+export function buildFileTreeActions(plugin: any, onTagsChanged?: () => void): IFileTreeActions {
+    return {
+        plugin,
+        openFile: (p) => plugin.openFile(p),
+        openImage: (p) => plugin.openImage(p),
+        openOffice: (p) => plugin.openOffice(p),
+        openMedia: (p) => plugin.openMedia(p),
+        openMarkdown: (p, mode) => plugin.openMarkdown(p, mode),
+        openSearch: (rp) => plugin.openSearch(rp),
+        openTerminal: (cwd) => plugin.openTerminal(cwd),
+        openFileSplit: (p, pos) => plugin.openFileSplit(p, pos),
+        togglePin: (p) => plugin.togglePin(p),
+        toggleFavorite: (p) => plugin.toggleFavorite(p),
+        manageTags: (p, ev) => {
+            void openTagMenu(plugin, p, ev, onTagsChanged);
+        },
+    };
 }
 
 function escapeHTML(s: string): string {
