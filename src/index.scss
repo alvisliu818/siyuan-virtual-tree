@@ -4033,3 +4033,77 @@ button.syfe-editor__arrow--exp:hover {
     color: var(--b3-theme-on-surface);
     font-size: 12px;
 }
+
+/* === 回收站对话框 === */
+.syfe-trash__bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+}
+
+.syfe-trash__stats {
+    font-size: 12px;
+    color: var(--b3-theme-on-surface);
+}
+
+.syfe-trash__hint {
+    font-size: 12px;
+    color: var(--b3-theme-on-surface);
+    flex-shrink: 0;
+}
+
+.syfe-trash__list {
+    overflow: auto;
+    min-height: 0;
+    border: 1px solid var(--b3-border-color);
+    border-radius: 4px;
+}
+
+.syfe-trash__empty {
+    padding: 16px;
+    color: var(--b3-theme-on-surface);
+    font-size: 12px;
+    text-align: center;
+}
+
+.syfe-trash-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 10px;
+    border-bottom: 1px solid var(--b3-border-color);
+
+    &:last-child {
+        border-bottom: none;
+    }
+
+    &:hover {
+        background-color: var(--b3-list-hover);
+    }
+}
+
+.syfe-trash-item__main {
+    flex: 1;
+    min-width: 0;
+}
+
+.syfe-trash-item__origin {
+    font-size: 13px;
+    color: var(--b3-theme-on-background);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.syfe-trash-item__time {
+    font-size: 11px;
+    color: var(--b3-theme-on-surface);
+    margin-top: 2px;
+}
+
+.syfe-trash-item__ops {
+    display: flex;
+    gap: 4px;
+    flex-shrink: 0;
+}

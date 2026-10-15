@@ -1,5 +1,6 @@
 import {Menu, Dialog, confirm, showMessage, IMenu} from "siyuan";
-import {readDir, renameFile, removeFile, mkdir, writeFile, lsNotebooks, listDocsByPath, importStdMd, readBinaryFile, uploadAsset, insertBlockAtDocTop} from "../api/file";
+import {readDir, renameFile, mkdir, writeFile, lsNotebooks, listDocsByPath, importStdMd, readBinaryFile, uploadAsset, insertBlockAtDocTop} from "../api/file";
+import {deleteToTrash, getTrashMode} from "../utils/trash";
 import {isImportMdSourceAssetEnabled} from "../utils/config";
 import {joinPath, basename, dirname, pathDepth, extname, isSiyuanPath} from "../utils/path";
 import {toFileLink, toMarkdownFileLink, getWorkspacePath, toSystemPath} from "../utils/system-path";
@@ -652,22 +653,30 @@ export async function renameEntry(path: string, rootEl: HTMLElement | null, root
     }
 }
 
-// 删除
+// 删除:统一走回收站(插件回收站 / 系统回收站,设置里二选一,没有"直接删除"选项)。
+// 网盘条目走网盘删除接口,由网盘自己的回收站兜底;环境不支持回收站时
+// deleteToTrash 会抛错中止,文件保持原样 —— 确认框文案按实际模式变化。
 export function deleteEntry(path: string, isDir: boolean, rootEl: HTMLElement | null, rootPath: string): void {
     const name = basename(path);
     const typeStr = isDir ? "文件夹" : "文件";
+    const isBd = isBaiduPath(path);
+    const actionText = isBd
+        ? "删除(可在百度网盘回收站找回)"
+        : getTrashMode() === "system"
+            ? "移入系统回收站"
+            : "移入插件回收站(可在回收站中恢复)";
     confirm(
         `删除${typeStr}`,
-        `确定删除${typeStr}「${name}」${isDir ? "及其所有内容" : ""}吗?此操作不可恢复。`,
+        `确定把${typeStr}「${name}」${!isBd && isDir ? "连同全部内容" : ""}${actionText}吗?`,
         async () => {
             try {
-                await removeFile(path);
-                showMessage("已删除", 2000, "info");
+                const r = await deleteToTrash(path, isDir);
+                showMessage(r.note || "已删除", 3000, "info");
                 await refreshPath(rootEl, dirname(path), rootPath);
                 await syncDirToggleInParent(rootEl, dirname(path), rootPath);
                 notifyFilesChanged();
             } catch (e) {
-                showMessage(`删除失败: ${e}`, 5000, "error");
+                showMessage(`${(e as Error)?.message || e}`, 5000, "error");
             }
         },
         () => {},

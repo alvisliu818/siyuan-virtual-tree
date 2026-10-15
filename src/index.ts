@@ -33,6 +33,8 @@ import {loadOpenWithData} from "./open-with/open-with-store";
 import {openOpenWithManagerDialog} from "./open-with/open-with-ui";
 import {registerDocOpenTakeover} from "./open-takeover/doc-open-takeover";
 import {initFileVersions, setVersionKeepCount} from "./version-control/file-versions";
+import {setTrashMode} from "./utils/trash";
+import {openTrashDialog} from "./components/trash-dialog";
 import {loadRecents, addRecent, addRecentDoc, flushRecents} from "./recent-files";
 import {loadStartPage, itemFromPath, itemFromDoc, toggleInGroup} from "./start-page";
 import {isVirtualPath, virtualId, initMountStore, getMountList, dropSyDocMounts} from "./utils/virtual-tree";
@@ -110,6 +112,8 @@ export default class FileEditorPlugin extends Plugin {
     private globalReadingModeInput?: HTMLInputElement;
     // 版本控制:每文件保留的历史版本条数
     private versionKeepCountInput?: HTMLInputElement;
+    // 删除方式:插件回收站 / 系统回收站(没有"直接删除"选项)
+    private deleteModeSelect?: HTMLSelectElement;
     // 默认运行内核(代码块/代码文件/ipynb 共用的全局兜底)
     private kernelDefaultSelect?: HTMLSelectElement;
     // 引用关系树(移植自 siyuan-virtual-tree)
@@ -250,6 +254,8 @@ export default class FileEditorPlugin extends Plugin {
         // 必须在任何保存动作发生前完成(保存快照走 saveModel → recordVersion)
         void initFileVersions(this);
         setVersionKeepCount(this.config.versionKeepCount ?? 10);
+        // 删除方式:onload 里是 DEFAULT_CONFIG 的默认值,onLayoutReady 会按磁盘配置补一次
+        setTrashMode(this.config.deleteMode || "plugin");
         // 接管思源文档内打开文件(open-asset/open-link 事件,配置热读,卸载时注销)
         this._unregisterDocOpenTakeover = registerDocOpenTakeover(this as any, () => ({
             mode: this.config.docOpenTakeover || "off",
@@ -342,6 +348,8 @@ export default class FileEditorPlugin extends Plugin {
         // 版本控制保留条数以**磁盘配置**为准 —— onload 里那次跑在 loadConfig 之前,
         // 拿到的是 DEFAULT_CONFIG 的值,改设置后不重启也不会生效,必须在这里补一次
         setVersionKeepCount(this.config.versionKeepCount ?? 10);
+        // 删除方式同理:以磁盘配置为准
+        setTrashMode(this.config.deleteMode || "plugin");
         // 设置面板控件同步当前值
         this.syncSettingUI();
 // 加载标签数据(预设标签库 + 文件/文件夹打标记录)
@@ -1068,6 +1076,31 @@ actionElement: tagManageBtn,
             description: "每次保存时自动把修改前的内容存为历史版本(文本文件通用,含代码文件),页签顶部「历史版本」可查看与恢复;0 = 关闭版本控制",
             actionElement: this.versionKeepCountInput,
         });
+
+        // 删除方式:回收站二选一(没有"直接删除";环境不支持时删除会中止并提示)
+        this.deleteModeSelect = document.createElement("select");
+        this.deleteModeSelect.className = "b3-select fn__size200";
+        this.deleteModeSelect.innerHTML = `
+            <option value="plugin">插件回收站(推荐,可一键恢复)</option>
+            <option value="system">系统回收站</option>`;
+        this.setting!.addItem({
+            title: "删除方式",
+            description: "文件/文件夹删除时移入对应回收站:插件回收站按原路径镜像存放(工作空间 .siyuan/virtual-tree-trash),可随时恢复;系统回收站由操作系统管理。百度网盘文件始终走网盘删除(由网盘回收站兜底)",
+            actionElement: this.deleteModeSelect,
+        });
+
+        // 回收站管理入口:查看/恢复/彻底删除/清空
+        const trashManageBtn = document.createElement("button");
+        trashManageBtn.className = "b3-button b3-button--outline fn__size200";
+        trashManageBtn.textContent = "打开回收站…";
+        trashManageBtn.addEventListener("click", () => {
+            openTrashDialog(this as any);
+        });
+        this.setting!.addItem({
+            title: "回收站",
+            description: "查看插件回收站内容,可恢复到原位置、彻底删除或清空;删除方式为「系统回收站」时请到系统回收站里恢复",
+            actionElement: trashManageBtn,
+        });
     }
 
     // 同步设置面板控件值为当前配置
@@ -1088,6 +1121,7 @@ actionElement: tagManageBtn,
         if (this.markdownModeSelect) this.markdownModeSelect.value = this.config.markdownDefaultMode || "live";
         if (this.globalReadingModeInput) this.globalReadingModeInput.checked = this.config.globalReadingMode !== false;
         if (this.versionKeepCountInput) this.versionKeepCountInput.value = String(this.config.versionKeepCount ?? 10);
+        if (this.deleteModeSelect) this.deleteModeSelect.value = this.config.deleteMode || "plugin";
         if (this.newTabReplacePlusInput) this.newTabReplacePlusInput.checked = this.config.newTabReplacePlus !== false;
         if (this.newTabShowPinnedInput) this.newTabShowPinnedInput.checked = this.config.newTabShowPinned !== false;
         if (this.newTabShowRecentInput) this.newTabShowRecentInput.checked = this.config.newTabShowRecent !== false;
@@ -1131,6 +1165,7 @@ actionElement: tagManageBtn,
             markdownDefaultMode: (this.markdownModeSelect?.value as "live" | "source" | "reading") || "live",
             globalReadingMode: this.globalReadingModeInput?.checked ?? true,
             versionKeepCount: Math.max(0, parseInt(this.versionKeepCountInput?.value || "10", 10) || 0),
+            deleteMode: ((this.deleteModeSelect?.value || "plugin") as "plugin" | "system"),
             newTabReplacePlus: this.newTabReplacePlusInput?.checked ?? true,
             newTabShowPinned: this.newTabShowPinnedInput?.checked ?? true,
             newTabShowRecent: this.newTabShowRecentInput?.checked ?? true,
@@ -1170,6 +1205,8 @@ actionElement: tagManageBtn,
         await saveConfig(this, this.config);
         // 版本控制保留条数跟随设置生效(0=关闭并清空历史)
         setVersionKeepCount(this.config.versionKeepCount ?? 10);
+        // 删除方式跟随设置生效
+        setTrashMode(this.config.deleteMode || "plugin");
         // 主题设置立即生效
         this.applyConfiguredThemes();
         // 导航窗格开关对已打开的编辑器立即生效

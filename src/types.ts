@@ -62,6 +62,10 @@ export interface EditorConfig {
     // 版本控制:每次保存时把修改前的内容存为历史版本,保留的条数;0 = 关闭版本控制。
     // 文本文件通用(含代码文件);历史存独立的 file-versions.json,不放配置里
     versionKeepCount: number;
+    // 删除方式(没有"直接删除"选项 —— 删除必须可恢复):
+    //   plugin = 移入插件回收站(工作空间 .siyuan/virtual-tree-trash,按原路径镜像,可一键恢复,默认)
+    //   system = 移入操作系统回收站
+    deleteMode: "plugin" | "system";
     // 「虚拟文档树」面板顶部的**引用关系树**(按文档首块引用链接自动构建,与手动挂载共存)。
     // 关系树结构是只读派生视图(不落盘,每次现查);这里只持久化用户的显式意图:
     // 开关、排序设置、折叠状态(collapsed)。拖拽顺序在挂载配置(virtual-tree.json 的 customOrder)。
@@ -246,6 +250,8 @@ export const DEFAULT_CONFIG: EditorConfig = {
     globalReadingMode: true,
     // 默认保留最近 10 个修改前版本
     versionKeepCount: 10,
+    // 删除默认走插件回收站(可一键恢复)
+    deleteMode: "plugin",
     // 引用关系树默认关闭(按需在设置里开启)
     mountTreeRelation: {
         enabled: false,

@@ -27,6 +27,7 @@ import {
 } from "../tags/tag-store";
 import {openWithExternalApp, revealInSystemExplorer} from "../utils/external-app";
 import {openSiyuanDoc} from "../components/entry-menu";
+import {openTrashDialog} from "../components/trash-dialog";
 import {showDocMenu, showNotebookMenu, addPinFavEntries, DocMenuItem} from "../components/doc-menu";
 import {openSiyuanTagDialog} from "../components/siyuan-tag-dialog";
 import {openFileTab, syncOpenEditors} from "../tabs/editor-tab";
@@ -1628,6 +1629,13 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                     // 这些入口在面板空白处右键里也有,工具栏「更多」里再放一份:
                     // 空树状态下没有行也没有"空白"可点,新用户根本找不到"往树里加东西"的地方。
                     appendMountItems(m, null, "");
+                    // 回收站:删除文件默认进插件回收站,这里给恢复/清空的入口
+                    m.addSeparator();
+                    m.addItem({
+                        icon: "iconTrashcan",
+                        label: "打开回收站…",
+                        click: () => openTrashDialog(plugin as any),
+                    });
                     // 窄面板:被折叠进来的功能在这里补齐(工具栏图标已按 CSS 隐藏)
                     if (toolbarNarrow) {
                         m.addSeparator();
