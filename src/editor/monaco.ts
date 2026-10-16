@@ -172,12 +172,13 @@ export function createEditor(
         automaticLayout: true,
         // 右侧导航窗格(minimap 缩略图):跟随设置,默认开
         minimap: {enabled: config.showMinimap !== false},
-        scrollBeyondLastLine: false,
+        // 与 VS Code 一致:允许滚动越过最后一行(底部留白,末行不必贴着编辑器底边)
+        scrollBeyondLastLine: true,
         smoothScrolling: true,
         cursorBlinking: "smooth",
         renderWhitespace: "selection",
         bracketPairColorization: {enabled: true},
-        padding: {top: 8, bottom: 8},
+        padding: {top: 8, bottom: 24},
     });
     // Ctrl/Cmd + S 保存
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, onSave);
