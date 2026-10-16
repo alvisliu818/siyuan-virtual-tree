@@ -24,6 +24,18 @@ export function isVirtualPath(p: string): boolean {
 }
 
 // 是否笔记本挂载根
+// 思源设置「启用顶层笔记本文档」(conf.fileTree.boxDocEnabled)。
+// 开启后**笔记本自身就是一篇文档**(文档 id 与笔记本 id 相同),因此:
+//  - 固定/挂载"笔记本"时,它其实就是那篇顶层文档,可以像普通文档一样打开、挂载;
+//  - 关闭时笔记本只是容器,要打开只能取它下面的第一篇文档(见 entry-menu 的 openSiyuanNotebook)。
+export function isBoxDocEnabled(): boolean {
+    try {
+        return (window as any).siyuan?.config?.fileTree?.boxDocEnabled === true;
+    } catch {
+        return false;
+    }
+}
+
 export function isNotebookRoot(p: string): boolean {
     return typeof p === "string" && p.startsWith(NOTEBOOK_PREFIX);
 }

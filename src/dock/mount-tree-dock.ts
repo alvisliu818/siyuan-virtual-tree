@@ -9,7 +9,7 @@ import {DirEntry} from "../types";
 import {basename, dirname, joinPath} from "../utils/path";
 import {fileIconHTML, folderIconHTML} from "../utils/icons";
 import {toFileLink} from "../utils/system-path";
-import {virtualListDir, virtualId, isNotebookRoot} from "../utils/virtual-tree";
+import {virtualListDir, virtualId, isNotebookRoot, isBoxDocEnabled} from "../utils/virtual-tree";
 import {docTreeIconHTML, cachedDocIcon, ensureDocIcons, getNotebookIcon} from "../utils/siyuan-icon";
 import {listChildBlocks, blockTitle, BlockNode} from "../utils/blocks";
 import {copyText, revealInFileTree, pickMountTargetDialog, showFileTreeMenu, findTreeRootEl, createNewFile, createNewFolder, buildFileTreeActions} from "../components/file-tree";
@@ -601,23 +601,20 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 if (typeof p === "string" && p) void locateFolderInMountTree(p);
             });
 
-            const locateActiveInMountTree = async () => {
-                // 面板不可见 → 先点 dock 图标展开
-                const dockItem = document.querySelector(`.dock__item[data-type="${MOUNT_TREE_DOCK_TYPE}"]`) as HTMLElement | null;
-                const dockVisible = !!document.querySelector(".syfe-mtree-dock")?.getClientRects().length;
-                if (!dockVisible && dockItem) dockItem.click();
-                await sleepMs(300);
-
-                // 焦点页签是本插件的文件页签(markdown/editor/notebook/office/image/media)
-                // → 按文件路径定位;否则按思源文档定位
-                const file = currentFilePath();
-                if (file) { await locateFileInMountTree(file); return; }
-
-                const cur = currentDocRootId();
-                if (!cur) { showMessage("请先打开一个思源文档", 2500, "info"); return; }
-                const rows = await querySQL(`SELECT box, path FROM blocks WHERE id = '${cur.replace(/'/g, "''")}' AND type = 'd' LIMIT 1`);
+            /**
+             * 按文档 id 在挂载树里定位:SQL 取存储路径 → 逐段匹配挂载链 →
+             * 展开沿途 → 滚动到该行并闪烁。
+             * silent=true 用于「外部被动触发」(如点击固定/最近里的思源文档):
+             * 文档不在挂载范围时不弹提示、也不强行展开面板 —— 打开文档才是主动作,
+             * 树的闪烁只是顺带告诉你"它在这儿"。
+             */
+            const locateDocInMountTree = async (docId: string, silent = false): Promise<void> => {
+                const rows = await querySQL(`SELECT box, path FROM blocks WHERE id = '${docId.replace(/'/g, "''")}' AND type = 'd' LIMIT 1`);
                 const stPath = rows && rows[0] ? String(rows[0].path || "") : "";
-                if (!stPath) { showMessage("无法获取当前文档的存储路径", 3000, "error"); return; }
+                if (!stPath) {
+                    if (!silent) showMessage("无法获取当前文档的存储路径", 3000, "error");
+                    return;
+                }
                 const norm = (x: string) => x.replace(/\.sy$/i, "").replace(/^\/+|\/+$/g, "");
                 // 目标链:存储路径逐段去 .sy → [nbId, d1, d2…],最后一段是当前文档
                 const segs = stPath.split("/").filter(Boolean).map(x => x.replace(/\.sy$/i, ""));
@@ -625,7 +622,9 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 const chain: string[] = [];
                 for (const seg of segs) { prefix += "/" + seg; chain.push(prefix); }
 
-                const notInRange = () => showMessage("当前文档不在虚拟文档树的挂载范围内", 3000, "info");
+                const notInRange = () => {
+                    if (!silent) showMessage("当前文档不在虚拟文档树的挂载范围内", 3000, "info");
+                };
                 for (let guard = 0; guard < 12; guard++) {
                     // 找"最深匹配"的已渲染行:挂载行按 targetId,doc/auto 行按 docId
                     let bestK = -1;
@@ -687,8 +686,30 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 }
                 notInRange();
             };
+
+            const locateActiveInMountTree = async () => {
+                // 面板不可见 → 先点 dock 图标展开
+                const dockItem = document.querySelector(`.dock__item[data-type="${MOUNT_TREE_DOCK_TYPE}"]`) as HTMLElement | null;
+                const dockVisible = !!document.querySelector(".syfe-mtree-dock")?.getClientRects().length;
+                if (!dockVisible && dockItem) dockItem.click();
+                await sleepMs(300);
+
+                // 焦点页签是本插件的文件页签(markdown/editor/notebook/office/image/media)
+                // → 按文件路径定位;否则按思源文档定位
+                const file = currentFilePath();
+                if (file) { await locateFileInMountTree(file); return; }
+
+                const cur = currentDocRootId();
+                if (!cur) { showMessage("请先打开一个思源文档", 2500, "info"); return; }
+                await locateDocInMountTree(cur);
+            };
             const locateMountHandler = () => { void locateActiveInMountTree(); };
             window.addEventListener("syfe:mount-tree-locate", locateMountHandler);
+            // 外部触发:点击固定/最近里的思源文档时,顺带在树上闪烁定位(静默失败)
+            window.addEventListener("syfe:mount-tree-locate-doc", (e: Event) => {
+                const id = (e as CustomEvent).detail?.docId;
+                if (typeof id === "string" && id) void locateDocInMountTree(id, true);
+            });
 
             /** 定位当前文档:退出聚焦 → 展开沿途 → 滚动到该行并闪烁提示 */
             const locateCurrentDoc = () => {
@@ -1413,7 +1434,10 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                     label: `挂载思源文档/笔记本…${where}`,
                     click: () => {
                         pickMountTargetDialog(where ? `挂载到「${where}」` : "挂载思源文档/笔记本到虚拟文档树", (vPath, label) => {
-                            const kind = isNotebookRoot(vPath) ? "notebook" : "doc";
+                            // 「启用顶层笔记本文档」时笔记本自己就是一篇文档(id 相同)→
+                            // 挂载它等价于挂载那篇文档;否则仍按笔记本容器挂载。
+                            const isNb = isNotebookRoot(vPath);
+                            const kind = isNb && !isBoxDocEnabled() ? "notebook" : "doc";
                             void mountPayload(plugin, {kind, name: label, targetId: virtualId(vPath)}, parentUid);
                         });
                     },
