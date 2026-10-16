@@ -2,26 +2,15 @@
   "name": "siyuan-virtual-tree",
   "author": "alvisliu",
   "url": "https://github.com/alvisliu818/siyuan-virtual-tree",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "minAppVersion": "3.7.0",
   "kernels": [
-    "windows",
-    "linux",
-    "darwin",
-    "docker",
     "all"
   ],
   "backends": [
-    "windows",
-    "linux",
-    "darwin",
-    "docker",
     "all"
   ],
   "frontends": [
-    "desktop",
-    "browser-desktop",
-    "desktop-window",
     "all"
   ],
   "displayName": {
