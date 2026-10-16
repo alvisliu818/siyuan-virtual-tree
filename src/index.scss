@@ -2297,7 +2297,8 @@ button.syfe-editor__arrow--exp:hover {
     height: 34px;
     display: inline-flex;
     align-items: center;
-    gap: 4px;
+    // 图标与文字的间距交给思源原生的 .b3-button svg { margin-right:4px },
+    // 这里不再叠 gap/fn__space —— 三层间距叠加曾把"+ 新建思源文档"撑出 20px 的缝
 
     svg {
         // 描边式图标(思源图标统一 fill="none" stroke="currentColor"):

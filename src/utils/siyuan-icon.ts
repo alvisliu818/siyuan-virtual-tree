@@ -149,3 +149,13 @@ export async function getNotebookIcon(nbId: string): Promise<string> {
     const map = await loadNotebookIcons();
     return map.get(nbId) || "";
 }
+
+// 判断一个 id 是不是笔记本 id。
+// 笔记本 id 与文档 id 同格式(时间戳-随机段),只能拿 lsNotebooks 的结果比对;
+// 新标签页的固定/收藏条目里混过笔记本 id(kind=doc 但 id 是笔记本),
+// 图标若按文档画会与虚拟文档树对不上(树里笔记本是 iconNotebook/自定义表情)。
+export async function isNotebookId(id: string): Promise<boolean> {
+    if (!id) return false;
+    const map = await loadNotebookIcons();
+    return map.has(id);
+}

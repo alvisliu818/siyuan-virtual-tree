@@ -5,8 +5,9 @@ import {openTab, showMessage} from "siyuan";
 import {START_TAB_TYPE} from "../constants";
 import {EditorConfig} from "../types";
 import {basename, dirname} from "../utils/path";
+import {isDirectory} from "../utils/path-kind";
 import {fileIconHTML, folderIconHTML} from "../utils/icons";
-import {docTreeIconHTML, cachedDocIcon, ensureDocIcons} from "../utils/siyuan-icon";
+import {docTreeIconHTML, cachedDocIcon, ensureDocIcons, getNotebookIcon, isNotebookId} from "../utils/siyuan-icon";
 import {enumerateAll} from "../components/search-panel";
 import {openEntry, showEntryMenu} from "../components/entry-menu";
 import {getRecentEntries, RECENTS_CHANGED_EVENT} from "../recent-files";
@@ -74,6 +75,11 @@ interface SuggestItem {
 // 各区显示条数上限
 const RECENT_LIMIT = 20;
 const SUGGEST_LIMIT = 40;
+
+// kind=doc 条目里可能混着笔记本 id(固定时没区分)。判定的结果缓存在这里:
+// string = 笔记本(值为它的自定义图标,""=未设置);null = 已判定为普通文档。
+// 判定走 lsNotebooks(模块内有缓存,一次请求),所以首次渲染先按文档画,判完重绘。
+const notebookKinds = new Map<string, string | null>();
 
 function escapeHTML(s: string): string {
     return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -198,13 +204,24 @@ function groupToItems(items: StartPageItem[], group: StartGroup): PageItem[] {
     });
 }
 
-// 条目图标 HTML:文档用 iconFile,文件用扩展名图标
+// 条目图标 HTML:文档/笔记本用文档树同款,文件/文件夹用扩展名图标(目录判走 path-kind)
 function itemIconHTML(item: PageItem): string {
     if (item.kind === "doc") {
+        const id = item.id || "";
+        // 笔记本(异步判定后缓存):与虚拟文档树一致用笔记本图标
+        if (notebookKinds.get(id)) {
+            return docTreeIconHTML(notebookKinds.get(id) || "", "notebook");
+        }
         // 思源文档:用虚拟文档树同款的文档图标(用户自定义图标优先;缓存未热时先给内置样式,异步补绘)
-        return docTreeIconHTML(cachedDocIcon(item.id || "") || "", "file");
+        return docTreeIconHTML(cachedDocIcon(id) || "", "file");
     }
-    return fileIconHTML(basename(item.path || ""));
+    const path = item.path || "";
+    // 固定的可能是文件夹(如 /data/templates):与虚拟文档树一致显示文件夹图标,
+    // 否则会画成通用文件图标,和树里对不上
+    if (isDirectory(path)) {
+        return folderIconHTML(basename(path) || path, false);
+    }
+    return fileIconHTML(basename(path));
 }
 
 // 构建新标签页 addTab 配置
@@ -222,7 +239,7 @@ export function createStartTabConfig(plugin: IPluginForStartTab) {
                                    placeholder="搜索文件(↑↓ 选择,回车打开)" />
                         </div>
                         <button class="b3-button b3-button--outline syfe-start__btn" data-action="new-doc">
-                            <svg><use xlink:href="#iconAdd"></use></svg><span class="fn__space"></span>新建思源文档
+                            <svg><use xlink:href="#iconAdd"></use></svg>新建思源文档
                         </button>
                         <button class="b3-button b3-button--text syfe-start__btn" data-action="refresh" title="刷新列表与文件索引">刷新</button>
                     </div>
@@ -309,6 +326,26 @@ export function createStartTabConfig(plugin: IPluginForStartTab) {
                 // 文档自定义图标异步补绘(ensureDocIcons 命中缓存时不会重复回调,无循环风险)
                 const docIds = items.filter(i => i.kind === "doc").map(i => (i as any).id as string);
                 if (docIds.length) ensureDocIcons(docIds, render);
+                // 笔记本判定补绘:混进固定/最近的笔记本 id 换成树同款的笔记本图标
+                const unknownIds = docIds.filter(id => id && !notebookKinds.has(id));
+                if (unknownIds.length) {
+                    void (async () => {
+                        let changed = false;
+                        for (const id of unknownIds) {
+                            try {
+                                if (await isNotebookId(id)) {
+                                    notebookKinds.set(id, await getNotebookIcon(id));
+                                    changed = true;
+                                } else {
+                                    notebookKinds.set(id, null);
+                                }
+                            } catch {
+                                notebookKinds.set(id, null);
+                            }
+                        }
+                        if (changed) render();
+                    })();
+                }
             };
             render();
 
