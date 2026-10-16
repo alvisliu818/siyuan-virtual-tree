@@ -32,6 +32,7 @@ import {runCommandInTerminal} from "./terminal-tab";
 import {toSystemPath} from "../utils/system-path";
 import {isDirectory} from "../utils/path-kind";
 import {revealInFileTree, showFileTreeMenu, findTreeRootEl, buildFileTreeActions} from "../components/file-tree";
+import {dispatchMountTreeEvent} from "../utils/mount-locate";
 import {showVersionHistory} from "../version-control/version-ui";
 
 // 打开文件夹:在文件树里展开定位。
@@ -48,7 +49,8 @@ function openFolderInTree(path: string): void {
     // 目录不在挂载范围内时 dock 侧会给出挂载提示,不再出现「面板已关闭」的旧提示。
     // dock 图标的 data-type 是「插件名+type」的全键 → 用后缀匹配
     if (document.querySelector(`.dock__item[data-type$="${MOUNT_TREE_DOCK_TYPE}"]`)) {
-        window.dispatchEvent(new CustomEvent("syfe:mount-tree-locate-folder", {detail: {path}}));
+        // 面板是懒创建的:从未打开过时事件没人接,先确保面板初始化再派发
+        dispatchMountTreeEvent("syfe:mount-tree-locate-folder", {path});
         return;
     }
     // 兜底:dock 图标不在(理论上不可能,插件加载即挂)才走「文件」面板旧流程。

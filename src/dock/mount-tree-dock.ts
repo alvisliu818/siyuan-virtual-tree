@@ -503,7 +503,11 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                         }, 2000);
                         return;
                     }
-                    if (!bestRow) { notInRange(); return; }
+                    if (!bestRow) {
+                        // 面板刚创建时行可能还没加载完:等一等再试,别急着判「不在挂载范围」
+                        if ((self._rows || []).length === 0) { await sleepMs(500); continue; }
+                        notInRange(); return;
+                    }
                     // 中间层:未展开 → 展开(键取 rowChildSource,与渲染同源)
                     if (!bestRow.expanded) {
                         const src = rowChildSource(bestRow);
@@ -580,7 +584,11 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                         }, 2000);
                         return;
                     }
-                    if (!bestRow) { notInRange(); return; }
+                    if (!bestRow) {
+                        // 面板刚创建时行可能还没加载完:等一等再试,别急着判「不在挂载范围」
+                        if ((self._rows || []).length === 0) { await sleepMs(500); continue; }
+                        notInRange(); return;
+                    }
                     if (!bestRow.expanded) {
                         const src = rowChildSource(bestRow);
                         if (!src) { notInRange(); return; }
@@ -609,6 +617,11 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
              * 树的闪烁只是顺带告诉你"它在这儿"。
              */
             const locateDocInMountTree = async (docId: string, silent = false): Promise<void> => {
+                // 面板不可见 → 先点 dock 图标展开(闪烁要看得见才有意义)
+                const dockItem = document.querySelector(`.dock__item[data-type$="${MOUNT_TREE_DOCK_TYPE}"]`) as HTMLElement | null;
+                const dockVisible = !!document.querySelector(".syfe-mtree-dock")?.getClientRects().length;
+                if (!dockVisible && dockItem) dockItem.click();
+                if (!dockVisible) await sleepMs(300);
                 const rows = await querySQL(`SELECT box, path FROM blocks WHERE id = '${docId.replace(/'/g, "''")}' AND type = 'd' LIMIT 1`);
                 const stPath = rows && rows[0] ? String(rows[0].path || "") : "";
                 if (!stPath) {
@@ -642,7 +655,11 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                             }
                         }
                     }
-                    if (bestK < 0 || !bestRow) { notInRange(); return; }
+                    if (bestK < 0 || !bestRow) {
+                        // 面板刚创建时行可能还没加载完:等一等再试
+                        if ((self._rows || []).length === 0) { await sleepMs(500); continue; }
+                        notInRange(); return;
+                    }
                     if (bestK === chain.length - 1) {
                         // 目标层:闪烁 + 滚动(按行种类选各自的标记与选择器)
                         if (bestRow.kind === "mount") {

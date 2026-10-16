@@ -7,6 +7,7 @@ import {copyText, revealInFileTree} from "./file-tree";
 import {removeRecent} from "../recent-files";
 import {isPinned, isFavorite, itemFromPath, itemFromDoc, toggleInGroup} from "../start-page";
 import {isNotebookId} from "../utils/siyuan-icon";
+import {dispatchMountTreeEvent} from "../utils/mount-locate";
 import {isVirtualPath, virtualId, virtualListDir, isBoxDocEnabled, VIRTUAL_PREFIX} from "../utils/virtual-tree";
 
 // 菜单目标:兼容 recent-files 的 RecentEntry 与 start-page 的 StartPageItem
@@ -75,6 +76,8 @@ export async function openSiyuanNotebook(id: string, app?: any): Promise<void> {
         return;
     }
     openSiyuanDoc(first.docId, app);
+    // 树里若挂载了该笔记本/文档,顺带闪烁定位到打开的这篇
+    locateSiyuanDocInMountTree(first.docId);
     showMessage(`笔记本没有自己的正文,已打开其中的文档:${first.name}`, 3000, "info");
 }
 
@@ -100,11 +103,7 @@ export function openSiyuanDocAuto(id: string, app?: any): void {
 
 // 让虚拟文档树闪烁定位到某篇文档(挂载树面板监听;未挂载时静默无动作)
 export function locateSiyuanDocInMountTree(docId: string): void {
-    try {
-        window.dispatchEvent(new CustomEvent("syfe:mount-tree-locate-doc", {detail: {docId}}));
-    } catch {
-        // 派发失败不影响打开文档
-    }
+    dispatchMountTreeEvent("syfe:mount-tree-locate-doc", {docId});
 }
 
 // 打开条目:文档 → 自动识别文档/笔记本后打开(笔记本 id 用 openSiyuanDoc 打不开);

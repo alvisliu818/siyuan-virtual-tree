@@ -66,6 +66,87 @@ let activeIconTheme: LoadedIconTheme | null = null;
 // 所有已加载的图标主题(供 UI 选择)
 const loadedIconThemes: LoadedIconTheme[] = [];
 
+// === 启动期快照(localStorage) ===
+// 扩展在 onLayoutReady 里异步加载,而会话恢复的页签在那之前就开始渲染:
+// activeIconTheme 还没就绪 → 首屏图标全是内置的,主题加载完才集体换装
+// (用户看到的"一开始打开思源,页签图标不是主题图标")。
+// 把上次激活的主题快照存进 localStorage(同步读),模块加载时就 seed 回来,
+// 首屏直接用主题图标;真主题加载完成后内容一致,重绘是空操作,不会再变。
+const ICON_CACHE_KEY = "syfe-icon-theme-cache-v1";
+
+function mapToObj(m: Map<string, string>): Record<string, string> {
+    const o: Record<string, string> = {};
+    m.forEach((v, k) => { o[k] = v; });
+    return o;
+}
+
+function objToMap(o: any): Map<string, string> {
+    const m = new Map<string, string>();
+    if (o) for (const [k, v] of Object.entries(o)) m.set(String(k).toLowerCase(), String(v));
+    return m;
+}
+
+function serializeTheme(t: LoadedIconTheme): any {
+    return {
+        extensionId: t.extensionId,
+        label: t.label,
+        folderIcon: t.folderIcon || "",
+        folderExpandedIcon: t.folderExpandedIcon || "",
+        fileIcon: t.fileIcon || "",
+        icons: mapToObj(t.icons),
+        fileExtensions: mapToObj(t.fileExtensions),
+        fileNames: mapToObj(t.fileNames),
+        languageIds: mapToObj(t.languageIds),
+        folderNames: mapToObj(t.folderNames),
+        folderNamesExpanded: mapToObj(t.folderNamesExpanded),
+    };
+}
+
+function deserializeTheme(o: any): LoadedIconTheme | null {
+    try {
+        if (!o || typeof o !== "object" || !o.icons) return null;
+        return {
+            extensionId: String(o.extensionId || ""),
+            label: String(o.label || ""),
+            icons: objToMap(o.icons),
+            folderIcon: o.folderIcon || undefined,
+            folderExpandedIcon: o.folderExpandedIcon || undefined,
+            fileIcon: o.fileIcon || undefined,
+            fileExtensions: objToMap(o.fileExtensions),
+            fileNames: objToMap(o.fileNames),
+            languageIds: objToMap(o.languageIds),
+            folderNames: objToMap(o.folderNames),
+            folderNamesExpanded: objToMap(o.folderNamesExpanded),
+        };
+    } catch {
+        return null;
+    }
+}
+
+function persistIconThemeSnapshot(): void {
+    try {
+        if (!activeIconTheme) {
+            window.localStorage.removeItem(ICON_CACHE_KEY);
+            return;
+        }
+        window.localStorage.setItem(ICON_CACHE_KEY, JSON.stringify(serializeTheme(activeIconTheme)));
+    } catch {
+        // 配额超限等:忽略,下次启动退化为首屏内置图标
+    }
+}
+
+// 模块加载即同步 seed(早于任何界面渲染)
+(function seedIconThemeFromCache(): void {
+    try {
+        const raw = window.localStorage.getItem(ICON_CACHE_KEY);
+        if (!raw) return;
+        const t = deserializeTheme(JSON.parse(raw));
+        if (t && t.icons.size > 0) activeIconTheme = t;
+    } catch {
+        // 快照损坏则忽略,等真主题加载
+    }
+})();
+
 // 加载扩展的图标主题贡献
 export function loadIconThemes(extension: InstalledExtension): number {
     const contributes = extension.contributes;
@@ -269,11 +350,13 @@ export function activateIconTheme(extensionId: string): boolean {
 export function activateIconThemeByPreference(pref: string): boolean {
     if (pref === "__none__") {
         activeIconTheme = null;
+        persistIconThemeSnapshot();
         notifyIconThemeChanged();
         return false;
     }
     if (pref) {
         if (activateIconTheme(pref)) {
+            persistIconThemeSnapshot();
             notifyIconThemeChanged();
             return true;
         }
@@ -284,6 +367,7 @@ export function activateIconThemeByPreference(pref: string): boolean {
     } else {
         activeIconTheme = null;
     }
+    persistIconThemeSnapshot();
     notifyIconThemeChanged();
     return activeIconTheme !== null;
 }
@@ -302,6 +386,7 @@ export function removeExtensionIconThemes(extensionId: string): void {
             activeIconTheme = loadedIconThemes.find(t => t.extensionId !== extensionId) || null;
         }
         loadedIconThemes.splice(idx, 1);
+        persistIconThemeSnapshot();
         notifyIconThemeChanged();
     }
 }
@@ -310,6 +395,7 @@ export function removeExtensionIconThemes(extensionId: string): void {
 export function clearAllIconThemes(): void {
     loadedIconThemes.length = 0;
     activeIconTheme = null;
+    persistIconThemeSnapshot();
 }
 
 function normalizePath(p: string): string {
