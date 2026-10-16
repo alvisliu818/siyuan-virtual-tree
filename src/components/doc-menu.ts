@@ -15,7 +15,7 @@ import {
     postJSON,
 } from "../api/file";
 import {getDocInfo, clearDocInfoCache} from "../utils/virtual-tree";
-import {openSiyuanDoc} from "./entry-menu";
+import {openSiyuanDoc, openSiyuanNotebook} from "./entry-menu";
 import {promptDialog, copyText} from "./file-tree";
 import {showOpenDialog} from "../utils/open-dialog";
 import {isPinned, isFavorite, itemFromDoc, toggleInGroup} from "../start-page";
@@ -323,7 +323,8 @@ export function showNotebookMenu(opts: {
     menu.addItem({
         icon: "iconOpen",
         label: lang("openNotebook", "在思源中打开笔记本"),
-        click: () => openSiyuanDoc(notebookId, plugin.app),
+        // 笔记本 id 用 openSiyuanDoc(openTab/协议)打不开,走打开其中第一篇文档的逻辑
+        click: () => openSiyuanNotebook(notebookId, plugin.app),
     });
     menu.addSeparator();
     menu.addItem({

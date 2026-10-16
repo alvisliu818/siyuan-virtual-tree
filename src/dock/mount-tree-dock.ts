@@ -26,7 +26,7 @@ import {
     TAGS_CHANGED_EVENT,
 } from "../tags/tag-store";
 import {openWithExternalApp, revealInSystemExplorer} from "../utils/external-app";
-import {openSiyuanDoc} from "../components/entry-menu";
+import {openSiyuanDoc, openSiyuanNotebook} from "../components/entry-menu";
 import {openTrashDialog} from "../components/trash-dialog";
 import {showDocMenu, showNotebookMenu, addPinFavEntries, DocMenuItem} from "../components/doc-menu";
 import {openSiyuanTagDialog} from "../components/siyuan-tag-dialog";
@@ -1275,10 +1275,13 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 return Number.isFinite(idx) ? (self._rows![idx] || null) : null;
             };
 
-            // 打开挂载项(文件→编辑器;文档/块→思源协议定位)
+            // 打开挂载项(文件→编辑器;笔记本→打开其中第一篇文档;文档/块→思源协议定位)
             const openMount = (item: MountItem) => {
                 if (item.kind === "file" && item.path) {
                     openFileTab(plugin as any, item.path);
+                } else if (item.kind === "notebook" && item.targetId) {
+                    // 笔记本 id 用 openSiyuanDoc(openTab/协议)打不开,走打开其中第一篇文档
+                    void openSiyuanNotebook(item.targetId);
                 } else if (item.targetId) {
                     openSiyuanDoc(item.targetId);
                 }

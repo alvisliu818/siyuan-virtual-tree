@@ -6,7 +6,8 @@ import {toFileLink, toMarkdownFileLink} from "../utils/system-path";
 import {copyText, revealInFileTree} from "./file-tree";
 import {removeRecent} from "../recent-files";
 import {isPinned, isFavorite, itemFromPath, itemFromDoc, toggleInGroup} from "../start-page";
-import {isVirtualPath, virtualId} from "../utils/virtual-tree";
+import {isNotebookId} from "../utils/siyuan-icon";
+import {isVirtualPath, virtualId, virtualListDir, VIRTUAL_PREFIX} from "../utils/virtual-tree";
 
 // 菜单目标:兼容 recent-files 的 RecentEntry 与 start-page 的 StartPageItem
 export interface EntryTarget {
@@ -57,11 +58,44 @@ export function openSiyuanDoc(id: string, app?: any): void {
     openDocByProtocol(id);
 }
 
-// 打开条目:文档 → 应用内打开(回退协议);文件 → openFileTab 统一路由
+// 打开思源笔记本:笔记本 id 与文档 id 同格式,但 openTab/siyuan:// 协议都打不开
+// (两者只认文档/块 id,对笔记本 id 静默失败)。这里打开笔记本下的第一篇文档;
+// 笔记本为空时给出提示。
+export async function openSiyuanNotebook(id: string, app?: any): Promise<void> {
+    let first: {name: string; docId: string} | null = null;
+    try {
+        const kids = await virtualListDir(VIRTUAL_PREFIX + "nb/" + id);
+        const e = (kids || [])[0];
+        if (e) first = {name: String(e.name || ""), docId: virtualId(e.path)};
+    } catch {
+        // 查询失败按空笔记本处理
+    }
+    if (!first || !first.docId) {
+        showMessage("该笔记本下还没有文档", 2500, "info");
+        return;
+    }
+    openSiyuanDoc(first.docId, app);
+    showMessage(`笔记本没有自己的正文,已打开其中的文档:${first.name}`, 3000, "info");
+}
+
+// 自动识别文档/笔记本后走对应的打开逻辑(固定/收藏/最近里的条目可能是笔记本 id)
+export function openSiyuanDocAuto(id: string, app?: any): void {
+    void (async () => {
+        if (await isNotebookId(id)) {
+            await openSiyuanNotebook(id, app);
+        } else {
+            openSiyuanDoc(id, app);
+        }
+    })();
+}
+
+// 打开条目:文档 → 自动识别文档/笔记本后打开(笔记本 id 用 openSiyuanDoc 打不开);
+// 文件 → openFileTab 统一路由
 // 思源虚拟路径(sydoc://<id>,思源文档/块在标签面板、收藏等处以此作键)→ 走思源协议
 export function openEntry(plugin: IPluginForEntryMenu, target: EntryTarget): void {
-    if (target.kind === "doc" && target.id) openSiyuanDoc(target.id, plugin.app);
-    else if (target.path) {
+    if (target.kind === "doc" && target.id) {
+        openSiyuanDocAuto(target.id, plugin.app);
+    } else if (target.path) {
         if (isVirtualPath(target.path)) {
             const id = virtualId(target.path);
             if (id) {
@@ -90,7 +124,8 @@ export function showEntryMenu(opts: {
         menu.addItem({
             icon: "iconOpen",
             label: "打开文档",
-            click: () => openSiyuanDoc(target.id!),
+            // 条目可能是笔记本 id,走自动识别(笔记本 → 打开其中第一篇文档)
+            click: () => openSiyuanDocAuto(target.id!),
         });
         menu.addSeparator();
         menu.addItem({
