@@ -187,6 +187,49 @@ export async function showPathSwitchMenu(
     menuEl.style.width = Math.round(420 / Z) + "px";
     menuEl.style.overflowX = "auto";
     menuEl.style.visibility = "";
+
+    // 自动展开到当前文件:点击的面包屑分段若是当前文件的祖先目录,面板默认只显示
+    // 顶层,当前文件藏在里面看不见 —— 沿路径逐级展开,把当前行(渲染时自带
+    // --current 高亮)滚到面板竖直方向的中部。视觉像素差 ÷ zoom 换算回 scrollTop,
+    // 与上方定位代码同一套换算(面板有 zoom:0.923)。
+    void (async () => {
+        const findRow = (p: string) =>
+            Array.from(menuEl.querySelectorAll<HTMLElement>(".syfe-mtree__row"))
+                .find(r => r.dataset.path && normKey(r.dataset.path) === normKey(p));
+        const centerRow = (row: HTMLElement) => {
+            const pr = menuEl.getBoundingClientRect();
+            const rr = row.getBoundingClientRect();
+            const delta = rr.top + rr.height / 2 - (pr.top + pr.height / 2);
+            if (Math.abs(delta) < 8) return;
+            menuEl.scrollTop += delta / Z;
+        };
+        const wait = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
+        for (let guard = 0; guard < 14; guard++) {
+            if (!menuEl.isConnected) return; // 用户已点外部关闭
+            const row = findRow(ctx.currentPath);
+            if (row) { centerRow(row); return; }
+            // 当前文件行还没渲染:沿祖先链向上找「最深的一个已渲染目录行」,展开它
+            let dir = dirname(ctx.currentPath);
+            let target: string | null = null;
+            for (let i = 0; i < 14; i++) {
+                if (!dir || samePath(dir, dirPath)) break;
+                const r = findRow(dir);
+                if (r && r.dataset.dir === "1") { target = dir; break; }
+                dir = dirname(dir);
+            }
+            if (!target) return; // 当前文件不在该面板目录子树内
+            const key = normKey(target);
+            if (!ctx.expanded.has(key)) {
+                ctx.expanded.add(key);
+                void loadDir(ctx, target);
+                renderPathMenu(ctx);
+                await wait(160);
+            } else {
+                // 已展开但文件行还没出现(加载中/超 200 项截断):稍等再试
+                await wait(160);
+            }
+        }
+    })();
 }
 
 let standaloneCleanup: (() => void) | null = null;
