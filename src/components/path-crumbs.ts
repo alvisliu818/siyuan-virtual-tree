@@ -122,6 +122,12 @@ export async function showPathSwitchMenu(
     menuEl.className = "b3-menu syfe-pathmenu";
     ctx.menuEl = menuEl;
     document.body.appendChild(menuEl);
+    // 层级:与原生 Menu.popup 一致用递增 zIndex。不设的话 .b3-menu 无 z-index,
+    // 编辑器内容(Monaco/protyle 的层叠上下文)会盖住面板(实测:行文字盖住菜单)。
+    const sy = window as any;
+    sy.siyuan = sy.siyuan || {};
+    sy.siyuan.zIndex = (sy.siyuan.zIndex || 90) + 1;
+    menuEl.style.zIndex = String(sy.siyuan.zIndex);
     menuEl.style.visibility = "hidden"; // 内容渲染后再量测定位,避免空盒尺寸错误
 
     // 关闭:外部 mousedown / Escape
