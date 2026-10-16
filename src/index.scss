@@ -2465,6 +2465,15 @@ button.syfe-editor__arrow--exp:hover {
         fill: var(--b3-theme-on-surface);
     }
 
+    // emoji 图标(文档/笔记本的自定义图标)与 svg 同量级:
+    // 之前 emoji 只有 16×14、旁边的扩展名图标却是 28×28,同区两种尺寸看着像没对齐
+    .b3-list-item__graphic {
+        padding: 0;
+        margin: 0;
+        font-size: 24px;
+        line-height: 28px;
+    }
+
     img.syfe-tree__ext-icon {
         width: 28px;
         height: 28px;
@@ -2537,15 +2546,29 @@ button.syfe-editor__arrow--exp:hover {
     width: 18px;
     height: 18px;
 
+    // 与原生文档树(sy__file)一致:图标本体 16×16(原生 .b3-list-item__icon svg 实测 16×16、
+    // emoji font-size 14px)。之前这里是 18×18 + 12px,和树里的文档图标对不上。
+    // 注意:原生 .b3-list-item__graphic 自带 padding:0 1px,会把 16px 图标撑成 18px 宽;
+    // 原生树里的 svg 不带这个 class(挂在 .b3-list-item__icon 下),所以要手动清零。
     svg {
-        width: 18px;
-        height: 18px;
+        width: 16px;
+        height: 16px;
+        padding: 0;
+        margin: 0;
         fill: var(--b3-theme-on-surface);
     }
 
+    // 文档/笔记本的自定义 emoji 图标(unicode2Emoji 渲染成 span/img)
+    .b3-list-item__graphic {
+        padding: 0;
+        margin: 0;
+        font-size: 14px;
+        line-height: 16px;
+    }
+
     img.syfe-tree__ext-icon {
-        width: 18px;
-        height: 18px;
+        width: 16px;
+        height: 16px;
         object-fit: contain;
     }
 }

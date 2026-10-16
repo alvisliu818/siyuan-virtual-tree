@@ -10,6 +10,7 @@ import {fileIconHTML, folderIconHTML} from "../utils/icons";
 import {docTreeIconHTML, cachedDocIcon, ensureDocIcons, getNotebookIcon, isNotebookId} from "../utils/siyuan-icon";
 import {enumerateAll} from "../components/search-panel";
 import {openEntry, showEntryMenu} from "../components/entry-menu";
+import {virtualListDir, VIRTUAL_PREFIX} from "../utils/virtual-tree";
 import {getRecentEntries, RECENTS_CHANGED_EVENT} from "../recent-files";
 import {
     getPinned,
@@ -80,6 +81,32 @@ const SUGGEST_LIMIT = 40;
 // string = 笔记本(值为它的自定义图标,""=未设置);null = 已判定为普通文档。
 // 判定走 lsNotebooks(模块内有缓存,一次请求),所以首次渲染先按文档画,判完重绘。
 const notebookKinds = new Map<string, string | null>();
+
+// 文档是否含子文档:决定默认图标用 "folder"(有子文档)还是 "file"(无子文档)——
+// 原生文档树(3.8.7 的 .b3-list-item__icon)就是这么区分的,虚拟文档树也按
+// subFileCount 走同一套。新标签页的条目没有这个字段,这里按 id 现查一层子文档缓存。
+const docHasKids = new Map<string, boolean>();
+const pendingDocKids = new Set<string>();
+
+// 批量补齐"是否有子文档",取到后回调一次重绘(与 notebookKinds 同一节奏)
+function ensureDocHasKids(ids: string[], onChange: () => void): void {
+    const todo = Array.from(new Set(ids.filter(id => id && !docHasKids.has(id) && !pendingDocKids.has(id))));
+    if (todo.length === 0) return;
+    todo.forEach(id => pendingDocKids.add(id));
+    void (async () => {
+        for (const id of todo) {
+            try {
+                const kids = await virtualListDir(VIRTUAL_PREFIX + id);
+                docHasKids.set(id, Array.isArray(kids) && kids.length > 0);
+            } catch {
+                docHasKids.set(id, false);
+            } finally {
+                pendingDocKids.delete(id);
+            }
+        }
+        onChange();
+    })();
+}
 
 function escapeHTML(s: string): string {
     return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -212,8 +239,10 @@ function itemIconHTML(item: PageItem): string {
         if (notebookKinds.get(id)) {
             return docTreeIconHTML(notebookKinds.get(id) || "", "notebook");
         }
-        // 思源文档:用虚拟文档树同款的文档图标(用户自定义图标优先;缓存未热时先给内置样式,异步补绘)
-        return docTreeIconHTML(cachedDocIcon(id) || "", "file");
+        // 思源文档:用虚拟文档树同款的文档图标(用户自定义图标优先;缓存未热时先给内置样式,异步补绘)。
+        // 默认图标按"有没有子文档"选 folder/file —— 原生文档树就是这么画的,
+        // 一律按 file 画会导致有子文档的条目在树里是 #iconFileText、在这儿是 #iconFile。
+        return docTreeIconHTML(cachedDocIcon(id) || "", docHasKids.get(id) ? "folder" : "file");
     }
     const path = item.path || "";
     // 固定的可能是文件夹(如 /data/templates):与虚拟文档树一致显示文件夹图标,
@@ -326,6 +355,8 @@ export function createStartTabConfig(plugin: IPluginForStartTab) {
                 // 文档自定义图标异步补绘(ensureDocIcons 命中缓存时不会重复回调,无循环风险)
                 const docIds = items.filter(i => i.kind === "doc").map(i => (i as any).id as string);
                 if (docIds.length) ensureDocIcons(docIds, render);
+                // 子文档判定补绘:有子文档的文档改用 folder 默认图标(与原生文档树一致)
+                ensureDocHasKids(docIds, render);
                 // 笔记本判定补绘:混进固定/最近的笔记本 id 换成树同款的笔记本图标
                 const unknownIds = docIds.filter(id => id && !notebookKinds.has(id));
                 if (unknownIds.length) {

@@ -1,33 +1,37 @@
 // 自定义页签头的类型图标 → 虚拟文件树同款文件图标。
 //
 // openTab 的 custom.icon 参数只收思源 icon id(svg use),装了图标主题后的
-// 扩展图标是 <img src> 进不去;所以页签建好后把头部那个类型图标 svg 直接替换掉。
-// 头部 DOM:li.item → [svg 类型图标] [span.item__text] [span.item__close svg] ——
-// 用创建时传入的 icon id 精确匹配那条 <use>,避免误伤关闭按钮的图标。
+// 扩展图标是 <img src> 进不去;所以页签建好后要把头部那个类型图标 svg 换掉。
+// 头部 DOM:li.item → [svg 类型图标] [span.item__text] [span.item__close svg]。
 //
-// WhenReady 版本:页签头可能比 init 晚就绪(新建/会话恢复/页签条重绘),
-// 200ms × 25 次(5s)重试直到找到目标 use;替换后若页签条重绘回退,
-// 再次调用会因找不到 iconFile use 而跳过(已被替换) —— 需要恢复时可重调。
+// 为什么是"事件驱动"而不是定时轮询:思源会重绘页签条(把通用 svg 又画回去),
+// 老实现用 200ms 轮询去追,正好形成"通用图标 ⇄ 树图标"肉眼可见的来回变。
+// 现在改成:注册表记下每个页签要画的图标,页签头一出现/被重绘就在微任务里
+// (MutationObserver 回调,早于绘制)替换掉 —— 用户看到的就是"一直是树里的图标"。
 
 import {basename} from "./path";
 import {fileIconHTML} from "./icons";
 
-export function applyFileTabHeadIcon(tabLike: any, path: string, iconId: string): boolean {
+// 页签 id → 要画的图标(路径 + 创建时传的通用 icon id 用于精确定位)
+interface TabIconRec {
+    path: string;
+    iconId: string;
+    misses: number; // 连续找不到页签头的次数(页签已关闭则注销)
+}
+const registry = new Map<string, TabIconRec>();
+let observer: MutationObserver | null = null;
+let scheduled = false;
+
+// 从自定义页签实例取 tab id(与页签头 .item[data-id] / 面板 data-id 一致)
+function tabIdOf(tabLike: any): string {
     try {
-        const head: HTMLElement | null | undefined = tabLike?.headElement || tabLike?.parent?.headElement;
-        if (!head) return false;
-        const uses = Array.from(head.querySelectorAll("use"));
-        const target = uses.find(u => (u.getAttribute("href") || u.getAttribute("xlink:href")) === `#${iconId}`);
-        const svg = target?.ownerSVGElement;
-        if (!svg) return false;
-        const wrap = document.createElement("span");
-        wrap.innerHTML = fileIconHTML(basename(path));
-        const iconEl = wrap.firstElementChild as HTMLElement | null;
-        if (!iconEl) return false;
-        svg.replaceWith(iconEl);
-        return true;
+        const t = tabLike?.tab?.id || tabLike?.id;
+        if (t) return String(t);
+        const el = tabLike?.element as HTMLElement | undefined;
+        const fromEl = el?.dataset?.id || el?.getAttribute?.("data-id");
+        return fromEl ? String(fromEl) : "";
     } catch {
-        return false;
+        return "";
     }
 }
 
@@ -72,12 +76,99 @@ export function replaceHeadIcon(head: HTMLElement, path: string): boolean {
     return true;
 }
 
-// 全局补画:给所有已打开的插件页签重刷头图标。
-//
-// 场景:扩展是异步加载的,会话恢复/早期打开建立的页签在画图标时还没有图标主题,
-// 落成了思源内置图标;主题就绪后必须补一次,否则要点开重画才会变。
-// 页签内容元素都写了 dataset.syfePath(见各 tabs/*),顺着它回到自己的 panel,
-// 再用 panel 的 data-id 反查对应的页签头。
+export function applyFileTabHeadIcon(tabLike: any, path: string, iconId: string): boolean {
+    try {
+        const head: HTMLElement | null | undefined = tabLike?.headElement || tabLike?.parent?.headElement
+            || tabLike?.tab?.headElement;
+        if (!head) return false;
+        const uses = Array.from(head.querySelectorAll("use"));
+        const target = uses.find(u => (u.getAttribute("href") || u.getAttribute("xlink:href")) === `#${iconId}`);
+        const svg = target?.ownerSVGElement;
+        if (!svg) return false;
+        const wrap = document.createElement("span");
+        wrap.innerHTML = fileIconHTML(basename(path));
+        const iconEl = wrap.firstElementChild as HTMLElement | null;
+        if (!iconEl) return false;
+        svg.replaceWith(iconEl);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+// === 事件驱动补画 ===
+
+// 一次替换动作:把注册表里所有页签的头图标对齐到"树图标"
+function fixAll(): void {
+    scheduled = false;
+    for (const [id, rec] of Array.from(registry)) {
+        let head: HTMLElement | null = null;
+        try {
+            head = document.querySelector<HTMLElement>(`.layout-tab-bar .item[data-id="${CSS.escape(id)}"]`);
+        } catch {
+            head = null;
+        }
+        if (!head) {
+            rec.misses++;
+            if (rec.misses > 5) registry.delete(id); // 页签已关闭
+            continue;
+        }
+        rec.misses = 0;
+        try {
+            replaceHeadIcon(head, rec.path);
+        } catch {
+            // 单个页签失败不影响其它页签
+        }
+    }
+    if (registry.size === 0 && observer) {
+        observer.disconnect();
+        observer = null;
+    }
+}
+
+function scheduleFix(): void {
+    if (scheduled) return;
+    scheduled = true;
+    queueMicrotask(fixAll); // 同一帧内、早于绘制完成替换
+}
+
+function ensureObserver(): void {
+    if (observer || typeof MutationObserver === "undefined") return;
+    observer = new MutationObserver((records) => {
+        // 只关心页签条里的变动:正文输入会产生大量 mutation,直接跳过
+        for (const r of records) {
+            const t: any = r.target;
+            const el: HTMLElement | null = t && t.nodeType === 1 ? t : (t?.parentElement || null);
+            if (!el) continue;
+            if (el.closest?.(".layout-tab-bar") || r.addedNodes?.length) {
+                // 进一步确认:新增节点里有页签头/图标,或目标就在页签条里
+                if (el.closest?.(".layout-tab-bar")) { scheduleFix(); return; }
+                for (const n of Array.from(r.addedNodes || [])) {
+                    const ne = n as HTMLElement;
+                    if (ne.nodeType === 1 && (ne.matches?.(".item") || ne.querySelector?.(".item"))) {
+                        scheduleFix();
+                        return;
+                    }
+                }
+            }
+        }
+    });
+    observer.observe(document.body, {childList: true, subtree: true});
+}
+
+// 注册:页签 init / 打开时调用。之后页签头的每次出现与重绘都会自动对齐图标
+export function applyFileTabHeadIconWhenReady(tabLike: any, path: string, iconId: string): void {
+    const id = tabIdOf(tabLike);
+    if (id) {
+        registry.set(id, {path, iconId, misses: 0});
+        ensureObserver();
+    }
+    // 同步先试一次:页签头往往已就绪,这样连一次中间态都不会出现
+    applyFileTabHeadIcon(tabLike, path, iconId);
+    scheduleFix();
+}
+
+// 图标主题就绪/切换后:注册表里的页签 + 会话恢复的页签(按 data-syfe-path 扫)统一重刷
 export function refreshAllTabIcons(): number {
     let count = 0;
     try {
@@ -87,10 +178,11 @@ export function refreshAllTabIcons(): number {
             if (!path) continue;
             const panel = el.closest("[data-id]");
             const id = panel?.getAttribute("data-id");
-            if (!id) continue;
-            const head = document.querySelector<HTMLElement>(
-                `.layout-tab-bar .item[data-id="${CSS.escape(id)}"]`,
-            );
+            if (id && !registry.has(id)) {
+                // 恢复的页签没进注册表(没走 init 注册),补登记
+                registry.set(id, {path, iconId: "", misses: 0});
+            }
+            const head = id ? document.querySelector<HTMLElement>(`.layout-tab-bar .item[data-id="${CSS.escape(id)}"]`) : null;
             if (!head) continue;
             try {
                 if (replaceHeadIcon(head, path)) count++;
@@ -101,19 +193,6 @@ export function refreshAllTabIcons(): number {
     } catch {
         return 0;
     }
+    if (registry.size > 0) ensureObserver();
     return count;
-}
-
-// 重试版:init 时调用(新建页签与**会话恢复的页签**都走 init,统一覆盖)
-export function applyFileTabHeadIconWhenReady(tabLike: any, path: string, iconId: string, attempts = 25): void {
-    const step = () => {
-        if (applyFileTabHeadIcon(tabLike, path, iconId)) return true;
-        return false;
-    };
-    if (step()) return;
-    let n = 0;
-    const timer = window.setInterval(() => {
-        n++;
-        if (step() || n >= attempts) window.clearInterval(timer);
-    }, 200);
 }
