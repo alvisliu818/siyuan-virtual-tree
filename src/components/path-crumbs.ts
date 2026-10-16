@@ -8,7 +8,35 @@ import {showMessage} from "siyuan";
 import {readDir} from "../api/file";
 import {DirEntry} from "../types";
 import {fileIconHTML, folderIconHTML} from "../utils/icons";
+import {getNativeRequire} from "../utils/native-require";
 import {basename, dirname, joinPath, sepFor} from "../utils/path";
+
+// Windows 盘符探测:fs.existsSync 逐字母探测(C 起,A/B 软驱跳过,共几毫秒)。
+// 用于面包屑面板的「磁盘层」:点击盘根分段(如 "E:")时列出 C:\ D:\ E:\ …
+function listDrives(): DirEntry[] {
+    try {
+        const req = getNativeRequire();
+        if (!req) return [];
+        const fs = req("fs") as typeof import("fs");
+        const out: DirEntry[] = [];
+        for (const letter of "CDEFGHIJKLMNOPQRSTUVWXYZ") {
+            const root = letter + ":\\";
+            try {
+                if (fs.existsSync(root)) {
+                    out.push({name: letter + ":", isDir: true, size: 0, updated: "", path: root});
+                }
+            } catch { /* 单盘探测失败忽略 */ }
+        }
+        return out;
+    } catch {
+        return [];
+    }
+}
+
+// 盘根:"E:" / "E:\" / "E:/" 都算
+function isDriveRoot(p: string): boolean {
+    return /^[a-zA-Z]:[\\\/]?$/.test((p || "").trim());
+}
 
 // 路径 → 面包屑分段(每段带 data-dir,点击弹树状切换菜单)
 export function renderPathSegments(path: string): string {
@@ -64,6 +92,7 @@ interface PathMenuCtx {
     openFile: (p: string) => void;
     dirPath: string;
     currentPath: string;
+    highlightPath: string; // 面板打开时高亮的行(对应位置:通往当前文件的那一级/当前文件/所在盘)
     listings: Map<string, DirEntry[]>;
     expanded: Set<string>;
     emptyDirs: Set<string>;
@@ -92,25 +121,53 @@ export async function showPathSwitchMenu(
     anchor: HTMLElement,
     currentPath: string,
 ): Promise<void> {
-    let raw: any;
-    try {
-        raw = await readDir(dirPath);
-    } catch (e) {
-        showMessage(`读取目录失败: ${e}`, 3000, "error");
-        return;
-    }
-    const entries = (Array.isArray(raw) ? raw : []) as DirEntry[];
-    if (entries.length === 0) {
-        showMessage("该目录为空", 2000, "info");
-        return;
+    let entries: DirEntry[];
+    if (isDriveRoot(dirPath)) {
+        // 磁盘层:列出全部盘符(C:\ D:\ E:\ …),每一盘可继续展开到机器上任意目录
+        entries = listDrives();
+        if (entries.length === 0) {
+            showMessage("未探测到可用磁盘", 2000, "info");
+            return;
+        }
+    } else {
+        let raw: any;
+        try {
+            raw = await readDir(dirPath);
+        } catch (e) {
+            showMessage(`读取目录失败: ${e}`, 3000, "error");
+            return;
+        }
+        entries = (Array.isArray(raw) ? raw : []) as DirEntry[];
+        if (entries.length === 0) {
+            showMessage("该目录为空", 2000, "info");
+            return;
+        }
     }
 
     closePathMenu(); // 每次全新打开:旧菜单元素先移除,避免状态/监听残留
+
+    // 高亮行 = 「对应位置」:点盘根分段 → 当前文件所在盘;点的分段是当前文件的
+    // 祖先目录 → 通往当前文件的那一级子目录;点的就是父目录 → 当前文件行本身。
+    // 只高亮这一行并滚到面板中部,不做任何自动展开。
+    let highlightPath = "";
+    if (isDriveRoot(dirPath)) {
+        const m = /^([a-zA-Z]):/.exec(currentPath);
+        if (m) highlightPath = m[1] + ":\\";
+    } else {
+        const nDir = normKey(dirPath);
+        const nCur = normKey(currentPath);
+        if (nCur.startsWith(nDir + "/") && nCur !== nDir) {
+            const rest = currentPath.slice(nDir.length).replace(/^[\\/]+/, "");
+            const firstSeg = rest.split(/[\\/]/)[0];
+            if (firstSeg) highlightPath = joinPath(dirPath, firstSeg);
+        }
+    }
 
     const ctx: PathMenuCtx = {
         openFile,
         dirPath,
         currentPath,
+        highlightPath: highlightPath,
         listings: new Map([[normKey(dirPath), entries]]),
         expanded: new Set<string>(),
         emptyDirs: new Set<string>(),
@@ -188,48 +245,18 @@ export async function showPathSwitchMenu(
     menuEl.style.overflowX = "auto";
     menuEl.style.visibility = "";
 
-    // 自动展开到当前文件:点击的面包屑分段若是当前文件的祖先目录,面板默认只显示
-    // 顶层,当前文件藏在里面看不见 —— 沿路径逐级展开,把当前行(渲染时自带
-    // --current 高亮)滚到面板竖直方向的中部。视觉像素差 ÷ zoom 换算回 scrollTop,
-    // 与上方定位代码同一套换算(面板有 zoom:0.923)。
-    void (async () => {
-        const findRow = (p: string) =>
-            Array.from(menuEl.querySelectorAll<HTMLElement>(".syfe-mtree__row"))
-                .find(r => r.dataset.path && normKey(r.dataset.path) === normKey(p));
-        const centerRow = (row: HTMLElement) => {
-            const pr = menuEl.getBoundingClientRect();
-            const rr = row.getBoundingClientRect();
-            const delta = rr.top + rr.height / 2 - (pr.top + pr.height / 2);
-            if (Math.abs(delta) < 8) return;
-            menuEl.scrollTop += delta / Z;
-        };
-        const wait = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
-        for (let guard = 0; guard < 14; guard++) {
-            if (!menuEl.isConnected) return; // 用户已点外部关闭
-            const row = findRow(ctx.currentPath);
-            if (row) { centerRow(row); return; }
-            // 当前文件行还没渲染:沿祖先链向上找「最深的一个已渲染目录行」,展开它
-            let dir = dirname(ctx.currentPath);
-            let target: string | null = null;
-            for (let i = 0; i < 14; i++) {
-                if (!dir || samePath(dir, dirPath)) break;
-                const r = findRow(dir);
-                if (r && r.dataset.dir === "1") { target = dir; break; }
-                dir = dirname(dir);
-            }
-            if (!target) return; // 当前文件不在该面板目录子树内
-            const key = normKey(target);
-            if (!ctx.expanded.has(key)) {
-                ctx.expanded.add(key);
-                void loadDir(ctx, target);
-                renderPathMenu(ctx);
-                await wait(160);
-            } else {
-                // 已展开但文件行还没出现(加载中/超 200 项截断):稍等再试
-                await wait(160);
-            }
-        }
-    })();
+    // 高亮"对应位置"的行并滚到面板竖直中部 —— 不做任何自动展开(用户明确要求):
+    //  - 点的分段是当前文件的父目录 → 高亮当前文件行(渲染时自带 --current);
+    //  - 点的是更上层的祖先目录 → 高亮通往当前文件的那一级子目录;
+    //  - 点的是盘根分段 → 高亮当前文件所在盘(E:)。
+    const hlRow = Array.from(menuEl.querySelectorAll<HTMLElement>(".syfe-mtree__row"))
+        .find(r => ctx.highlightPath && r.dataset.path && normKey(r.dataset.path) === normKey(ctx.highlightPath));
+    if (hlRow) {
+        const pr = menuEl.getBoundingClientRect();
+        const rr = hlRow.getBoundingClientRect();
+        const delta = rr.top + rr.height / 2 - (pr.top + pr.height / 2);
+        if (Math.abs(delta) >= 8) menuEl.scrollTop += delta / Z;
+    }
 }
 
 let standaloneCleanup: (() => void) | null = null;
@@ -278,7 +305,8 @@ function rowHTML(ctx: PathMenuCtx, p: string, name: string, isDir: boolean, dept
         ? `<span class="syfe-mtree__toggle syfe-mtree__toggle--arrow" data-arrow="1" title="展开/收起"><svg><use xlink:href="#${expandedNow ? "iconDown" : "iconRight"}"></use></svg></span>`
         : `<span class="syfe-mtree__toggle"></span>`;
     const icon = isDir ? folderIconHTML(name, expandedNow) : fileIconHTML(name);
-    const cur = samePath(p, ctx.currentPath) ? " syfe-mtree__row--current" : "";
+    const cur = (samePath(p, ctx.currentPath) || (ctx.highlightPath && samePath(p, ctx.highlightPath)))
+        ? " syfe-mtree__row--current" : "";
     return `<li class="syfe-mtree__row${expandedNow ? " syfe-mtree__row--open" : ""}${cur}" data-path="${escapeHTML(p)}" data-dir="${isDir ? "1" : "0"}" style="padding-left:${pad}px" title="${escapeHTML(name)}">` +
         arrow +
         `<span class="syfe-mtree__icon">${icon}</span>` +
@@ -309,7 +337,7 @@ function buildRows(ctx: PathMenuCtx, dir: string, depth: number, out: string[], 
     for (const d of dirs) {
         if (count.n >= MAX_PATH_MENU_ITEMS) break;
         shown++; count.n++;
-        const p = joinPath(dir, d.name);
+        const p = d.path || joinPath(dir, d.name); // 磁盘行自带绝对盘根(C:\)
         out.push(rowHTML(ctx, p, d.name, true, depth));
         if (ctx.expanded.has(normKey(p))) buildRows(ctx, p, depth + 1, out, count);
     }
