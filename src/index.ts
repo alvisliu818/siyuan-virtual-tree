@@ -65,6 +65,7 @@ import {stopPythonLanguageServer} from "./utils/python-lsp";
 import {installLuteGuard} from "./utils/lute-guard";
 import {refreshAllExpanded} from "./components/file-tree";
 import {refreshAllTabIcons} from "./utils/tab-icon";
+import {destroyCodeRender, initCodeRender, setupCodeRenderSettingItems} from "./code-render";
 import "./index.scss";
 
 // 守卫必须在插件加载的第一时间生效 —— 早于任何 vditor 实例被创建。
@@ -353,6 +354,9 @@ export default class FileEditorPlugin extends Plugin {
             confirmCallback: () => this.saveSettings(),
         });
         this.buildSettingItems();
+        // 代码块渲染(并入自 siyuan-plugin-code-render):设置三组 + 引擎初始化
+        setupCodeRenderSettingItems(this.setting!, this);
+        initCodeRender(this);
 
         // 主题同步
         this.startThemeSync();
@@ -523,6 +527,12 @@ export default class FileEditorPlugin extends Plugin {
     }
 
     onunload(): void {
+        // 代码块渲染:还原被接管的代码块为思源原生高亮
+        try {
+            destroyCodeRender();
+        } catch {
+            // ignore
+        }
         // 注销文档内文件打开接管的事件监听
         try {
             this._unregisterDocOpenTakeover?.();
