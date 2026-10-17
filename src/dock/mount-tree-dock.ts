@@ -28,6 +28,8 @@ import {
 import {openWithExternalApp, revealInSystemExplorer} from "../utils/external-app";
 import {openSiyuanDoc, openSiyuanNotebook} from "../components/entry-menu";
 import {openTrashDialog} from "../components/trash-dialog";
+import {showBacklinkDialog} from "../components/backlink-dialog";
+import {BacklinkItem, findBacklinks, findDirBacklinks, findSiyuanRefBacklinks} from "../utils/backlink";
 import {showDocMenu, showNotebookMenu, addPinFavEntries, DocMenuItem} from "../components/doc-menu";
 import {openSiyuanTagDialog} from "../components/siyuan-tag-dialog";
 import {openFileTab, syncOpenEditors} from "../tabs/editor-tab";
@@ -1160,6 +1162,9 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 ? `<span class="syfe-mtree__toggle syfe-mtree__toggle--arrow" data-arrow="1" title="展开/收起"><svg><use xlink:href="#${expanded ? "iconDown" : "iconRight"}"></use></svg></span>`
                 : `<span class="syfe-mtree__toggle"></span>`;
 
+            // 行末「查看引用」链接图标(hover 显示,加载中/空行不加;点击弹出反链对话框)
+            const LINK_BTN = `<span class="syfe-mtree__linkbtn" data-linkbtn="1" title="查看引用"><svg><use xlink:href="#iconLink"></use></svg></span>`;
+
             const render = () => {
                 if (!self._listEl) return; // 已销毁
                 // 关系树的 5 个工具按钮:仅在开关开启时显示(作用于自动挂载行)
@@ -1206,6 +1211,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                             <span class="syfe-mtree__text">
                                 <span class="syfe-mtree__name">${escapeHTML(r.name)}</span>
                             </span>
+                            ${LINK_BTN}
                         </li>`;
                     }
                     if (r.kind === "empty") {
@@ -1241,6 +1247,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                                 <span class="syfe-mtree__name">${escapeHTML(name)}</span>
                                 ${sub ? `<span class="syfe-mtree__sub">${escapeHTML(sub)}</span>` : ""}
                             </span>
+                            ${LINK_BTN}
                         </li>`;
                     }
                     if (r.kind === "file") {
@@ -1254,6 +1261,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                             ${arrow}
                             <span class="syfe-mtree__icon">${icon}</span>
                             <span class="syfe-mtree__name">${escapeHTML(r.name)}</span>
+                            ${LINK_BTN}
                         </li>`;
                     }
                     if (r.kind === "doc") {
@@ -1264,6 +1272,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                             ${arrow}
                             <span class="syfe-mtree__icon">${docIcon}</span>
                             <span class="syfe-mtree__name">${escapeHTML(r.name)}</span>
+                            ${LINK_BTN}
                         </li>`;
                     }
                     return `
@@ -1272,6 +1281,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                         ${arrow}
                         <span class="syfe-mtree__icon"><svg><use xlink:href="#iconEdit"></use></svg></span>
                         <span class="syfe-mtree__name">${escapeHTML(r.name)}</span>
+                        ${LINK_BTN}
                     </li>`;
                 }).join("");
 
@@ -1389,7 +1399,57 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 render();
             };
 
+            // 行末「查看引用」链接图标:按行类型构造数据加载,弹出反链对话框
+            const openBacklinkDialogForRow = (row: Row): void => {
+                if (row.kind === "loading" || row.kind === "empty") return;
+                let title = "";
+                let subtitle = "";
+                let load: () => Promise<BacklinkItem[]>;
+                if (row.kind === "mount") {
+                    const it = row.item;
+                    title = it.name || (it.path ? basename(it.path) : it.targetId || "");
+                    if (it.kind === "file" && it.path) {
+                        subtitle = it.path;
+                        load = it.isDir
+                            ? () => findDirBacklinks(it.path!)
+                            : () => findBacklinks(it.path);
+                    } else if (it.kind === "notebook" && it.targetId) {
+                        subtitle = `笔记本 ${it.targetId}`;
+                        load = () => findSiyuanRefBacklinks(it.targetId!, it.targetId);
+                    } else {
+                        subtitle = it.targetId || "";
+                        load = () => findSiyuanRefBacklinks(it.targetId!);
+                    }
+                } else if (row.kind === "file") {
+                    title = row.name;
+                    subtitle = row.path;
+                    load = row.isDir
+                        ? () => findDirBacklinks(row.path)
+                        : () => findBacklinks(row.path);
+                } else if (row.kind === "doc" || row.kind === "auto") {
+                    title = row.name;
+                    subtitle = `思源文档 ${row.docId}`;
+                    load = () => findSiyuanRefBacklinks(row.docId);
+                } else {
+                    title = row.name;
+                    subtitle = `思源块 ${row.blockId}`;
+                    load = () => findSiyuanRefBacklinks(row.blockId);
+                }
+                showBacklinkDialog(plugin as any, {
+                    title: `引用 — ${title}`,
+                    subtitle,
+                    load,
+                });
+            };
+
             const clickHandler = (e: MouseEvent) => {
+                // 行末「查看引用」链接图标:弹反链对话框,不触发行自身的打开行为
+                const linkBtn = (e.target as HTMLElement).closest("[data-linkbtn]") as HTMLElement | null;
+                if (linkBtn) {
+                    const row = rowOf(linkBtn.closest(".syfe-mtree__row") as HTMLElement | null);
+                    if (row) openBacklinkDialogForRow(row);
+                    return;
+                }
                 // 行首箭头:无论哪一行,箭头都只负责展开/收起
                 const arrowEl = (e.target as HTMLElement).closest("[data-arrow]") as HTMLElement | null;
                 if (arrowEl) {

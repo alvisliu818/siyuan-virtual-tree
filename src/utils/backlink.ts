@@ -141,15 +141,13 @@ function extractRefs(baseDir: string, content: string): ExtractedRef[] {
 
 // ===== 来源 1:思源笔记文档引用 =====
 
-// 查询思源文档中引用该文件的位置:
-// A. 块内容(markdown 列):assets 链接 / file:// 外部链接 / wikilink 文本
-// B. 块属性(attributes 表):如 custom-base-file 指向外部文件的 wikilink
-// 按文件名 LIKE 粗筛,再解析验证(含 ../ 失效时的路径尾部匹配)
-async function findSiyuanDocRefs(path: string): Promise<BacklinkItem[]> {
-    const name = basename(path);
-    // SQL 转义:LIKE 通配符与单引号
-    const esc = name.replace(/[\\%_]/g, ch => "\\" + ch).replace(/'/g, "''");
-    const target = normPath(path);
+// 按谓词查询思源文档中的引用位置(A. 块内容 markdown 列 + B. 块属性 attributes 表):
+// likeName 用于 SQL LIKE 粗筛(名字的转义文本),match 决定提取出的引用是否命中目标;
+// 同一块出现在多个来源时按块 ID 去重。
+async function findSiyuanDocRefsWhere(
+    likeName: string,
+    match: (refs: ExtractedRef[]) => boolean,
+): Promise<BacklinkItem[]> {
     const items: BacklinkItem[] = [];
     const seen = new Set<string>(); // 同一块出现在多个来源时去重
 
@@ -171,13 +169,13 @@ async function findSiyuanDocRefs(path: string): Promise<BacklinkItem[]> {
     try {
         const rows = await querySQL(
             `SELECT id, root_id, hpath, markdown FROM blocks ` +
-            `WHERE markdown LIKE '%${esc}%' ESCAPE '\\' LIMIT 512`);
+            `WHERE markdown LIKE '%${likeName}%' ESCAPE '\\' LIMIT 512`);
         if (Array.isArray(rows)) {
             for (const row of rows) {
                 const md: string = row.markdown || "";
                 // 块内引用以 assets/ 等形式存储,相对工作空间 data 根解析
                 const refs = extractRefs("/data", md);
-                if (refs.some(r => refMatches(r, target))) {
+                if (match(refs)) {
                     const firstLine = md.split("\n").find((l: string) => l.trim()) || "";
                     pushItem(row.id, row.root_id, row.hpath || "", firstLine);
                 }
@@ -192,12 +190,12 @@ async function findSiyuanDocRefs(path: string): Promise<BacklinkItem[]> {
         const rows = await querySQL(
             `SELECT a.block_id, a.name AS attr_name, a.value, b.root_id, b.hpath ` +
             `FROM attributes a JOIN blocks b ON b.id = a.block_id ` +
-            `WHERE a.value LIKE '%${esc}%' ESCAPE '\\' LIMIT 256`);
+            `WHERE a.value LIKE '%${likeName}%' ESCAPE '\\' LIMIT 256`);
         if (Array.isArray(rows)) {
             for (const row of rows) {
                 const value: string = row.value || "";
                 const refs = extractRefs("/data", value);
-                if (refs.some(r => refMatches(r, target))) {
+                if (match(refs)) {
                     pushItem(row.block_id, row.root_id, row.hpath || "", `${row.attr_name || "属性"}: ${value}`);
                 }
             }
@@ -207,6 +205,16 @@ async function findSiyuanDocRefs(path: string): Promise<BacklinkItem[]> {
     }
 
     return items;
+}
+
+// 查询思源文档中引用该文件的位置(按文件名 LIKE 粗筛,再解析验证:
+// 精确匹配 + ../ 失效时的路径尾部匹配)
+async function findSiyuanDocRefs(path: string): Promise<BacklinkItem[]> {
+    const name = basename(path);
+    // SQL 转义:LIKE 通配符与单引号
+    const esc = name.replace(/[\\%_]/g, ch => "\\" + ch).replace(/'/g, "''");
+    const target = normPath(path);
+    return findSiyuanDocRefsWhere(esc, refs => refs.some(r => refMatches(r, target)));
 }
 
 // ===== 来源 2:Markdown 文件引用 =====
@@ -259,11 +267,14 @@ function collectScanRoots(): string[] {
     return Array.from(roots);
 }
 
-// 查询文件树内引用该文件的所有 Markdown 文件
-async function findMdFileRefs(path: string): Promise<BacklinkItem[]> {
+// 对全部挂载根下的 md 文件扫描引用,match 决定某条引用是否命中目标
+// (normTarget 为归一化后的目标路径;srcPath 为引用所在文件,供调用方做自引用/范围过滤)
+async function scanMdRefs(
+    normTarget: string,
+    match: (ref: ExtractedRef, srcPath: string, normTarget: string) => boolean,
+): Promise<BacklinkItem[]> {
     const roots = collectScanRoots();
     if (roots.length === 0) return [];
-    const target = normPath(path);
     const files: MdFileInfo[] = [];
     for (const root of roots) {
         await collectMdFiles(root, files, isSiyuanPath(root) && normPath(root) === "/data");
@@ -286,10 +297,8 @@ async function findMdFileRefs(path: string): Promise<BacklinkItem[]> {
                 if (refCache.size > 5000) refCache.clear();
                 refCache.set(f.path, entry);
             }
-            // 跳过自引用(文件链接自身)
-            if (normPath(f.path) === target) return;
             for (const ref of entry.refs) {
-                if (refMatches(ref, target)) {
+                if (match(ref, f.path, normTarget)) {
                     items.push({
                         kind: "md-file",
                         sourcePath: f.path,
@@ -304,6 +313,14 @@ async function findMdFileRefs(path: string): Promise<BacklinkItem[]> {
     return items;
 }
 
+// 查询文件树内引用该文件的所有 Markdown 文件
+async function findMdFileRefs(path: string): Promise<BacklinkItem[]> {
+    const target = normPath(path);
+    return scanMdRefs(target, (ref, srcPath, t) =>
+        // 跳过自引用(文件链接自身)
+        normPath(srcPath) !== t && refMatches(ref, t));
+}
+
 // ===== 总入口 =====
 
 // 查找引用指定文件的所有位置(思源文档 + Markdown 文件)
@@ -314,4 +331,76 @@ export async function findBacklinks(path: string): Promise<BacklinkItem[]> {
     ]);
     // 思源文档引用在前
     return [...docRefs, ...fileRefs];
+}
+
+// ===== 文件夹反链 =====
+
+// 引用是否落在目录内:解析后的绝对路径位于 dirPath 之下
+function refInDir(ref: ExtractedRef, dirPath: string): boolean {
+    return normPath(ref.target).startsWith(normPath(dirPath) + "/");
+}
+
+// 查询思源文档中引用该目录内文件的位置(文件夹名 LIKE 粗筛,解析后按目录前缀精确验证)
+async function findSiyuanDocRefsForDir(dirPath: string): Promise<BacklinkItem[]> {
+    const name = basename(dirPath);
+    if (!name) return [];
+    const esc = name.replace(/[\\%_]/g, ch => "\\" + ch).replace(/'/g, "''");
+    return findSiyuanDocRefsWhere(esc, refs => refs.some(r => refInDir(r, dirPath)));
+}
+
+// 查找引用指定文件夹内文件的所有位置(思源文档 + Markdown 文件)。
+// md 扫描排除文件夹自身的 md 文件:内部互链不算文件夹的外部反链。
+export async function findDirBacklinks(dirPath: string): Promise<BacklinkItem[]> {
+    const dirNorm = normPath(dirPath) + "/";
+    const [docRefs, fileRefs] = await Promise.all([
+        findSiyuanDocRefsForDir(dirPath),
+        scanMdRefs(dirNorm, (ref, srcPath) =>
+            !normPath(srcPath).startsWith(dirNorm) && refInDir(ref, dirPath)),
+    ]);
+    // 思源文档引用在前
+    return [...docRefs, ...fileRefs];
+}
+
+// ===== 来源 3:思源原生反链(refs 表) =====
+
+// 查询引用指定块/文档/笔记本的块(思源原生反链语义):
+// - 传文档 id:直接引用该文档(def_block_id)或引用了文档内任意块(def_block_root_id)
+// - 传块 id:引用该块本身
+// - 传笔记本 id 时需同时传 box:引用了该笔记本内任意块
+export async function findSiyuanRefBacklinks(targetId: string, box?: string): Promise<BacklinkItem[]> {
+    const id = targetId.replace(/'/g, "''");
+    // root_id 取引用目标所在文档的 root;引用锚文本优先(refs.content),回退引用块内容
+    const COLS = "r.block_id, r.content AS ref_content, b.hpath, b.content AS block_content, ";
+    const rows = box
+        ? await querySQL(
+            `SELECT ${COLS}d.root_id FROM refs r ` +
+            `JOIN blocks d ON d.id = r.def_block_root_id ` +
+            `LEFT JOIN blocks b ON b.id = r.block_id ` +
+            `WHERE d.box = '${id}' LIMIT 512`)
+        : await querySQL(
+            `SELECT ${COLS}r.def_block_root_id AS root_id FROM refs r ` +
+            `LEFT JOIN blocks b ON b.id = r.block_id ` +
+            `WHERE r.def_block_id = '${id}' OR r.def_block_root_id = '${id}' LIMIT 512`);
+    const items: BacklinkItem[] = [];
+    const seen = new Set<string>();
+    if (Array.isArray(rows)) {
+        for (const row of rows) {
+            const blockId: string = row.block_id || "";
+            const rootId: string = row.root_id || "";
+            if (!blockId || !rootId || seen.has(blockId)) continue;
+            seen.add(blockId);
+            const hpath: string = row.hpath || "";
+            const title = hpath ? hpath.split("/").filter(Boolean).pop() || hpath : rootId;
+            const snippet: string = String(row.ref_content || row.block_content || "");
+            items.push({
+                kind: "siyuan-doc",
+                sourcePath: rootId,
+                title,
+                docPath: hpath,
+                snippet: snippet.length > 160 ? snippet.slice(0, 160) + "…" : snippet,
+                blockId,
+            });
+        }
+    }
+    return items;
 }
