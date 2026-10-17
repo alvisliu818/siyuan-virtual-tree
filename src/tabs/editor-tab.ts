@@ -24,6 +24,7 @@ import {
     consumePendingReveal,
 } from "../editor/model-manager";
 import {getGlobalDefaultChoice, kernelPythonOf} from "../utils/kernel/registry";
+import {getResolved} from "../settings/user-settings";
 import {createBacklinkPanel} from "../components/backlink-panel";
 import {addRecent} from "../recent-files";
 import {registerPythonEditor, unregisterPythonEditor} from "../utils/python-lsp-bridge";
@@ -394,6 +395,15 @@ export function createEditorTabConfig(plugin: IPluginForTab) {
             // 保存方法挂到实例,供 Ctrl+S 与外部调用
             (self as any).save = async () => {
                 try {
+                    // 「保存时格式化」:先跑格式化再落盘。
+                    // 没有格式化器的语言(如纯文本)formatDocument 会静默失败,不影响保存
+                    if (getResolved("editor.formatOnSave") === true) {
+                        try {
+                            await self._editor?.getAction("editor.action.formatDocument")?.run();
+                        } catch {
+                            // 格式化失败不阻断保存
+                        }
+                    }
                     await saveModel(path);
                     updateDirtyUI(false);
                     showMessage("已保存", 2000, "info");

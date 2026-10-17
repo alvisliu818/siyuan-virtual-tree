@@ -13,7 +13,7 @@ import {restoreAll, stopWatching, sweepInplace} from "./inplace";
 import {initI18n} from "./i18n";
 import {registerRenderer} from "./registry";
 import {mysqlRenderer} from "./renderers/mysql";
-import {getSettings, mergeSettings, replaceSettings, SETTINGS_NAME} from "./settings";
+import {getSettings, mergeSettings, replaceSettings, LEGACY_SETTINGS_NAME, SETTINGS_NAME} from "./settings";
 import {setupCodeRenderSettings} from "./settings-panel";
 
 let scanScheduled = false;
@@ -42,15 +42,38 @@ export function initCodeRender(host: any): void {
     registerRenderer(mysqlRenderer);
 
     void (async () => {
-        // 存对象(思源会自行 JSON.stringify);loadData 返回原始字符串时再 parse
+        // 存对象(思源会自行 JSON.stringify);loadData 返回原始字符串时再 parse。
+        // 新名字读不到时回退到旧的 settings.json(该文件名已让给宿主的用户设置),
+        // 读到就把内容迁到新名字下,避免用户重配一遍。
         let stored: unknown = null;
+        let migrated = false;
         try {
             const raw = await host.loadData(SETTINGS_NAME);
             stored = typeof raw === "string" && raw ? JSON.parse(raw) : raw;
         } catch {
             stored = null;
         }
+        if (!stored || (typeof stored === "object" && !Object.keys(stored as object).length)) {
+            try {
+                const legacy = await host.loadData(LEGACY_SETTINGS_NAME);
+                const parsed = typeof legacy === "string" && legacy ? JSON.parse(legacy) : legacy;
+                // 只认本模块的形状(rules + dataSources),宿主用户设置不会长这样
+                if (parsed && Array.isArray(parsed.rules) && Array.isArray(parsed.dataSources)) {
+                    stored = parsed;
+                    migrated = true;
+                }
+            } catch {
+                // 旧文件不存在或已变成别的东西:忽略
+            }
+        }
         replaceSettings(mergeSettings(stored));
+        if (migrated) {
+            try {
+                await host.saveData(SETTINGS_NAME, getSettings());
+            } catch {
+                // 迁移写失败不致命:下次还能从旧文件读
+            }
+        }
         scanAllCodeRender();
     })();
 

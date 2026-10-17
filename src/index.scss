@@ -1071,6 +1071,109 @@ button.syfe-editor__arrow--exp:hover {
     white-space: nowrap;
 }
 
+/* === 反向链接弹窗(虚拟文档树行末「查看引用」图标)=== */
+.syfe-bldlg {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+}
+
+.syfe-bldlg__bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0 0 8px;
+}
+
+.syfe-bldlg__sub {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: var(--b3-font-family-code);
+    font-size: 11px;
+    color: var(--b3-theme-on-surface-light);
+}
+
+.syfe-bldlg__body {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    border-top: 1px solid var(--b3-border-color);
+}
+
+.syfe-bldlg__hint {
+    padding: 12px 16px;
+    font-size: 12px;
+    color: var(--b3-theme-on-surface-light);
+}
+
+.syfe-bldlg__group {
+    position: sticky;
+    top: 0;
+    padding: 6px 16px 4px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--b3-theme-on-surface);
+    background: var(--b3-theme-background);
+    border-bottom: 1px dashed var(--b3-border-color);
+}
+
+.syfe-bldlg__item {
+    padding: 5px 16px;
+    cursor: pointer;
+    font-size: 12px;
+}
+
+.syfe-bldlg__item:hover {
+    background: var(--b3-list-hover);
+}
+
+.syfe-bldlg__itemhead {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
+
+.syfe-bldlg__itemhead svg {
+    width: 14px;
+    height: 14px;
+    flex-shrink: 0;
+    color: var(--b3-theme-on-surface-light);
+}
+
+.syfe-bldlg__itemtitle {
+    flex-shrink: 0;
+    max-width: 40%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--b3-theme-on-surface);
+}
+
+.syfe-bldlg__itemloc {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: var(--b3-font-family-code);
+    font-size: 11px;
+    color: var(--b3-theme-on-surface-light);
+}
+
+.syfe-bldlg__snippet {
+    margin: 2px 0 0 20px;
+    font-family: var(--b3-font-family-code);
+    font-size: 11px;
+    color: var(--b3-theme-on-surface-light);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 /* === 图片查看器 === */
 .syfe-image-tab {
     height: 100%;
@@ -2955,6 +3058,37 @@ button.syfe-editor__arrow--exp:hover {
     }
 }
 
+// 行末「查看引用」链接图标:hover 显示(占位常驻,避免出现/消失时行内容跳动)
+.syfe-mtree__linkbtn {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    margin-left: auto;
+    border-radius: 3px;
+    opacity: 0;
+    transition: opacity 0.1s ease-in-out;
+    cursor: pointer;
+
+    svg {
+        width: 13px;
+        height: 13px;
+        color: var(--b3-theme-on-surface);
+        fill: currentColor;
+    }
+
+    .syfe-mtree__row:hover & {
+        opacity: 0.55;
+    }
+
+    &:hover {
+        opacity: 1 !important;
+        background: var(--b3-list-hover);
+    }
+}
+
 // 展开的行不做任何背景/阴影处理:层级靠缩进和箭头表达,
 // 给展开行加背景会被误读成"阴影/变亮"(与思源原生文档树一致:无背景)
 .syfe-mtree__row--open {
@@ -4222,4 +4356,106 @@ button.syfe-editor__arrow--exp:hover {
 .b3-menu.syfe-pathmenu .syfe-pathmenu__chev svg {
     width: 12px;
     height: 12px;
+}
+
+/* ==== 代码编辑器设置(settings/) ==== */
+/* 铺在思源设置对话框里的「代码编辑器」分组:一行一项,右侧控件、下方说明 */
+
+.syfe-es {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: 100%;
+}
+
+.syfe-es__bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.syfe-es__search {
+    flex: 1;
+    min-width: 160px;
+}
+
+.syfe-es__hint {
+    font-size: 12px;
+    color: var(--b3-theme-on-surface);
+    opacity: 0.75;
+    line-height: 1.5;
+}
+
+.syfe-es__body {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    max-height: 52vh;
+    overflow: auto;
+}
+
+.syfe-es__grouptitle {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--b3-theme-on-background);
+    padding: 2px 0 6px;
+    border-bottom: 1px solid var(--b3-border-color);
+    margin-bottom: 6px;
+}
+
+.syfe-es__row {
+    padding: 5px 2px;
+    border-bottom: 1px dashed var(--b3-border-color);
+
+    &:last-child {
+        border-bottom: none;
+    }
+}
+
+.syfe-es__head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.syfe-es__title {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.syfe-es__titletext {
+    font-size: 14px;
+}
+
+.syfe-es__key {
+    font-size: 11px;
+    font-family: var(--b3-font-family-code, monospace);
+    color: var(--b3-theme-on-surface);
+    opacity: 0.6;
+    background: none;
+    padding: 0;
+}
+
+.syfe-es__desc {
+    font-size: 12px;
+    color: var(--b3-theme-on-surface);
+    opacity: 0.7;
+    line-height: 1.5;
+    margin-top: 2px;
+}
+
+/* 控件统一收窄,避免长文本框把说明挤到下一行 */
+.syfe-es__head .b3-select,
+.syfe-es__head .b3-text-field {
+    flex-shrink: 0;
+    max-width: 220px;
+}
+
+.syfe-es__head input[type="number"].b3-text-field {
+    width: 110px;
 }

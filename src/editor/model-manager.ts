@@ -21,6 +21,16 @@ const lastSavedMap = new Map<string, string>();
 // path → 文件在"我们认知里"的状态(首次加载/保存/重载时的 mtime+size)。
 // 用来判断文件是否被思源之外的程序改过 —— 见 isChangedExternally。
 const statMap = new Map<string, {mtimeMs: number; size: number}>();
+// 保存完成监听器:settings.json 这类"配置文件型"文件要靠它做到"保存即生效"。
+// 放在这里而不是各个页签里,是因为保存入口有多处(Ctrl+S、关闭确认、命令面板),
+// 逐个埋点一定会漏。
+const saveListeners = new Set<(path: string) => void>();
+
+/** 注册"某个文件已保存"回调(所有走 saveModel 的保存都会触发) */
+export function onDidSaveModel(cb: (path: string) => void): () => void {
+    saveListeners.add(cb);
+    return () => saveListeners.delete(cb);
+}
 
 function uriForPath(path: string): monaco.Uri {
     // 思源虚拟路径走专用 scheme;工作空间外的系统绝对路径(如 E:\HOME\BaiduSyncdisk)
@@ -118,6 +128,13 @@ export async function saveModel(path: string): Promise<void> {
     lastSavedMap.set(path, value);
     markDirty(path, false);
     recordStat(path);
+    saveListeners.forEach(cb => {
+        try {
+            cb(path);
+        } catch (e) {
+            console.warn("[siyuan-file-editor] 保存回调出错:", e);
+        }
+    });
 }
 
 // 重新加载文件内容到已有模型(外部修改后刷新)

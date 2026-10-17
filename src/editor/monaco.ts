@@ -2,6 +2,7 @@ import * as monaco from "monaco-editor";
 import {extname} from "../utils/path";
 import {EditorConfig} from "../types";
 import {getActiveThemeName} from "../extensions/theme-loader";
+import {buildEditorOptions} from "../settings/user-settings";
 
 let initialized = false;
 
@@ -154,6 +155,8 @@ export function applyTheme(mode: 0 | 1): void {
 }
 
 // 创建编辑器实例
+// 注:config 保留在签名里(调用方统一传 plugin.config),但编辑器选项已全部改由
+// 设置注册表提供 —— 见下方 buildEditorOptions。
 export function createEditor(
     container: HTMLElement,
     model: monaco.editor.ITextModel,
@@ -161,25 +164,17 @@ export function createEditor(
     config: EditorConfig,
     onSave: () => void,
 ): monaco.editor.IStandaloneCodeEditor {
-    const editor = monaco.editor.create(container, {
+    // 编辑器选项全部来自设置注册表(settings.json 的 editor.* 键,缺省用注册表默认值),
+    // 不再在这里写死 —— 否则"设置里加了项但新开的编辑器没反应",是最难排查的一类问题
+    const options: monaco.editor.IStandaloneEditorConstructionOptions = {
         model,
         // 优先使用当前激活的扩展主题;此处不能硬编码思源主题,
         // 因为创建实例时的 theme 参数会全局覆盖 setTheme,导致扩展代码主题失效
         theme: getActiveThemeName() ?? (getCurrentMode() === 1 ? "siyuan-dark" : "siyuan-light"),
-        fontSize: config.fontSize,
-        tabSize: config.tabSize,
-        wordWrap: config.wordWrap,
         automaticLayout: true,
-        // 右侧导航窗格(minimap 缩略图):跟随设置,默认开
-        minimap: {enabled: config.showMinimap !== false},
-        // 与 VS Code 一致:允许滚动越过最后一行(底部留白,末行不必贴着编辑器底边)
-        scrollBeyondLastLine: true,
-        smoothScrolling: true,
-        cursorBlinking: "smooth",
-        renderWhitespace: "selection",
-        bracketPairColorization: {enabled: true},
-        padding: {top: 8, bottom: 24},
-    });
+        ...(buildEditorOptions() as monaco.editor.IStandaloneEditorConstructionOptions),
+    };
+    const editor = monaco.editor.create(container, options);
     // Ctrl/Cmd + S 保存
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, onSave);
 
@@ -286,6 +281,7 @@ export function disposeMonaco(): void {
 }
 
 // 把导航窗格(minimap)开关即时应用到所有已打开的编辑器
+// (兼容旧调用点;现已由 applyEditorOptions 统一处理所有编辑器设置)
 // (设置保存后调用,无需重开 Tab;monaco.editor.getEditors() 枚举当前所有实例)
 export function applyMinimapSetting(enabled: boolean): void {
     try {

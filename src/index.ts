@@ -9,7 +9,7 @@ import {
     TERMINAL_DOCK_TYPE,
 } from "./constants";
 import {EditorConfig, DEFAULT_CONFIG} from "./types";
-import {setupMonaco, applyTheme, getCurrentMode, disposeMonaco, applyMinimapSetting} from "./editor/monaco";
+import {setupMonaco, applyTheme, getCurrentMode, disposeMonaco} from "./editor/monaco";
 import {disposeAll} from "./editor/model-manager";
 import {createEditorTabConfig, openFileTab} from "./tabs/editor-tab";
 import {createImageTabConfig, openImageTab} from "./tabs/image-tab";
@@ -24,6 +24,17 @@ import {createRecentDockConfig} from "./dock/recent-dock";
 import {createTagDockConfig} from "./dock/tag-dock";
 import {createSearchTabConfig, openSearchTab} from "./components/search-panel";
 import {loadConfig, saveConfig} from "./utils/config";
+import {
+    applyEditorOptions,
+    applyUserSettingsToConfig,
+    flushUserSettings,
+    getResolved,
+    getNumberSetting,
+    initUserSettings,
+    registerSettingsJsonSchema,
+    syncUserSettingsFromConfig,
+} from "./settings/user-settings";
+import {buildEditorSettingsBlock} from "./settings/editor-settings-ui";
 import {querySQL} from "./api/file";
 import {basename} from "./utils/path";
 import {loadAllExtensions} from "./extensions/extension-manager";
@@ -84,16 +95,10 @@ function asSiyuanCustom<C extends object>(cfg: C): any {
 export default class FileEditorPlugin extends Plugin {
     public config: EditorConfig = DEFAULT_CONFIG;
     private themeObserver?: MutationObserver;
-    private fontSizeInput?: HTMLInputElement;
-    private tabSizeInput?: HTMLInputElement;
-    private wordWrapSelect?: HTMLSelectElement;
     // 「关闭未保存标签页时的行为」下拉
     private closeUnsavedSelect?: HTMLSelectElement;
     // 「接管打开用分栏」开关
     private takeoverSplitOpenInput?: HTMLInputElement;
-    private formatOnSaveInput?: HTMLInputElement;
-    // 编辑器右侧导航窗格(minimap 缩略图)开关
-    private showMinimapInput?: HTMLInputElement;
     private searchMaxSizeInput?: HTMLInputElement;
     private fileTreeRootInput?: HTMLInputElement;
     private terminalBackendSelect?: HTMLSelectElement;
@@ -368,6 +373,16 @@ export default class FileEditorPlugin extends Plugin {
     // 注:思源插件**没有 removeDock**,所以关闭开关后需要重启思源才真正隐藏。
     async onLayoutReady(): Promise<void> {
         this.config = await loadConfig(this);
+        // settings.json(VS Code 风格用户设置):优先级高于 config.json。
+        // 读完后把值回写进 config,这样所有读 plugin.config 的既有代码都自动拿到最终值,
+        // 不需要在各处再加一层"先查 settings.json"的判断。
+        try {
+            await initUserSettings(this, this.config);
+            applyUserSettingsToConfig(this.config);
+            registerSettingsJsonSchema();
+        } catch (e) {
+            console.error("[siyuan-file-editor] 加载 settings.json 失败:", e);
+        }
         // 版本控制保留条数以**磁盘配置**为准 —— onload 里那次跑在 loadConfig 之前,
         // 拿到的是 DEFAULT_CONFIG 的值,改设置后不重启也不会生效,必须在这里补一次
         setVersionKeepCount(this.config.versionKeepCount ?? 10);
@@ -701,60 +716,15 @@ export default class FileEditorPlugin extends Plugin {
 
     // 构建设置面板项
     private buildSettingItems(): void {
-        // 字体大小
-        this.fontSizeInput = document.createElement("input");
-        this.fontSizeInput.className = "b3-text-field fn__size200";
-        this.fontSizeInput.type = "number";
-        this.fontSizeInput.min = "8";
-        this.fontSizeInput.max = "32";
+        // 代码编辑器:全部编辑器设置项(自动换行、字体、缩进、光标、导航窗格……)。
+        // 这些控件改的是 settings.json,与直接编辑该文件完全等价 —— 见 settings/ 目录。
+        // 旧版分散在面板里的「字体大小 / Tab 宽度 / 自动换行 / 保存时格式化 / 导航窗格」
+        // 五项已并入这里,避免同一个值有两个入口互相打架。
         this.setting!.addItem({
-            title: "字体大小",
-            description: "编辑器字体大小(px)",
-            actionElement: this.fontSizeInput,
-        });
-
-        // Tab 宽度
-        this.tabSizeInput = document.createElement("input");
-        this.tabSizeInput.className = "b3-text-field fn__size200";
-        this.tabSizeInput.type = "number";
-        this.tabSizeInput.min = "1";
-        this.tabSizeInput.max = "16";
-        this.setting!.addItem({
-            title: "Tab 宽度",
-            description: "缩进空格数",
-            actionElement: this.tabSizeInput,
-        });
-
-        // 自动换行
-        this.wordWrapSelect = document.createElement("select");
-        this.wordWrapSelect.className = "b3-select fn__size200";
-        this.wordWrapSelect.innerHTML = `
-            <option value="off">关闭</option>
-            <option value="on">开启</option>`;
-        this.setting!.addItem({
-            title: "自动换行",
-            description: "长行是否自动换行",
-            actionElement: this.wordWrapSelect,
-        });
-
-        // 保存时格式化
-        this.formatOnSaveInput = document.createElement("input");
-        this.formatOnSaveInput.type = "checkbox";
-        this.formatOnSaveInput.className = "b3-switch";
-        this.setting!.addItem({
-            title: "保存时格式化",
-            description: "Ctrl+S 保存时自动格式化文档",
-            actionElement: this.formatOnSaveInput,
-        });
-
-        // 编辑器右侧导航窗格(minimap 缩略图)
-        this.showMinimapInput = document.createElement("input");
-        this.showMinimapInput.type = "checkbox";
-        this.showMinimapInput.className = "b3-switch";
-        this.setting!.addItem({
-            title: "导航窗格",
-            description: "代码编辑器右侧的缩略导航(minimap)。关闭后编辑区变宽,适合窄屏或不需要缩略导航的场景;保存后对已打开的编辑器立即生效",
-            actionElement: this.showMinimapInput,
+            title: "代码编辑器",
+            description: "代码编辑器(含 Markdown 源码、Notebook 单元格)的全部设置项。改动立即生效并写入 settings.json;也可以点「打开 settings.json」按 VS Code 的习惯手写",
+            direction: "column",
+            createActionElement: () => buildEditorSettingsBlock(),
         });
 
         // 标签管理(新建/编辑/删除预设标签,支持嵌套、颜色、图标)
@@ -1160,13 +1130,8 @@ actionElement: tagManageBtn,
 
     // 同步设置面板控件值为当前配置
     private syncSettingUI(): void {
-        if (this.fontSizeInput) this.fontSizeInput.value = String(this.config.fontSize);
-        if (this.tabSizeInput) this.tabSizeInput.value = String(this.config.tabSize);
-        if (this.wordWrapSelect) this.wordWrapSelect.value = this.config.wordWrap;
-        if (this.formatOnSaveInput) this.formatOnSaveInput.checked = this.config.formatOnSave;
         if (this.closeUnsavedSelect) this.closeUnsavedSelect.value = this.config.closeUnsavedAction || "ask";
         if (this.takeoverSplitOpenInput) this.takeoverSplitOpenInput.checked = this.config.takeoverSplitOpen === true;
-        if (this.showMinimapInput) this.showMinimapInput.checked = this.config.showMinimap !== false;
         if (this.searchMaxSizeInput) {
             this.searchMaxSizeInput.value = String(Math.round(this.config.searchMaxFileSize / 1024));
         }
@@ -1206,11 +1171,13 @@ actionElement: tagManageBtn,
         const prevRelation = {...(this.config.mountTreeRelation || {})};
         delete (prevRelation as Record<string, unknown>).customOrder;
         this.config = {
-            fontSize: parseInt(this.fontSizeInput?.value || "14", 10),
-            tabSize: parseInt(this.tabSizeInput?.value || "4", 10),
-            wordWrap: (this.wordWrapSelect?.value as "on" | "off") || "off",
-            formatOnSave: this.formatOnSaveInput?.checked ?? false,
-            showMinimap: this.showMinimapInput?.checked ?? true,
+            // 编辑器相关的字段不再由本面板直接编辑(已并入「代码编辑器」分组),
+            // 这里从 settings.json 的生效值回写,保证读 plugin.config 的老代码一致
+            fontSize: getNumberSetting("editor.fontSize", 14),
+            tabSize: getNumberSetting("editor.tabSize", 4),
+            wordWrap: (getResolved("editor.wordWrap") === "off" ? "off" : "on") as "on" | "off",
+            formatOnSave: getResolved("editor.formatOnSave") === true,
+            showMinimap: getResolved("editor.minimap.enabled") !== false,
             searchMaxFileSize: (parseInt(this.searchMaxSizeInput?.value || "1024", 10)) * 1024,
             fileTreeRoot: (this.fileTreeRootInput?.value || "").trim() || "/data",
             terminalBackend: (this.terminalBackendSelect?.value as "auto" | "builtin" | "server") || "auto",
@@ -1262,6 +1229,9 @@ actionElement: tagManageBtn,
             // 解析失败保留原默认
         }
         await saveConfig(this, this.config);
+        // 面板值即用户值:回写 settings.json(只写与默认不同的项,与 VS Code 一致)
+        syncUserSettingsFromConfig(this.config);
+        await flushUserSettings();
         // 版本控制保留条数跟随设置生效(0=关闭并清空历史)
         setVersionKeepCount(this.config.versionKeepCount ?? 10);
         // 删除方式跟随设置生效
@@ -1270,8 +1240,8 @@ actionElement: tagManageBtn,
         setCloseUnsavedAction(this.config.closeUnsavedAction);
         // 主题设置立即生效
         this.applyConfiguredThemes();
-        // 导航窗格开关对已打开的编辑器立即生效
-        applyMinimapSetting(this.config.showMinimap !== false);
+        // 编辑器设置(字体/换行/导航窗格……)对已打开的编辑器立即生效
+        applyEditorOptions();
         this.refreshFileTrees();
         // 引用关系树开关影响「虚拟文档树」面板内容,通知面板重建(立即生效,无需重启)
         window.dispatchEvent(new CustomEvent(SYFE_RELATION_TREE_CHANGED_EVENT));

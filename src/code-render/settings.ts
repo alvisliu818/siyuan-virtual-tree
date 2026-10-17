@@ -1,6 +1,10 @@
 import type { DataSource, RenderRule, Settings } from "./types";
 
-export const SETTINGS_NAME = "settings.json";
+// 存储文件名(插件存储目录内)。
+// 原名就是 settings.json,与宿主新增的「VS Code 风格用户设置」撞名 —— 让给它,
+// 自己改用带模块前缀的名字;旧文件在 index.ts 里读一次并迁过来。
+export const SETTINGS_NAME = "code-render-settings.json";
+export const LEGACY_SETTINGS_NAME = "settings.json";
 
 export function uid(prefix = "r"): string {
     return prefix + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
