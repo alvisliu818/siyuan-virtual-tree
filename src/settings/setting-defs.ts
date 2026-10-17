@@ -1012,6 +1012,16 @@ export const PLUGIN_DEFS: SettingDef[] = [
         set: (c, v) => { c.takeoverSplitOpen = v === true; },
     },
     {
+        key: "virtualTree.backlinkIcon",
+        kind: "boolean",
+        group: G_TREE,
+        title: "显示引用图标",
+        description: "在「虚拟文档树」行末显示「查看引用」链接图标,鼠标悬停显示,点击可查看引用当前文件/文件夹/文档的反链",
+        default: true,
+        get: (c) => c.treeBacklinkIcon !== false,
+        set: (c, v) => { c.treeBacklinkIcon = v !== false; },
+    },
+    {
         key: "virtualTree.relation.enabled",
         kind: "boolean",
         group: G_TREE,

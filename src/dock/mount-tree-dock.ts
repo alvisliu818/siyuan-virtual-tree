@@ -1162,10 +1162,14 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 ? `<span class="syfe-mtree__toggle syfe-mtree__toggle--arrow" data-arrow="1" title="展开/收起"><svg><use xlink:href="#${expanded ? "iconDown" : "iconRight"}"></use></svg></span>`
                 : `<span class="syfe-mtree__toggle"></span>`;
 
-            // 行末「查看引用」链接图标(hover 显示,加载中/空行不加;点击弹出反链对话框)
-            const LINK_BTN = `<span class="syfe-mtree__linkbtn" data-linkbtn="1" title="查看引用"><svg><use xlink:href="#iconLink"></use></svg></span>`;
+            // 行末「查看引用」链接图标(hover 显示,加载中/空行不加;点击弹出反链对话框)。
+            // 显示与否跟随设置 virtualTree.backlinkIcon(config.treeBacklinkIcon,默认开)
+            const linkBtnHTML = () => plugin.config?.treeBacklinkIcon !== false
+                ? `<span class="syfe-mtree__linkbtn" data-linkbtn="1" title="查看引用"><svg><use xlink:href="#iconLink"></use></svg></span>`
+                : "";
 
             const render = () => {
+                const LINK_BTN = linkBtnHTML();
                 if (!self._listEl) return; // 已销毁
                 // 关系树的 5 个工具按钮:仅在开关开启时显示(作用于自动挂载行)
                 this.element.querySelectorAll("[data-rel-action]").forEach((el) => {

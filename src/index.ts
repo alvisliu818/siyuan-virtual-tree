@@ -99,6 +99,7 @@ export default class FileEditorPlugin extends Plugin {
     private closeUnsavedSelect?: HTMLSelectElement;
     // 「接管打开用分栏」开关
     private takeoverSplitOpenInput?: HTMLInputElement;
+    private treeBacklinkIconInput?: HTMLInputElement;
     private searchMaxSizeInput?: HTMLInputElement;
     private fileTreeRootInput?: HTMLInputElement;
     private terminalBackendSelect?: HTMLSelectElement;
@@ -797,6 +798,16 @@ actionElement: tagManageBtn,
             actionElement: this.takeoverSplitOpenInput,
         });
 
+        // 虚拟文档树:行末「查看引用」链接图标开关
+        this.treeBacklinkIconInput = document.createElement("input");
+        this.treeBacklinkIconInput.type = "checkbox";
+        this.treeBacklinkIconInput.className = "b3-switch";
+        this.setting!.addItem({
+            title: "显示引用图标",
+            description: "在「虚拟文档树」行末显示「查看引用」链接图标(鼠标悬停显示),点击可查看引用当前文件/文件夹/文档的反链",
+            actionElement: this.treeBacklinkIconInput,
+        });
+
 // 百度网盘(接入方式配置 + 挂载入口说明)
         const bdPanBtn = document.createElement("button");
         bdPanBtn.className = "b3-button b3-button--outline fn__size200";
@@ -1132,6 +1143,7 @@ actionElement: tagManageBtn,
     private syncSettingUI(): void {
         if (this.closeUnsavedSelect) this.closeUnsavedSelect.value = this.config.closeUnsavedAction || "ask";
         if (this.takeoverSplitOpenInput) this.takeoverSplitOpenInput.checked = this.config.takeoverSplitOpen === true;
+        if (this.treeBacklinkIconInput) this.treeBacklinkIconInput.checked = this.config.treeBacklinkIcon !== false;
         if (this.searchMaxSizeInput) {
             this.searchMaxSizeInput.value = String(Math.round(this.config.searchMaxFileSize / 1024));
         }
@@ -1199,6 +1211,7 @@ actionElement: tagManageBtn,
             docOpenTakeoverExts: (this.docOpenTakeoverExtsInput?.value || "").trim() || "md,txt",
             closeUnsavedAction: ((this.closeUnsavedSelect?.value || "ask") as "ask" | "discard" | "save"),
             takeoverSplitOpen: this.takeoverSplitOpenInput?.checked ?? false,
+            treeBacklinkIcon: this.treeBacklinkIconInput?.checked ?? true,
             // 「文件」面板功能已移除(虚拟文档树全面承接);保留配置键兼容旧存储
             showFileTreeDock: false,
             mountTreeRelation: {
