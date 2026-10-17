@@ -4361,6 +4361,12 @@ button.syfe-editor__arrow--exp:hover {
 /* ==== 代码编辑器设置(settings/) ==== */
 /* 铺在思源设置对话框里的「代码编辑器」分组:一行一项,右侧控件、下方说明 */
 
+/* 「代码编辑器」设置块宿主项:纵向布局(标题/描述在上,设置块占满在下)。
+   思源 column 项默认左右两列,右侧 width:100% 的块会把左列挤成 0 宽(竖排文字) */
+.b3-label:has(> .syfe-es) {
+    flex-direction: column;
+}
+
 .syfe-es {
     display: flex;
     flex-direction: column;
