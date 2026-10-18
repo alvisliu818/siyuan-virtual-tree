@@ -2,7 +2,7 @@
   "name": "siyuan-virtual-tree",
   "author": "alvisliu818",
   "url": "https://github.com/alvisliu818/siyuan-virtual-tree",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "minAppVersion": "3.7.0",
   "kernels": [
     "all"
