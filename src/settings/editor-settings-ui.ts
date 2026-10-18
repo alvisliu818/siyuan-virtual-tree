@@ -7,7 +7,7 @@
 // - 「代码编辑器」父页 = buildEditorAllPanel()(工具条 + 全部子组平铺)
 // - 每个子分类 = buildEditorGroupPanel(name)(单组)
 // 组 DOM 只构建一次并缓存,父页与子页共享同一份(切换时 DOM 移动,不重复构建)。
-import {Menu, showMessage} from "siyuan";
+import {showMessage} from "siyuan";
 import {
     EDITOR_DEFS,
     GROUP_ORDER,
@@ -55,8 +55,8 @@ function fromControlText(d: SettingDef, text: string): any {
 
 // ---------- 字体族"+"选择器 ----------
 
-// 候选字体:常见等宽/编程字体 + 常见中文字体(用 canvas 宽度探测是否真的安装,
-// 不依赖 Local Font Access API 权限 —— Electron 里 queryLocalFonts 默认被拒)。
+// 回退候选:queryLocalFonts 不可用(权限被拒/页面不可见)时,
+// 用 canvas 测宽从这份常见清单里探测(测不出没进清单的字体,聊胜于无)。
 const FONT_CANDIDATES: string[] = [
     "Consolas", "Cascadia Code", "Cascadia Mono", "Courier New", "Lucida Console",
     "JetBrains Mono", "Fira Code", "Fira Mono", "Source Code Pro", "IBM Plex Mono",
@@ -91,6 +91,22 @@ function detectInstalledFonts(): string[] {
     }
 }
 
+/** 枚举系统全部字体族。优先 Local Font Access API(真实全量,须在用户手势内、页面可见);
+ *  被拒/不可用则回退 canvas 探测候选清单。 */
+async function loadFontFamilies(): Promise<string[]> {
+    try {
+        const qlf = (window as any).queryLocalFonts as (() => Promise<Array<{family: string}>>) | undefined;
+        if (typeof qlf === "function") {
+            const fonts = await qlf.call(window);
+            const fams = [...new Set(fonts.map(f => f.family).filter(Boolean))];
+            if (fams.length) return fams.sort((a, b) => a.localeCompare(b, "zh-Hans-CN"));
+        }
+    } catch {
+        // SecurityError(页面不可见/权限被拒) → 走回退
+    }
+    return detectInstalledFonts().sort((a, b) => a.localeCompare(b, "zh-Hans-CN"));
+}
+
 /** 把选中的字体名追加到字体族输入框(带空格的名字自动加引号,逗号分隔) */
 function appendFontFamily(input: HTMLInputElement, font: string): void {
     const token = /\s/.test(font) ? `'${font}'` : font;
@@ -105,25 +121,92 @@ function appendFontFamily(input: HTMLInputElement, font: string): void {
     input.dispatchEvent(new Event("change"));
 }
 
-/** 弹出字体列表菜单(仅列出探测到的已安装字体) */
-function openFontPicker(input: HTMLInputElement, btn: HTMLElement): void {
-    const installed = detectInstalledFonts();
-    // 第三个参 independent=true:独立菜单。共用全局菜单时,首次弹出后全局菜单的
-    // data-name 残留为同 id → 再次构造 isOpen=true → addItem/open 全部被跳过,菜单永不弹出
-    const menu = new Menu("syfe-font-picker", () => undefined, true);
-    if (installed.length === 0) {
-        menu.addItem({iconHTML: "", label: "未检测到候选字体", click: () => undefined});
-    } else {
-        for (const font of installed) {
-            menu.addItem({
-                iconHTML: "",
-                label: font,
-                click: () => appendFontFamily(input, font),
-            });
-        }
+// 当前打开的字体选择浮层(同一时间只有一个)
+let fontPanel: HTMLElement | null = null;
+let fontPanelDismiss: (() => void) | null = null;
+
+function closeFontPanel(): void {
+    if (fontPanelDismiss) {
+        document.removeEventListener("mousedown", fontPanelDismiss, true);
+        document.removeEventListener("keydown", fontPanelDismiss, true);
+        fontPanelDismiss = null;
     }
+    fontPanel?.remove();
+    fontPanel = null;
+}
+
+/** 自绘字体选择浮层:搜索框 + 滚动列表(系统字体几百个,思源 Menu 装不下也没搜索)。
+ *  点击字体项追加到输入框;点击浮层外或 Esc 关闭。 */
+function showFontPanel(input: HTMLInputElement, btn: HTMLElement, families: string[]): void {
+    closeFontPanel();
+    const panel = h("div", "syfe-es__fontpanel");
+    const filter = document.createElement("input");
+    filter.className = "b3-text-field";
+    filter.type = "text";
+    filter.placeholder = `搜索字体(${families.length})…`;
+    const listEl = h("div", "syfe-es__fontlist");
+    const render = () => {
+        const kw = filter.value.trim().toLowerCase();
+        listEl.innerHTML = "";
+        const hit = families.filter(f => !kw || f.toLowerCase().includes(kw));
+        for (const fam of hit.slice(0, 500)) {
+            const item = h("div", "b3-list-item b3-list-item--narrow syfe-es__fontitem", fam);
+            // 用该字体自身渲染,所见即所得
+            item.style.fontFamily = `"${fam}", monospace`;
+            item.addEventListener("click", () => {
+                appendFontFamily(input, fam);
+                closeFontPanel();
+            });
+            listEl.appendChild(item);
+        }
+        if (!hit.length) listEl.appendChild(h("div", "syfe-es__fontempty", "无匹配字体"));
+    };
+    filter.addEventListener("input", render);
+    render();
+    panel.appendChild(filter);
+    panel.appendChild(listEl);
+    document.body.appendChild(panel);
+
+    // 定位:按钮下方,右缘对齐按钮(窄屏时左移防溢出)
     const rect = btn.getBoundingClientRect();
-    menu.open({x: rect.left, y: rect.bottom + 4});
+    const width = 300;
+    panel.style.top = `${rect.bottom + 4}px`;
+    panel.style.left = `${Math.max(8, rect.right - width)}px`;
+
+    fontPanel = panel;
+    const dismiss = (e: Event) => {
+        if (panel.contains(e.target as Node)) return;
+        if (e.target === btn) return;
+        closeFontPanel();
+    };
+    // 用同一个函数做 Esc/外点双职责:keydown 时检查 key
+    const handler = (e: Event) => {
+        if (e instanceof KeyboardEvent) {
+            if (e.key === "Escape") {
+                e.stopPropagation();
+                closeFontPanel();
+            }
+            return;
+        }
+        dismiss(e);
+    };
+    fontPanelDismiss = handler;
+    // 延迟到当前点击事件派发完再挂监听,否则本次点击会立即关掉面板
+    setTimeout(() => {
+        document.addEventListener("mousedown", handler, true);
+        document.addEventListener("keydown", handler, true);
+    }, 0);
+    filter.focus();
+}
+
+/** 点击"+"弹出字体选择浮层 */
+function openFontPicker(input: HTMLInputElement, btn: HTMLElement): void {
+    if (fontPanel) {
+        closeFontPanel();
+        return;
+    }
+    // queryLocalFonts 需要用户手势+页面可见:调用发生在 click handler 同步起点 ✓
+    void loadFontFamilies().then(families => showFontPanel(input, btn, families));
 }
 
 // ---------- 单个设置项 ----------
@@ -184,12 +267,8 @@ function buildRow(d: SettingDef): {row: HTMLElement; sync: () => void} {
         }
         if (d.fontPicker) {
             // 字体族:输入框尾部加"+"按钮,弹出系统已安装字体列表选中追加
-            const wrap = h("div", "b3-form__group");
-            wrap.style.display = "flex";
-            wrap.style.alignItems = "center";
-            wrap.style.gap = "4px";
-            wrap.style.flex = "1";
-            input.style.flex = "1";
+            // 布局交给 .syfe-es__fontwrap(与其他控件一致收窄、右对齐)
+            const wrap = h("div", "syfe-es__fontwrap");
             const btn = document.createElement("button");
             btn.type = "button";
             btn.className = "b3-button b3-button--text";
