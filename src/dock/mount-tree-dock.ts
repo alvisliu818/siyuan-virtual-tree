@@ -338,7 +338,8 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
             // 排序设置、拖拽顺序(customOrder)、折叠状态(collapsed)——都存在 editor 配置里。
             let relationRoots: RelationNode[] = [];
             let relationLoaded = false;
-            let relationBuilding = false;
+            let relationBuilding = false;      // 首次构建期间(占位"加载中")
+            let relationRefreshing = false;    // force 重建期间(保留旧树静默进行)
             // 展开状态:优先用持久化的 collapsed 计算;运行期改动写回配置
             let relExpanded = new Set<string>();
             // 「聚焦当前文档」:只看该文档的后代树
@@ -794,7 +795,9 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 }
             };
 
-            // 建树(带并发去重):开关关闭时清空并标记未加载
+            // 建树(带并发去重):开关关闭时清空并标记未加载。
+            // 只有**首次**构建才占位"加载中";force 重建保留旧树静默进行,完成后一次性替换
+            // (此前重建期间整树回退"加载中"再重载,是面板闪烁的来源之一)。
             const ensureRelationTree = (force = false) => {
                 if (!relationEnabled()) {
                     relationRoots = [];
@@ -802,16 +805,20 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                     relExpanded = new Set();
                     return;
                 }
-                if ((relationLoaded && !force) || relationBuilding) return;
-                relationBuilding = true;
-                // 先占位渲染"加载中",避免用户干等
-                self._rows = [];
-                render();
+                if ((relationLoaded && !force) || relationBuilding || relationRefreshing) return;
+                if (!relationLoaded) {
+                    // 首次构建:先占位渲染"加载中",避免用户干等
+                    relationBuilding = true;
+                    self._rows = [];
+                    render();
+                }
+                relationRefreshing = true;
                 void buildRelationForest(relCfg(), mountedDocIds())
                     .then((roots) => {
                         relationRoots = roots;
                         relationLoaded = true;
                         relationBuilding = false;
+                        relationRefreshing = false;
                         syncExpandedFromConfig();
                         // 配置里没记录过折叠态(首次开启)时,按默认展开层级初始化
                         if (relCfg().defaultExpandLevel !== 0 && (relCfg().collapsed || []).length === 0) {
@@ -823,6 +830,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                         relationRoots = [];
                         relationLoaded = true;
                         relationBuilding = false;
+                        relationRefreshing = false;
                         render();
                     });
             };
@@ -950,6 +958,34 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 if (item.kind === "notebook") return "d:sydoc://nb/" + item.targetId;
                 if (item.kind === "doc") return "d:sydoc://" + item.targetId;
                 return "b:" + item.targetId;
+            };
+
+            // 子项缓存键 → 加载器(与 rowChildSource/autoLoader 同一套原语;静默刷新用)
+            const loaderForKey = (key: string): (() => Promise<DirEntry[] | BlockNode[]>) | null => {
+                if (key.startsWith("d:sydoc://")) return () => virtualListDir(key.slice(2));
+                if (key.startsWith("b:")) return () => listChildBlocks(key.slice(2));
+                if (key.startsWith("f:")) return () => readDir(key.slice(2));
+                return null;
+            };
+
+            // 静默刷新:重取"已展开"的子项列表,内容有变化的键才更新缓存。
+            // 返回是否有变化。数据没变就不重绘 —— 否则每次 switch-protyle(切文档防抖后必触发
+            // syfe:files-changed)都清缓存全量重绘,整棵树回退「加载中」再重载,看起来就是面板时不时闪烁。
+            const silentRefreshExpanded = async (): Promise<boolean> => {
+                const jobs: Promise<void>[] = [];
+                let changed = false;
+                for (const key of Array.from(self._expanded!)) {
+                    const loader = loaderForKey(key);
+                    if (!loader || !self._cache!.has(key)) continue; // 尚未加载过的键,展开时自然取
+                    jobs.push(loader().then((list) => {
+                        if (JSON.stringify(self._cache!.get(key)) !== JSON.stringify(list)) {
+                            self._cache!.set(key, list);
+                            changed = true;
+                        }
+                    }).catch(() => { }));
+                }
+                await Promise.all(jobs);
+                return changed;
             };
 
             // 三类自动子项的扁平渲染
@@ -1459,7 +1495,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                         subtitle = it.path;
                         load = it.isDir
                             ? () => findDirBacklinks(it.path!)
-                            : () => findBacklinks(it.path);
+                            : () => findBacklinks(it.path!);
                     } else if (it.kind === "notebook" && it.targetId) {
                         subtitle = `笔记本 ${it.targetId}`;
                         load = () => findSiyuanRefBacklinks(it.targetId!, it.targetId);
@@ -1981,19 +2017,28 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
             this._toolbarRO = toolbarRO;
 
             // 挂载结构变化(任意入口挂载/取消)时自动重绘。
-            // 关系树的根就是挂载的思源文档,所以挂载一变,根集合也变了,必须重建(不只是重绘)。
+            // 关系树的根就是挂载的思源文档,所以挂载一变,根集合也变了,必须重建(不只是重绘):
+            // 挂载结构先画出来(不等 SQL),关系树随后静默重建、完成后补渲染一次
             const changedHandler = () => {
+                render();
                 if (relationEnabled()) ensureRelationTree(true);
-                else render();
             };
             this._changedHandler = changedHandler;
             window.addEventListener(MOUNT_TREE_CHANGED_EVENT, changedHandler);
 
-            // 文件系统变动(重命名/删除/新建/粘贴等,来自 refreshFileTrees)→ 清缓存并重绘,
-            // 让复用文件树菜单做完操作后,虚拟文档树里的文件/文件夹列表同步更新
+            // 文件系统/文档结构变动(来自 refreshFileTrees;switch-protyle 切文档防抖后也会派发)
+            // → 静默刷新已展开的子项列表:数据有变化才重绘;数据没变但"当前文档"高亮变了
+            //   也补一次轻量重绘(内容不变、无加载帧,不闪)。
+            // 不再清空全部缓存全量重绘 —— 否则每次切文档整棵树回退"加载中"再重载,
+            // 看起来就是面板时不时闪烁。手动刷新按钮仍是全量清缓存重绘。
+            let lastHighlightKey: string | null = null;
             const filesChangedHandler = () => {
-                self._cache = new Map<string, DirEntry[] | BlockNode[]>();
-                render();
+                void silentRefreshExpanded().then((changed) => {
+                    const hk = (currentDocRootId() || "") + "|" + (currentFilePath() || "");
+                    const highlightMoved = lastHighlightKey !== null && hk !== lastHighlightKey;
+                    lastHighlightKey = hk;
+                    if (changed || highlightMoved) render();
+                });
             };
             this._filesChangedHandler = filesChangedHandler;
             window.addEventListener("syfe:files-changed", filesChangedHandler);
@@ -2022,8 +2067,9 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 if (!relationEnabled()) return;
                 if (relationTimer) window.clearTimeout(relationTimer);
                 relationTimer = window.setTimeout(() => {
-                    relationLoaded = false;
-                    ensureRelationTree();
+                    // 不重置 relationLoaded:ensureRelationTree(true) 会保留旧树静默重建
+                    // (置 false 会让重建期间整树回退"加载中"再重载,即闪烁)
+                    ensureRelationTree(true);
                 }, 1500);
             };
             this._relationRebuildHandler = relationRebuildHandler;
