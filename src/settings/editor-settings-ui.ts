@@ -25,6 +25,7 @@ import {
     removeUserValue,
     setUserValue,
 } from "./user-settings";
+import {enumFontFamiliesViaFs} from "./fonts-enum";
 
 // 每个控件的"从设置回读"函数,供外部(settings.json 保存后)统一刷新
 const syncFns: Array<() => void> = [];
@@ -55,13 +56,14 @@ function fromControlText(d: SettingDef, text: string): any {
 
 // ---------- 字体族"+"选择器 ----------
 
-// 回退候选:queryLocalFonts 不可用(权限被拒/页面不可见)时,
+// 回退候选:Node 枚举与 queryLocalFonts 都不可用时,
 // 用 canvas 测宽从这份常见清单里探测(测不出没进清单的字体,聊胜于无)。
 const FONT_CANDIDATES: string[] = [
     "Consolas", "Cascadia Code", "Cascadia Mono", "Courier New", "Lucida Console",
     "JetBrains Mono", "Fira Code", "Fira Mono", "Source Code Pro", "IBM Plex Mono",
     "Roboto Mono", "Ubuntu Mono", "DejaVu Sans Mono", "Inconsolata", "Hack",
-    "Victor Mono", "Iosevka", "Maple Mono", "LXGW WenKai Mono", "霞鹜文楷 等宽",
+    "Victor Mono", "Iosevka", "Maple Mono", "LXGW WenKai", "LXGW WenKai Mono",
+    "霞鹜文楷", "霞鹜文楷等宽",
     "Sarasa Mono SC", "Sarasa Term SC", "更纱黑体 Mono", "Menlo", "Monaco",
     "SF Mono", "Andale Mono", "Liberation Mono", "Noto Sans Mono", "Noto Sans Mono CJK SC",
     "Microsoft YaHei Mono", "微软雅黑", "等线", "黑体", "宋体",
@@ -91,8 +93,10 @@ function detectInstalledFonts(): string[] {
     }
 }
 
-/** 枚举系统全部字体族。优先 Local Font Access API(真实全量,须在用户手势内、页面可见);
- *  被拒/不可用则回退 canvas 探测候选清单。 */
+/** 枚举系统全部字体族,三级兜底:
+ *  1. queryLocalFonts(浏览器全量 API,但思源 Electron 未放行 local-fonts 权限,基本必拒——留给未来)
+ *  2. Node 侧解析字体文件 name 表(真实全量,不受权限/可见性限制,主力)
+ *  3. canvas 测宽探测候选清单(非 node 环境的最后防线) */
 async function loadFontFamilies(): Promise<string[]> {
     try {
         const qlf = (window as any).queryLocalFonts as (() => Promise<Array<{family: string}>>) | undefined;
@@ -102,7 +106,13 @@ async function loadFontFamilies(): Promise<string[]> {
             if (fams.length) return fams.sort((a, b) => a.localeCompare(b, "zh-Hans-CN"));
         }
     } catch {
-        // SecurityError(页面不可见/权限被拒) → 走回退
+        // SecurityError(Electron 权限未放行/页面不可见) → 下一级
+    }
+    try {
+        const fams = await enumFontFamiliesViaFs();
+        if (fams.length) return fams;
+    } catch {
+        // node 模块不可用/解析失败 → 下一级
     }
     return detectInstalledFonts().sort((a, b) => a.localeCompare(b, "zh-Hans-CN"));
 }
