@@ -33,7 +33,7 @@ import {BacklinkItem, findBacklinks, findDirBacklinks, findSiyuanRefBacklinks} f
 import {showDocMenu, showNotebookMenu, addPinFavEntries, DocMenuItem} from "../components/doc-menu";
 import {openSiyuanTagDialog} from "../components/siyuan-tag-dialog";
 import {openFileTab, syncOpenEditors} from "../tabs/editor-tab";
-import {mountPayload, promptMountPathDialog, showMountTargetMenu} from "../components/mount-menu";
+import {mountPayload, promptMountPathDialog, showMountTargetMenu, ensureTargetMountItem} from "../components/mount-menu";
 import {
     getRoots,
     removeMountItem,
@@ -171,10 +171,10 @@ export interface IPluginForMountTree {
 type Row =
     | {kind: "mount"; uid: string; depth: number; expanded: boolean; hasChildren: boolean; item: MountItem}
     | {kind: "file"; path: string; name: string; isDir: boolean; depth: number; expanded: boolean}
-    | {kind: "doc"; docId: string; name: string; depth: number; expanded: boolean; icon?: string; subFileCount?: number}
+    | {kind: "doc"; docId: string; name: string; depth: number; expanded: boolean; icon?: string; subFileCount?: number; ownerUid?: string}
     // 自动挂载行:引用子层级(引用的文档 + 物理子文档),与挂载行同款渲染与行为
     | {kind: "auto"; docId: string; name: string; hpath: string; depth: number; expanded: boolean; hasChildren: boolean; parentDocId: string; subFileCount?: number}
-    | {kind: "block"; blockId: string; name: string; depth: number; expanded: boolean}
+    | {kind: "block"; blockId: string; name: string; depth: number; expanded: boolean; ownerUid?: string}
     | {kind: "empty"; depth: number}
     | {kind: "loading"; depth: number};
 
@@ -972,8 +972,9 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 }
             };
 
-            // 思源文档/笔记本下的子文档(按虚拟路径 sydoc://… 缓存;笔记本根是 sydoc://nb/<id>)
-            const emitDocs = (vPath: string, depth: number, out: Row[]): void => {
+            // 思源文档/笔记本下的子文档(按虚拟路径 sydoc://… 缓存;笔记本根是 sydoc://nb/<id>)。
+            // ownerUid = 这些行所属的挂载节点(虚拟文档行不是挂载项,右键嵌套挂载时要用它定位宿主)
+            const emitDocs = (vPath: string, depth: number, out: Row[], ownerUid?: string): void => {
                 const key = "d:" + vPath;
                 const kids = self._cache!.get(key) as DirEntry[] | undefined;
                 if (!kids) {
@@ -990,13 +991,13 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                     // icon/subFileCount 来自 listDocsByPath,用于渲染思源文档树同款图标
                     out.push({
                         kind: "doc", docId: virtualId(childPath), name: String(e.name), depth, expanded: ex,
-                        icon: e.icon, subFileCount: e.subFileCount,
+                        icon: e.icon, subFileCount: e.subFileCount, ownerUid,
                     });
-                    if (ex) emitDocs(childPath, depth + 1, out);
+                    if (ex) emitDocs(childPath, depth + 1, out, ownerUid);
                 }
             };
 
-            const emitBlocks = (blockId: string, depth: number, out: Row[]): void => {
+            const emitBlocks = (blockId: string, depth: number, out: Row[], ownerUid?: string): void => {
                 const key = "b:" + blockId;
                 const kids = self._cache!.get(key) as BlockNode[] | undefined;
                 if (!kids) {
@@ -1009,8 +1010,8 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 }
                 for (const b of kids) {
                     const ex = self._expanded!.has("b:" + b.id);
-                    out.push({kind: "block", blockId: b.id, name: blockTitle(b.content, b.type), depth, expanded: ex});
-                    if (ex) emitBlocks(b.id, depth + 1, out);
+                    out.push({kind: "block", blockId: b.id, name: blockTitle(b.content, b.type), depth, expanded: ex, ownerUid});
+                    if (ex) emitBlocks(b.id, depth + 1, out, ownerUid);
                 }
             };
 
@@ -1117,10 +1118,10 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                     else if (item.kind === "doc") {
                         // 引用配置开启:子项 = 自动挂载行(引用文档 + 物理子文档);关闭:回退为仅子文档
                         if (relationEnabled()) emitAutoLevel(item.targetId!, findRelationNode(relationRoots, item.targetId!)?.children || [], depth + 1, rows);
-                        else emitDocs("sydoc://" + item.targetId!, depth + 1, rows);
+                        else emitDocs("sydoc://" + item.targetId!, depth + 1, rows, item.uid);
                     }
-                    else if (item.kind === "notebook") emitDocs("sydoc://nb/" + item.targetId!, depth + 1, rows);
-                    else if (item.kind === "block") emitBlocks(item.targetId!, depth + 1, rows);
+                    else if (item.kind === "notebook") emitDocs("sydoc://nb/" + item.targetId!, depth + 1, rows, item.uid);
+                    else if (item.kind === "block") emitBlocks(item.targetId!, depth + 1, rows, item.uid);
                 };
                 for (const r of getRoots()) walk(r, 0);
                 return rows;
@@ -1511,46 +1512,52 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
 
             // 面板内挂载入口(挂到顶层,或挂到右键命中的那个挂载节点下)。
             // 返回菜单项描述,供空白处菜单直接 addItem,也供文档/笔记本菜单的 extra 追加。
-            const mountMenuItems = (parentUid: string | null, where: string): DocMenuItem[] => [
-                {
-                    icon: "iconFile",
-                    label: `挂载思源文档/笔记本…${where}`,
-                    click: () => {
-                        pickMountTargetDialog(where ? `挂载到「${where}」` : "挂载思源文档/笔记本到虚拟文档树", (vPath, label) => {
-                            // 「启用顶层笔记本文档」时笔记本自己就是一篇文档(id 相同)→
-                            // 挂载它等价于挂载那篇文档;否则仍按笔记本容器挂载。
-                            const isNb = isNotebookRoot(vPath);
-                            const kind = isNb && !isBoxDocEnabled() ? "notebook" : "doc";
-                            void mountPayload(plugin, {kind, name: label, targetId: virtualId(vPath)}, parentUid);
-                        });
+            // parentUid 可传解析函数:虚拟文档/块行不是挂载项(没有 uid),点击时才解析出
+            // 它对应的挂载项(复用或自动创建),见 ensureTargetMountItem。
+            const mountMenuItems = (parentUid: string | null | (() => Promise<string | null>), where: string): DocMenuItem[] => {
+                const uidOf = async (): Promise<string | null> =>
+                    typeof parentUid === "function" ? await parentUid() : parentUid;
+                return [
+                    {
+                        icon: "iconFile",
+                        label: `挂载思源文档/笔记本…${where}`,
+                        click: () => {
+                            pickMountTargetDialog(where ? `挂载到「${where}」` : "挂载思源文档/笔记本到虚拟文档树", (vPath, label) => {
+                                // 「启用顶层笔记本文档」时笔记本自己就是一篇文档(id 相同)→
+                                // 挂载它等价于挂载那篇文档;否则仍按笔记本容器挂载。
+                                const isNb = isNotebookRoot(vPath);
+                                const kind = isNb && !isBoxDocEnabled() ? "notebook" : "doc";
+                                void uidOf().then(uid => mountPayload(plugin, {kind, name: label, targetId: virtualId(vPath)}, uid));
+                            });
+                        },
                     },
-                },
-                {
-                    icon: "iconFolder",
-                    label: `挂载文件/文件夹…${where}`,
-                    click: () => {
-                        promptMountPathDialog(where ? `挂载到「${where}」` : "挂载文件/文件夹到虚拟文档树", (p, isDir, name) => {
-                            void mountPayload(plugin, {kind: "file", name, path: p, isDir}, parentUid);
-                        });
+                    {
+                        icon: "iconFolder",
+                        label: `挂载文件/文件夹…${where}`,
+                        click: () => {
+                            promptMountPathDialog(where ? `挂载到「${where}」` : "挂载文件/文件夹到虚拟文档树", (p, isDir, name) => {
+                                void uidOf().then(uid => mountPayload(plugin, {kind: "file", name, path: p, isDir}, uid));
+                            });
+                        },
                     },
-                },
-                // 百度网盘目录(readDir 原生支持 bdpan:// 路径,挂完可直接逐级列目录)
-                {
-                    icon: "iconCloud",
-                    label: `挂载百度网盘…${where}`,
-                    click: () => {
-                        openBaiduPanDialog({
-                            title: where ? `挂载百度网盘到「${where}」` : "挂载百度网盘到虚拟文档树",
-                            onPicked: (vPath: string, label: string) => {
-                                void mountPayload(plugin, {kind: "file", name: label, path: vPath, isDir: true}, parentUid);
-                            },
-                        });
+                    // 百度网盘目录(readDir 原生支持 bdpan:// 路径,挂完可直接逐级列目录)
+                    {
+                        icon: "iconCloud",
+                        label: `挂载百度网盘…${where}`,
+                        click: () => {
+                            openBaiduPanDialog({
+                                title: where ? `挂载百度网盘到「${where}」` : "挂载百度网盘到虚拟文档树",
+                                onPicked: (vPath: string, label: string) => {
+                                    void uidOf().then(uid => mountPayload(plugin, {kind: "file", name: label, path: vPath, isDir: true}, uid));
+                                },
+                            });
+                        },
                     },
-                },
-            ];
+                ];
+            };
 
             // 把挂载入口项追加到自建菜单(空白处右键用,前面补一条分隔线)
-            const appendMountItems = (menu: Menu, parentUid: string | null, where: string) => {
+            const appendMountItems = (menu: Menu, parentUid: string | null | (() => Promise<string | null>), where: string) => {
                 menu.addSeparator();
                 for (const it of mountMenuItems(parentUid, where)) menu.addItem(it as any);
             };
@@ -1723,7 +1730,15 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                                 label: "标签…",
                                 click: () => openSiyuanTagDialog(row.docId, row.name),
                             },
-                            ...mountMenuItems(null, ""),
+                            // 虚拟文档行不是挂载项:挂载入口先解析出它对应的挂载项
+                            // (已有同目标挂载复用;否则自动挂到其所属挂载节点下并展开),再挂到它下面
+                            ...mountMenuItems(async () => {
+                                const r = await ensureTargetMountItem(plugin, "doc", row.docId, row.name, row.ownerUid ?? null);
+                                if (r?.created) {
+                                    self._expanded!.add(autoKeyOf(r.item)); // 新建的挂载行自动展开,直接看到刚挂进去的内容
+                                }
+                                return r ? r.item.uid : null;
+                            }, `「${row.name}」下`),
                         ],
                     });
                     return;
@@ -1736,7 +1751,14 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                         label: "文档标签…",
                         click: () => openSiyuanTagDialog(row.blockId, row.name),
                     });
-                    appendMountItems(menu, null, "");
+                    // 虚拟块行同虚拟文档行:先解析出块对应的挂载项再嵌套挂载
+                    appendMountItems(menu, async () => {
+                        const r = await ensureTargetMountItem(plugin, "block", row.blockId, row.name, row.ownerUid ?? null);
+                        if (r?.created) {
+                            self._expanded!.add(autoKeyOf(r.item));
+                        }
+                        return r ? r.item.uid : null;
+                    }, `「${row.name}」下`);
                     menu.open({x: e.clientX, y: e.clientY});
                 }
             };

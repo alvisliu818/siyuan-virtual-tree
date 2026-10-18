@@ -5,7 +5,7 @@
 // 注意:本文件**不要 import ./file-tree**(它 import 了本文件,会成环);
 // 需要「挂载思源文档…」选择器的地方(mount-tree-dock)直接引 file-tree 的 pickMountTargetDialog。
 import {Menu, Dialog, showMessage} from "siyuan";
-import {addMountItem, listMountTargets, hasMounted, MountKind} from "../mount-tree";
+import {addMountItem, listMountTargets, hasMounted, getRoots, MountItem, MountKind} from "../mount-tree";
 import {readDir} from "../api/file";
 import {basename, dirname} from "../utils/path";
 import {showOpenDialog} from "../utils/open-dialog";
@@ -52,6 +52,35 @@ export function addMountMenuItem(menu: Menu, plugin: any, payload: MountPayload)
         label: "挂载到虚拟文档树",
         submenu: targetItems(plugin, payload),
     });
+}
+
+// 在虚拟文档/块行下嵌套挂载的前置步骤:该行只是思源数据的展示行,**不是挂载项**
+// (没有 uid,挂载子项挂不住),必须先确保树上存在它对应的文档/块挂载项——
+// 树上已有同目标挂载(任意位置)直接复用;否则自动把该目标挂到它展示所在的挂载节点
+// (ownerUid)下,思路同「固定为手动挂载项」:树上会多一条挂载行,与原虚拟行并存
+// (本插件挂载行与引用/自动行设计上不去重)。
+// 返回挂载项与是否新建;树上没有且 ownerUid 为空时返回 null(调用方退回顶层挂载)。
+export async function ensureTargetMountItem(
+    plugin: any,
+    kind: "doc" | "block",
+    targetId: string,
+    name: string,
+    ownerUid: string | null,
+): Promise<{item: MountItem; created: boolean} | null> {
+    // 深度优先找同目标挂载项(直接返回值,不用外层变量——闭包赋值会被 TS 窄化坑)
+    const walk = (list: MountItem[]): MountItem | null => {
+        for (const it of list) {
+            if (it.kind === kind && it.targetId === targetId) return it;
+            const hit = walk(it.children || []);
+            if (hit) return hit;
+        }
+        return null;
+    };
+    const found = walk(getRoots());
+    if (found) return {item: found, created: false};
+    if (!ownerUid) return null;
+    const item = await addMountItem(plugin, {kind, name, targetId}, ownerUid);
+    return item ? {item, created: true} : null;
 }
 
 // 独立弹出挂载位置选择菜单
