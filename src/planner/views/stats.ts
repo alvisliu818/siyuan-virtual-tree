@@ -29,7 +29,12 @@ export function renderStatsView(ctx: ViewCtx): void {
     const checkins = habits.reduce((s, h) => s + habitTotalCheckins(h.id), 0);
     const bestStreak = habits.reduce((m, h) => Math.max(m, habitBestStreak(h)), 0);
 
-    container.innerHTML = `
+    // 与 timer 视图同理:监听挂在一次性 root 上,不挂 ctx.container(它是 Tab 的常驻节点,
+    // 每渲染一次挂一遍就会累积)。
+    container.innerHTML = "";
+    const root = document.createElement("div");
+    root.className = "syfe-pl__viewroot";
+    root.innerHTML = `
         <div class="syfe-pl__toolbar">
             <span class="syfe-pl__seg">
                 ${[7, 14, 30].map(d => `<span class="syfe-pl__segitem${days === d ? " is-active" : ""}" data-days="${d}">近 ${d} 天</span>`).join("")}
@@ -100,14 +105,16 @@ export function renderStatsView(ctx: ViewCtx): void {
             <div class="syfe-pl__panelhead">本周习惯完成占比</div>
             <div class="syfe-pl__weekring">${renderWeekRing()}</div>
         </div>`;
+    container.appendChild(root);
 
-    container.addEventListener("click", (ev) => {
+    root.addEventListener("click", (ev) => {
         const target = ev.target as HTMLElement;
         const d = target.dataset.days;
         if (!d) return;
+        // 跨度记在常驻容器上 —— root 每次重建会被丢弃,存它那里等于白点
         container.dataset.days = d;
         renderStatsView(ctx);
-    }, {once: true});
+    });
 }
 
 function kpi(label: string, value: string): string {

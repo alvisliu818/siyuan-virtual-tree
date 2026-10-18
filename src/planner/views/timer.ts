@@ -26,7 +26,13 @@ export function renderTimerView(ctx: ViewCtx): void {
     const snap = timerSnapshot();
     const cfg = getSettings();
 
-    container.innerHTML = `
+    // 所有监听都绑在这个一次性 root 上,而不是 ctx.container ——
+    // container 是 Tab 的常驻节点,每渲染一次挂一遍就会导致切走再切回来时监听器叠加
+    // (点「开始」会触发多次 toggle)。其它视图挂的是自己新建的子节点,不受影响。
+    container.innerHTML = "";
+    const root = document.createElement("div");
+    root.className = "syfe-pl__viewroot";
+    root.innerHTML = `
         <div class="syfe-pl__timerwrap">
             <div class="syfe-pl__seg syfe-pl__modeseg">
                 ${(["pomodoro", "stopwatch", "countdown"] as TimerMode[]).map(m =>
@@ -80,9 +86,10 @@ export function renderTimerView(ctx: ViewCtx): void {
 
             <div class="syfe-pl__todaylog" data-role="log"></div>
         </div>`;
+    container.appendChild(root);
 
     // —— 事件绑定(只绑一次,不随 tick 重建) ——
-    container.addEventListener("click", (ev) => {
+    root.addEventListener("click", (ev) => {
         const target = ev.target as HTMLElement;
         const mode = target.dataset.mode;
         if (mode) {
@@ -107,19 +114,19 @@ export function renderTimerView(ctx: ViewCtx): void {
             renderTimerView(ctx);
         }
     });
-    container.querySelector("[data-role='cdmin']")?.addEventListener("change", (ev) => {
+    root.querySelector("[data-role='cdmin']")?.addEventListener("change", (ev) => {
         const min = Number((ev.target as HTMLInputElement).value) || 1;
         setCountdownMinutes(min);
         patchTimerView(container);
     });
     const rebind = () => {
-        const habitSel = container.querySelector("[data-role='habit']") as HTMLSelectElement | null;
-        const taskSel = container.querySelector("[data-role='task']") as HTMLSelectElement | null;
+        const habitSel = root.querySelector("[data-role='habit']") as HTMLSelectElement | null;
+        const taskSel = root.querySelector("[data-role='task']") as HTMLSelectElement | null;
         bindTimerTarget({habitId: habitSel?.value || undefined, taskId: taskSel?.value || undefined});
         patchTimerView(container);
     };
-    container.querySelector("[data-role='habit']")?.addEventListener("change", rebind);
-    container.querySelector("[data-role='task']")?.addEventListener("change", rebind);
+    root.querySelector("[data-role='habit']")?.addEventListener("change", rebind);
+    root.querySelector("[data-role='task']")?.addEventListener("change", rebind);
 
     patchTimerView(container);
 }
