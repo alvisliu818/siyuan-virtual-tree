@@ -7,6 +7,8 @@ import {
     TAG_DOCK_TYPE,
     MOUNT_TREE_DOCK_TYPE,
     TERMINAL_DOCK_TYPE,
+    PLANNER_DOCK_TYPE,
+    PLANNER_TAB_TYPE,
 } from "./constants";
 import {EditorConfig, DEFAULT_CONFIG} from "./types";
 import {setupMonaco, applyTheme, getCurrentMode, disposeMonaco} from "./editor/monaco";
@@ -20,8 +22,11 @@ import {createNotebookTabConfig} from "./tabs/notebook-tab";
 import {createDiffTabConfig} from "./tabs/diff-tab";
 import {createStartTabConfig, openStartTab, installNewTabHijack} from "./tabs/start-tab";
 import {createTerminalTabConfig, openTerminalTab} from "./tabs/terminal-tab";
+import {createPlannerTabConfig, disposePlannerUI, openPlannerTab} from "./tabs/planner-tab";
 import {createRecentDockConfig} from "./dock/recent-dock";
 import {createTagDockConfig} from "./dock/tag-dock";
+import {createPlannerDockConfig} from "./dock/planner-dock";
+import {openPlannerSettingsDialog} from "./planner/dialogs";
 import {createSearchTabConfig, openSearchTab} from "./components/search-panel";
 import {loadConfig, saveConfig} from "./utils/config";
 import {
@@ -51,6 +56,8 @@ import {setTrashMode} from "./utils/trash";
 import {openTrashDialog} from "./components/trash-dialog";
 import {loadRecents, addRecent, addRecentDoc, flushRecents, reloadRecentsIfChanged} from "./recent-files";
 import {loadStartPage, itemFromPath, itemFromDoc, toggleInGroup} from "./start-page";
+import {flushPlanner, loadPlanner} from "./planner/store";
+import {initPlannerTimer} from "./planner/timer";
 import {isVirtualPath, virtualId, initMountStore, getMountList, dropSyDocMounts} from "./utils/virtual-tree";
 import {initBaiduPanStore} from "./api/baidu-pan";
 import {openBaiduPanDialog} from "./components/baidu-pan-dialog";
@@ -196,6 +203,7 @@ export default class FileEditorPlugin extends Plugin {
         // 当前代码会注册的 dock type;文件 dock 即使默认不注册也保留(设置里可开)
         const registered = [
             DOCK_TYPE, RECENT_DOCK_TYPE, TAG_DOCK_TYPE, MOUNT_TREE_DOCK_TYPE, TERMINAL_DOCK_TYPE,
+            PLANNER_DOCK_TYPE,
         ];
         // 本插件用过的旧名字(改名前的命名空间,整个都该清)
         const legacyNames = ["siyuan-file-editor"];
@@ -276,6 +284,9 @@ export default class FileEditorPlugin extends Plugin {
         window.addEventListener("beforeunload", () => {
             try { disposeAllKernelsSync(); } catch { /* ignore */ }
             try { stopPythonLanguageServer(); } catch { /* ignore */ }
+            // 习惯与目标的数据落盘是防抖的(400ms),关窗时把没写完的那部分补上。
+            // 计时器只存了启动时刻,就算这里没落盘也丢不了多少 —— 主要是别丢刚打的卡。
+            try { flushPlanner(); } catch { /* ignore */ }
         });
         // 启动即加载持久化的内核选择。之前只有笔记本 Tab 会调 loadKernelChoices,
         // 代码块路径直接 getKernel(docKey) → choices 还是空的 → 永远拿到内置内核,
@@ -332,6 +343,8 @@ export default class FileEditorPlugin extends Plugin {
         // 版本比较页签(历史版本 ↔ 当前内容,或两个历史版本互比)
         this.addTab(asSiyuanCustom(createDiffTabConfig(this as any)));
         this.addTab(asSiyuanCustom(createTerminalTabConfig(this as any)));
+        // 「习惯 · 目标 · 打卡 · 计时 · 任务 · 待办 · 倒数日」面板(数据与导航见 src/planner/)
+        this.addTab(asSiyuanCustom(createPlannerTabConfig(this as any)));
 
         // 注册 Dock
         // 注:「文件」面板默认**不注册**(能力已由「虚拟文档树」面板承接);
@@ -344,6 +357,8 @@ export default class FileEditorPlugin extends Plugin {
         this.addDockOnce(createMountTreeDockConfig(this as any));
         // 侧边栏「终端」面板(复用终端 Tab 的 xterm 实现,常驻底部,与终端 Tab 互相独立)
         this.addDockOnce(createTerminalDockConfig(this as any));
+        // 侧边栏「习惯与目标」面板(今日速览;完整管理走 PLANNER_TAB_TYPE)
+        this.addDockOnce(createPlannerDockConfig(this as any));
 
         // 注册思源编辑器斜杆命令(输入 /file 或 /文件 插入文件链接)
         registerSlashCommands(this, () => this.getFileTreeRoot());
@@ -389,6 +404,13 @@ export default class FileEditorPlugin extends Plugin {
             langKey: "openTerminal",
             hotkey: "⌃`",
             callback: () => this.openTerminal(this.getFileTreeRoot()),
+        });
+
+        // 命令:打开「习惯与目标」面板
+        this.addCommand({
+            langKey: "openPlanner",
+            hotkey: "",
+            callback: () => openPlannerTab(this as any),
         });
 
         // 顶栏图标:扩展市场(自定义拼图 SVG,currentColor 自适应工具栏配色)
@@ -479,6 +501,14 @@ export default class FileEditorPlugin extends Plugin {
             await loadStartPage(this);
         } catch (e) {
             console.error("[siyuan-file-editor] 加载新标签页数据失败:", e);
+        }
+        // 加载「习惯与目标」数据(习惯/目标/任务/倒数日/专注记录,存 planner.json)。
+        // 必须早于 Dock/Tab 的第一次渲染 —— 它们读的是 store 的内存缓存,晚一步就先画一遍空面板。
+        try {
+            await loadPlanner(this);
+            initPlannerTimer(this);
+        } catch (e) {
+            console.error("[siyuan-file-editor] 加载习惯与目标数据失败:", e);
         }
         // 加载思源文档挂载记录(挂到真实目录下的虚拟条目;Dock 初始化早于此刻,加载后刷新文件树)
         try {
@@ -658,6 +688,15 @@ export default class FileEditorPlugin extends Plugin {
         this.themeObserver?.disconnect();
         // 最近使用防抖落盘:卸载前强制写入,避免丢失防抖窗口内的记录
         void flushRecents();
+        // 习惯与目标:停计时 tick + 落盘。
+        // 计时器的 runningSince 是时间戳,即使这里没写成,下次启动也能按时间戳还原;
+        // 真正不能丢的是刚打完的卡和新建的任务。
+        try {
+            disposePlannerUI();
+            flushPlanner();
+        } catch {
+            // ignore
+        }
     }
 
     // 打开文件编辑 Tab
@@ -836,6 +875,15 @@ export default class FileEditorPlugin extends Plugin {
             openTagManagerDialog(this, () => this.refreshFileTrees());
         });
         addRow("tags", "标签", "管理预设标签(支持嵌套、颜色、图标);在文件树右键条目可打标签,工具栏标签按钮可按标签筛选", tagManageBtn);
+
+        // ---------- 习惯与目标 ----------
+        const plannerBtn = document.createElement("button");
+        plannerBtn.className = "b3-button b3-button--outline";
+        plannerBtn.textContent = "打开设置…";
+        plannerBtn.addEventListener("click", () => {
+            openPlannerSettingsDialog(this);
+        });
+        addRow("planner", "习惯与目标", "番茄时长、自动续接、提示音、周起始日等;也可在侧边栏「习惯与目标」面板的齿轮里打开。数据在 planner.json,另有「载入示例数据 / 清空全部数据」两个入口", plannerBtn);
 
         // ---------- 文件与打开 ----------
         // 自定义打开方式(预置 VS Code / Cursor / Windsurf / 记事本 / 资源管理器,可增删改)

@@ -16,6 +16,8 @@ export const MEDIA_TAB_TYPE = "siyuan-file-editor-media";
 export const START_TAB_TYPE = "siyuan-file-editor-start";
 // Jupyter Notebook(.ipynb)查看与编辑 Tab
 export const NOTEBOOK_TAB_TYPE = "siyuan-file-editor-notebook";
+// 「习惯 · 目标 · 打卡 · 计时 · 任务 · 待办 · 倒数日」全屏面板 Tab
+export const PLANNER_TAB_TYPE = "siyuan-file-editor-planner";
 export const DOCK_TYPE = "siyuan-file-editor-dock";
 // 侧边栏「最近使用」面板(展示最近打开的文件)
 export const RECENT_DOCK_TYPE = "siyuan-file-editor-recent-dock";
@@ -25,6 +27,8 @@ export const TAG_DOCK_TYPE = "siyuan-file-editor-tag-dock";
 export const MOUNT_TREE_DOCK_TYPE = "siyuan-file-editor-mount-tree-dock";
 // 侧边栏「终端」面板(复用终端 Tab 的 xterm + 三后端实现,常驻侧栏底部)
 export const TERMINAL_DOCK_TYPE = "siyuan-file-editor-terminal-dock";
+// 侧边栏「习惯与目标」面板(今日打卡 / 今日待办 / 计时器 / 倒数日速览,点标题进全屏 Tab)
+export const PLANNER_DOCK_TYPE = "siyuan-file-editor-planner-dock";
 
 // Markdown 扩展名(由独立的 Markdown Tab 打开,支持所见即所得/源码双模式)
 export const MARKDOWN_EXTENSIONS = new Set([".md", ".markdown"]);

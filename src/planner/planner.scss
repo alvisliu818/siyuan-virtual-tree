@@ -1,0 +1,1653 @@
+/* ==========================================================================
+ * 习惯与目标(planner):全屏 Tab + 侧边 Dock 共用一套命名空间 .syfe-pl-*
+ *
+ * 约定:
+ * - 颜色一律走思源变量(--b3-*),明暗主题自动适配,不在 CSS 里写死背景/文字色。
+ * - 只有用户自己挑的习惯色、目标色、倒数日色会以内联 hex 传进来
+ *   (统一收在 --pl-color / --pl-cell 这两个自定义属性上),这里是唯一的使用点。
+ * ========================================================================== */
+
+.syfe-planner-tab {
+    overflow: hidden;
+}
+
+.syfe-pl {
+    display: flex;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    box-sizing: border-box;
+
+    /* ---- 左侧导航 ---- */
+    &__nav {
+        display: flex;
+        flex-direction: column;
+        flex-shrink: 0;
+        width: 132px;
+        border-right: 1px solid var(--b3-border-color);
+        background: var(--b3-theme-surface);
+    }
+
+    &__navhead {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        padding: 10px 10px 8px;
+        border-bottom: 1px solid var(--b3-border-color);
+    }
+
+    &__navtitle {
+        font-size: 13px;
+        font-weight: 600;
+        white-space: nowrap;
+    }
+
+    &__navbtn {
+        cursor: pointer;
+        font-size: 14px;
+        line-height: 1;
+        opacity: 0.62;
+        padding: 2px;
+
+        &:hover {
+            opacity: 1;
+        }
+    }
+
+    &__navlist {
+        flex: 1;
+        overflow: auto;
+        padding: 6px;
+    }
+
+    &__navitem {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 7px 10px;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 13px;
+        white-space: nowrap;
+        color: var(--b3-theme-on-surface);
+
+        &:hover {
+            background: var(--b3-list-hover);
+        }
+
+        &.is-active {
+            background: var(--b3-list-hover);
+            color: var(--b3-theme-primary, #4285f4);
+            font-weight: 600;
+        }
+    }
+
+    &__navicon {
+        font-size: 14px;
+        width: 16px;
+        text-align: center;
+    }
+
+    /* ---- 右侧内容 ---- */
+    &__body {
+        flex: 1;
+        overflow: auto;
+        padding: 14px 16px 40px;
+        box-sizing: border-box;
+    }
+
+    /* ---- 通用:工具栏 / 分段控件 ---- */
+    &__toolbar {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+        margin-bottom: 12px;
+    }
+
+    &__filterbar {
+        .b3-select {
+            max-width: 160px;
+        }
+    }
+
+    &__seg {
+        display: inline-flex;
+        border: 1px solid var(--b3-border-color);
+        border-radius: 4px;
+        overflow: hidden;
+        flex-shrink: 0;
+    }
+
+    &__segitem {
+        padding: 4px 12px;
+        font-size: 12px;
+        cursor: pointer;
+        white-space: nowrap;
+        border-right: 1px solid var(--b3-border-color);
+
+        &:last-child {
+            border-right: none;
+        }
+
+        &:hover {
+            background: var(--b3-list-hover);
+        }
+
+        &.is-active {
+            background: var(--b3-theme-primary, #4285f4);
+            color: var(--b3-theme-on-primary, #fff);
+        }
+    }
+
+    &__minibtn {
+        font-size: 12px;
+        padding: 3px 8px;
+    }
+
+    &__iconbtn {
+        padding: 2px 7px;
+        font-size: 12px;
+    }
+
+    &__inline {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        flex-wrap: wrap;
+    }
+
+    &__inlinehint {
+        flex-shrink: 0;
+    }
+
+    /* ---- 通用文本 ---- */
+    &__small {
+        font-size: 12px;
+        opacity: 0.72;
+    }
+
+    &__danger {
+        color: var(--b3-card-error-color, #d23f31);
+    }
+
+    &__hintline {
+        padding: 10px 2px;
+        font-size: 12px;
+        opacity: 0.6;
+        text-align: center;
+
+        &--tiny {
+            padding: 4px 2px;
+        }
+    }
+
+    &__linkish {
+        font-size: 12px;
+        cursor: pointer;
+        color: var(--b3-theme-primary, #4285f4);
+
+        &:hover {
+            text-decoration: underline;
+        }
+    }
+
+    /* ---- 通用:空态 / 分区 ---- */
+    &__empty {
+        padding: 22px 12px;
+        text-align: center;
+        border: 1px dashed var(--b3-border-color);
+        border-radius: 6px;
+    }
+
+    &__emptytext {
+        font-size: 13px;
+    }
+
+    &__emptyhint {
+        margin-top: 4px;
+        font-size: 12px;
+        opacity: 0.6;
+    }
+
+    &__section {
+        margin-bottom: 20px;
+    }
+
+    &__sechead {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 8px;
+    }
+
+    &__sectitle {
+        font-size: 13px;
+        font-weight: 600;
+    }
+
+    &__secextra {
+        font-size: 12px;
+        opacity: 0.6;
+    }
+
+    &__addbtn {
+        font-size: 12px;
+        padding: 2px 8px;
+    }
+
+    /* ---- 通用:进度环 / 进度条 / 徽章 ---- */
+    &__ring {
+        display: block;
+    }
+
+    &__ringtext {
+        font-size: 15px;
+        font-weight: 600;
+        fill: var(--b3-theme-on-background);
+    }
+
+    &__ringsub {
+        font-size: 9px;
+        fill: var(--b3-theme-on-surface);
+        opacity: 0.7;
+    }
+
+    &__bar {
+        width: 100%;
+        background: var(--b3-border-color);
+        border-radius: 3px;
+        overflow: hidden;
+        margin-top: 4px;
+    }
+
+    &__barfill {
+        height: 100%;
+        border-radius: 3px;
+        transition: width 0.2s;
+    }
+
+    &__badge {
+        font-size: 11px;
+        padding: 1px 6px;
+        border-radius: 8px;
+        background: var(--b3-list-hover);
+        opacity: 0.85;
+
+        &.is-ok {
+            color: var(--b3-card-success-color, #5aa84f);
+        }
+    }
+
+    &__chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        font-size: 12px;
+    }
+
+    &__chipdot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+    }
+
+    /* ---- 今日:概览 ---- */
+    &__hero {
+        display: flex;
+        align-items: center;
+        gap: 18px;
+        padding: 14px 16px;
+        margin-bottom: 20px;
+        border-radius: 8px;
+        border: 1px solid var(--b3-border-color);
+        background: var(--b3-theme-surface);
+    }
+
+    &__herotitle {
+        font-size: 15px;
+        font-weight: 600;
+        margin-bottom: 6px;
+    }
+
+    &__herostats {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 14px;
+        font-size: 12px;
+        opacity: 0.8;
+    }
+
+    &__stat b {
+        font-size: 14px;
+    }
+
+    &__stat.is-danger b {
+        color: var(--b3-card-error-color, #d23f31);
+    }
+
+    /* ---- 今日:打卡方块 ---- */
+    &__todayhabits {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(112px, 1fr));
+        gap: 10px;
+    }
+
+    &__todayhabit {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 5px;
+        padding: 12px 6px 10px;
+        border: 1px solid var(--b3-border-color);
+        border-radius: 8px;
+        cursor: pointer;
+        text-align: center;
+        transition: border-color 0.15s, background 0.15s;
+
+        &:hover {
+            border-color: var(--pl-color, var(--b3-theme-primary));
+        }
+
+        &.is-done {
+            background: var(--b3-list-hover);
+            border-color: var(--pl-color);
+        }
+    }
+
+    &__checkcircle {
+        position: relative;
+        width: 44px;
+        height: 44px;
+        border-radius: 50%;
+        border: 2px solid var(--pl-color);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+
+    &__checknum {
+        font-size: 13px;
+        font-weight: 600;
+
+        small {
+            font-size: 10px;
+            opacity: 0.7;
+        }
+    }
+
+    &__checkok {
+        position: absolute;
+        right: -2px;
+        bottom: -2px;
+        font-size: 11px;
+        background: var(--b3-theme-background);
+        border-radius: 50%;
+        width: 16px;
+        height: 16px;
+        line-height: 16px;
+        color: var(--pl-color);
+    }
+
+    &__todayname {
+        font-size: 12px;
+        line-height: 1.3;
+        word-break: break-all;
+    }
+
+    &__todaysub {
+        font-size: 11px;
+        opacity: 0.6;
+    }
+
+    /* ---- 任务行 ---- */
+    &__tasklist {
+        display: flex;
+        flex-direction: column;
+    }
+
+    &__task {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 8px;
+        border-radius: 4px;
+        cursor: pointer;
+
+        &:hover {
+            background: var(--b3-list-hover);
+        }
+    }
+
+    &__taskcheck {
+        flex-shrink: 0;
+        width: 15px;
+        height: 15px;
+        border-radius: 50%;
+        border: 1.5px solid var(--b3-border-color);
+        cursor: pointer;
+
+        &:hover {
+            border-color: var(--b3-theme-primary);
+        }
+    }
+
+    &__taskbody {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+    }
+
+    &__tasktitle {
+        font-size: 13px;
+        word-break: break-all;
+    }
+
+    &__taskmeta {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        flex-wrap: wrap;
+        font-size: 11px;
+        opacity: 0.75;
+    }
+
+    &__taskgo {
+        opacity: 0;
+        cursor: pointer;
+        font-size: 12px;
+        padding: 2px 4px;
+    }
+
+    &__metaitem {
+        display: inline-flex;
+        align-items: center;
+        gap: 3px;
+    }
+
+    &__tone {
+        padding: 0 5px;
+        border-radius: 3px;
+        background: var(--b3-list-hover);
+
+        &--overdue {
+            background: var(--b3-card-error-background, #fbe4e2);
+            color: var(--b3-card-error-color, #d23f31);
+        }
+
+        &--today,
+        &--normal {
+            background: var(--b3-theme-primary-light, #e5eeff);
+            color: var(--b3-theme-primary, #4285f4);
+        }
+    }
+
+    &__pri {
+        padding: 0 5px;
+        border-radius: 3px;
+
+        &--2 {
+            background: #fdf0d8;
+            color: #a2680f;
+        }
+
+        &--3 {
+            background: var(--b3-card-error-background, #fbe4e2);
+            color: var(--b3-card-error-color, #d23f31);
+        }
+    }
+
+    &__quickadd {
+        margin-top: 8px;
+    }
+
+    /* ---- 倒数日卡片 ---- */
+    &__cdgrid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+        gap: 10px;
+    }
+
+    &__cdcard {
+        padding: 10px 12px;
+        border-radius: 8px;
+        border: 1px solid var(--b3-border-color);
+        border-left: 3px solid var(--pl-color);
+        cursor: pointer;
+        background: var(--b3-theme-surface);
+
+        &:hover {
+            border-color: var(--pl-color);
+        }
+
+        &.is-passed {
+            opacity: 0.62;
+        }
+    }
+
+    &__cdtop {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+    }
+
+    &__cdicon {
+        font-size: 15px;
+    }
+
+    &__cdtitle {
+        font-size: 13px;
+        font-weight: 600;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    &__cdnum {
+        margin: 6px 0 2px;
+        font-size: 20px;
+        font-weight: 700;
+        color: var(--pl-color);
+    }
+
+    &__cdmeta {
+        font-size: 11px;
+        opacity: 0.66;
+    }
+
+    &__cdnote {
+        margin-top: 4px;
+        font-size: 11px;
+        opacity: 0.72;
+    }
+
+    /* ---- 今日 → 专注入口 ---- */
+    &__quicktimer {
+        max-width: 520px;
+    }
+
+    &__qtactions {
+        display: flex;
+        gap: 8px;
+        margin-top: 10px;
+    }
+
+    /* ---- 习惯卡片 ---- */
+    &__habitgrid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+        gap: 12px;
+    }
+
+    &__habitcard {
+        padding: 12px;
+        border-radius: 8px;
+        border: 1px solid var(--b3-border-color);
+        background: var(--b3-theme-surface);
+
+        &.is-archived {
+            opacity: 0.55;
+        }
+    }
+
+    &__habithead,
+    &__goalhead {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 8px;
+    }
+
+    &__habiticon,
+    &__goalicon {
+        width: 26px;
+        height: 26px;
+        border-radius: 6px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 14px;
+        flex-shrink: 0;
+    }
+
+    &__habitname,
+    &__goaltitle {
+        font-size: 13px;
+        font-weight: 600;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    &__cardacts {
+        display: flex;
+        gap: 2px;
+        opacity: 0;
+        transition: opacity 0.15s;
+    }
+
+    &__cardact {
+        cursor: pointer;
+        font-size: 12px;
+        padding: 1px 3px;
+        border-radius: 3px;
+
+        &:hover {
+            background: var(--b3-list-hover);
+        }
+    }
+
+    &__habitbody {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+    }
+
+    &__habitrings {
+        position: relative;
+        flex-shrink: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+
+    &__habitringtext {
+        position: absolute;
+        text-align: center;
+    }
+
+    &__bignum {
+        font-size: 17px;
+        font-weight: 700;
+        line-height: 1.1;
+
+        small {
+            font-size: 10px;
+            font-weight: 400;
+            opacity: 0.6;
+        }
+    }
+
+    &__habitstats {
+        font-size: 12px;
+        line-height: 1.7;
+        opacity: 0.82;
+        min-width: 0;
+    }
+
+    &__habitfoot {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-top: 8px;
+    }
+
+    /* ---- 近 7 天小圆点 ---- */
+    &__weekstrip {
+        display: flex;
+        gap: 3px;
+        margin-top: 6px;
+    }
+
+    &__dot {
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        border: 1px solid var(--b3-border-color);
+
+        &--done {
+            background: var(--b3-card-success-color, #5aa84f);
+            border-color: transparent;
+        }
+
+        &--part {
+            background: var(--b3-theme-primary, #4285f4);
+            border-color: transparent;
+            opacity: 0.45;
+        }
+
+        &--off {
+            background: transparent;
+            opacity: 0.35;
+        }
+
+        &--todo {
+            background: transparent;
+        }
+    }
+
+    /* ---- 热力图(默认折叠) ---- */
+    &__heatwrap {
+        max-height: 0;
+        overflow: hidden;
+        transition: max-height 0.2s ease;
+    }
+
+    &__habitcard.is-heat-open &__heatwrap {
+        max-height: 240px;
+        margin-top: 10px;
+        overflow-x: auto;
+    }
+
+    &__heat {
+        display: inline-flex;
+        flex-direction: column;
+        gap: 2px;
+    }
+
+    &__heatrow {
+        display: flex;
+        align-items: center;
+        gap: 2px;
+    }
+
+    &__heatlabel {
+        width: 14px;
+        font-size: 9px;
+        opacity: 0.5;
+        text-align: center;
+        flex-shrink: 0;
+    }
+
+    &__cell {
+        width: 10px;
+        height: 10px;
+        border-radius: 2px;
+        background: var(--b3-border-color);
+
+        &.is-done,
+        &.is-part {
+            background: var(--pl-cell);
+        }
+
+        &.is-clickable {
+            cursor: pointer;
+        }
+
+        &.is-future {
+            opacity: 0.25;
+        }
+
+        &.is-off {
+            opacity: 0.3;
+        }
+    }
+
+    /* ---- 迷你热力条(统计页) ---- */
+    &__ministrip {
+        display: flex;
+        gap: 2px;
+        margin-top: 6px;
+        flex-wrap: nowrap;
+    }
+
+    &__minicell {
+        flex: 1;
+        height: 10px;
+        border-radius: 2px;
+        border: 1px solid var(--b3-border-color);
+
+        &.is-part {
+            opacity: 0.45;
+        }
+    }
+
+    /* ---- 目标卡片 ---- */
+    &__goalgrid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+        gap: 12px;
+    }
+
+    &__goalcard {
+        padding: 12px;
+        border-radius: 8px;
+        border: 1px solid var(--b3-border-color);
+        background: var(--b3-theme-surface);
+
+        &.is-dim {
+            opacity: 0.6;
+        }
+    }
+
+    &__goaldesc {
+        font-size: 12px;
+        opacity: 0.72;
+        margin-bottom: 8px;
+    }
+
+    &__goalbody {
+        display: flex;
+        gap: 14px;
+        align-items: center;
+    }
+
+    &__goalmeta {
+        flex: 1;
+        min-width: 0;
+        font-size: 12px;
+        line-height: 1.7;
+    }
+
+    &__goalprog {
+        font-size: 13px;
+        font-weight: 600;
+    }
+
+    &__goalfoot {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-top: 10px;
+    }
+
+    /* ---- 任务:分区 + 卡片 ---- */
+    &__taskarea {
+        margin-top: 10px;
+    }
+
+    &__buckets {
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+    }
+
+    &__bucket.is-overdue &__bucketname {
+        color: var(--b3-card-error-color, #d23f31);
+    }
+
+    &__buckethead,
+    &__boardhead {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding-bottom: 6px;
+        margin-bottom: 6px;
+        border-bottom: 1px solid var(--b3-border-color);
+        font-size: 12px;
+        font-weight: 600;
+    }
+
+    &__bucketcount {
+        font-size: 11px;
+        padding: 0 6px;
+        border-radius: 8px;
+        background: var(--b3-list-hover);
+        opacity: 0.8;
+        font-weight: 400;
+    }
+
+    &__taskcard {
+        display: flex;
+        align-items: flex-start;
+        gap: 8px;
+        padding: 8px 10px;
+        border-radius: 6px;
+        border: 1px solid var(--b3-border-color);
+        margin-bottom: 6px;
+        cursor: pointer;
+
+        &:hover {
+            border-color: var(--b3-theme-primary);
+        }
+
+        &.is-done {
+            opacity: 0.55;
+        }
+
+        &.is-overdue {
+            border-left: 3px solid var(--b3-card-error-color, #d23f31);
+        }
+    }
+
+    &__bigcheck {
+        flex-shrink: 0;
+        width: 16px;
+        height: 16px;
+        margin-top: 2px;
+        border-radius: 50%;
+        border: 1.5px solid var(--b3-border-color);
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 10px;
+        color: var(--b3-card-success-color, #5aa84f);
+
+        &:hover {
+            border-color: var(--b3-theme-primary);
+        }
+    }
+
+    &__cardmain {
+        flex: 1;
+        min-width: 0;
+    }
+
+    &__cardtitle {
+        font-size: 13px;
+        word-break: break-all;
+
+        &.is-strike {
+            text-decoration: line-through;
+        }
+    }
+
+    &__cardnote {
+        margin-top: 4px;
+        font-size: 11px;
+        opacity: 0.66;
+    }
+
+    &__sublist {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+        margin-top: 6px;
+    }
+
+    &__subpill {
+        font-size: 11px;
+        padding: 1px 7px;
+        border-radius: 8px;
+        background: var(--b3-list-hover);
+
+        &.is-done {
+            text-decoration: line-through;
+            opacity: 0.55;
+        }
+    }
+
+    &__rowacts {
+        display: flex;
+        gap: 2px;
+        opacity: 0;
+        flex-shrink: 0;
+    }
+
+    /* ---- 看板 ---- */
+    &__board {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(200px, 1fr));
+        gap: 12px;
+        align-items: start;
+    }
+
+    &__boardcol {
+        padding: 10px;
+        border-radius: 8px;
+        border: 1px solid var(--b3-border-color);
+        background: var(--b3-theme-surface);
+    }
+
+    &__boardbody {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+    }
+
+    &__boardcard {
+        padding: 8px 10px;
+        border-radius: 6px;
+        border: 1px solid var(--b3-border-color);
+        cursor: pointer;
+
+        &:hover {
+            border-color: var(--b3-theme-primary);
+        }
+
+        &.is-overdue {
+            border-left: 3px solid var(--b3-card-error-color, #d23f31);
+        }
+    }
+
+    &__boardacts {
+        display: flex;
+        gap: 4px;
+        margin-top: 6px;
+        opacity: 0;
+    }
+
+    &__move {
+        font-size: 11px;
+        padding: 1px 6px;
+        border-radius: 3px;
+        background: var(--b3-list-hover);
+        cursor: pointer;
+
+        &:hover {
+            background: var(--b3-theme-primary);
+            color: var(--b3-theme-on-primary, #fff);
+        }
+    }
+
+    /* ---- 计时器 ---- */
+    &__timerwrap {
+        max-width: 520px;
+        margin: 0 auto;
+        text-align: center;
+        padding: 10px 0 20px;
+    }
+
+    &__modeseg {
+        margin: 0 auto 18px;
+        display: inline-flex;
+    }
+
+    &__timerphase {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        margin-bottom: 10px;
+    }
+
+    &__phasechip {
+        font-size: 12px;
+        padding: 2px 12px;
+        border-radius: 10px;
+        background: var(--b3-theme-primary-light, #e5eeff);
+        color: var(--b3-theme-primary, #4285f4);
+
+        &--short,
+        &--long {
+            background: #e6f4ea;
+            color: var(--b3-card-success-color, #5aa84f);
+        }
+    }
+
+    &__timerring {
+        display: flex;
+        justify-content: center;
+        position: relative;
+        margin-bottom: -128px;
+
+        &:empty {
+            margin-bottom: 0;
+        }
+    }
+
+    &__timerclock {
+        position: relative;
+        z-index: 1;
+        font-size: 46px;
+        font-weight: 300;
+        font-variant-numeric: tabular-nums;
+        padding: 56px 0;
+
+        &.is-running {
+            color: var(--b3-theme-primary, #4285f4);
+        }
+    }
+
+    &__timersub {
+        font-size: 12px;
+        opacity: 0.66;
+        min-height: 18px;
+    }
+
+    &__timerctrl {
+        display: flex;
+        gap: 8px;
+        justify-content: center;
+        margin-top: 12px;
+    }
+
+    &__timertip {
+        margin-top: 14px;
+        font-size: 11px;
+        opacity: 0.55;
+    }
+
+    &__todaylog {
+        margin-top: 22px;
+        text-align: left;
+    }
+
+    &__logtitle {
+        font-size: 12px;
+        font-weight: 600;
+        margin-bottom: 6px;
+    }
+
+    &__logrow {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 4px 0;
+        font-size: 12px;
+        border-bottom: 1px solid var(--b3-border-color);
+    }
+
+    &__logdot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--b3-theme-primary, #4285f4);
+        flex-shrink: 0;
+
+        &.is-rest {
+            background: var(--b3-card-success-color, #5aa84f);
+        }
+
+        &--countdown {
+            background: #8257c9;
+        }
+
+        &--stopwatch {
+            background: #dd7a2f;
+        }
+    }
+
+    &__logname {
+        font-weight: 600;
+    }
+
+    &__logtime {
+        font-variant-numeric: tabular-nums;
+        opacity: 0.75;
+    }
+
+    /* ---- 统计 ---- */
+    &__kpis {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+        gap: 10px;
+        margin-bottom: 18px;
+    }
+
+    &__kpi {
+        padding: 12px;
+        border-radius: 8px;
+        border: 1px solid var(--b3-border-color);
+        background: var(--b3-theme-surface);
+        text-align: center;
+    }
+
+    &__kpival {
+        font-size: 18px;
+        font-weight: 700;
+        color: var(--b3-theme-primary, #4285f4);
+    }
+
+    &__kpilabel {
+        margin-top: 2px;
+        font-size: 11px;
+        opacity: 0.65;
+    }
+
+    &__panel {
+        padding: 12px;
+        border-radius: 8px;
+        border: 1px solid var(--b3-border-color);
+        margin-bottom: 14px;
+        background: var(--b3-theme-surface);
+    }
+
+    &__panelhead {
+        font-size: 13px;
+        font-weight: 600;
+        margin-bottom: 10px;
+    }
+
+    &__barchart {
+        display: flex;
+        align-items: flex-end;
+        gap: 3px;
+        overflow-x: auto;
+        padding-bottom: 4px;
+    }
+
+    &__barmain {
+        flex: 1;
+        min-width: 18px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 3px;
+    }
+
+    &__barwrap {
+        height: 124px;
+        display: flex;
+        flex-direction: column;
+        justify-content: flex-end;
+        align-items: center;
+        width: 100%;
+        gap: 2px;
+    }
+
+    &__barcol {
+        width: 70%;
+        min-height: 2px;
+        border-radius: 2px 2px 0 0;
+        background: var(--b3-theme-primary, #4285f4);
+        opacity: 0.75;
+    }
+
+    &__bardot {
+        width: 8px;
+        height: 4px;
+        border-radius: 2px;
+        background: var(--b3-card-success-color, #5aa84f);
+    }
+
+    &__barlabel {
+        font-size: 9px;
+        opacity: 0.5;
+    }
+
+    &__legend {
+        margin-top: 8px;
+    }
+
+    &__habitrows {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+    }
+
+    &__habitrowhead {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-size: 13px;
+    }
+
+    &__ranks {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+    }
+
+    &__rankrow {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 12px;
+    }
+
+    &__rankno {
+        width: 16px;
+        text-align: center;
+        opacity: 0.5;
+    }
+
+    &__rankname {
+        width: 160px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    &__rankbar {
+        flex: 1;
+        height: 5px;
+        border-radius: 3px;
+        background: var(--b3-border-color);
+        overflow: hidden;
+
+        span {
+            display: block;
+            height: 100%;
+            background: var(--b3-theme-primary, #4285f4);
+        }
+    }
+
+    &__ranktime {
+        width: 62px;
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+        opacity: 0.75;
+    }
+
+    &__rankdue {
+        width: 64px;
+        text-align: right;
+        opacity: 0.5;
+    }
+
+    &__weekringshell {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 6px;
+    }
+
+    /* ---- 对话框表单 ---- */
+    &__form {
+        padding: 4px 4px 0;
+    }
+
+    &__formbody {
+        display: flex;
+        flex-direction: column;
+        max-height: 62vh;
+        overflow-y: auto;
+        padding-right: 4px;
+    }
+
+    &__formrow {
+        display: flex;
+        align-items: flex-start;
+        gap: 10px;
+        margin-bottom: 12px;
+    }
+
+    &__formlabel {
+        width: 86px;
+        flex-shrink: 0;
+        font-size: 12px;
+        opacity: 0.7;
+        padding-top: 6px;
+        text-align: right;
+    }
+
+    &__formctrl {
+        flex: 1;
+        min-width: 0;
+    }
+
+    &__formhint {
+        margin-top: 4px;
+        font-size: 11px;
+        opacity: 0.55;
+        line-height: 1.5;
+    }
+
+    &__gridwrap {
+        max-height: 128px;
+        overflow-y: auto;
+    }
+
+    &__swatches,
+    &__emojis,
+    &__daywrap {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 5px;
+    }
+
+    &__swatch {
+        width: 22px;
+        height: 22px;
+        border-radius: 4px;
+        cursor: pointer;
+        border: 2px solid transparent;
+
+        &.is-active {
+            border-color: var(--b3-theme-primary, #4285f4);
+        }
+    }
+
+    &__emoji {
+        width: 26px;
+        height: 26px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 15px;
+
+        &:hover {
+            background: var(--b3-list-hover);
+        }
+
+        &.is-active {
+            background: var(--b3-theme-primary-light, #e5eeff);
+        }
+    }
+
+    &__daychip {
+        padding: 3px 10px;
+        border-radius: 4px;
+        font-size: 12px;
+        cursor: pointer;
+        border: 1px solid var(--b3-border-color);
+
+        &.is-active {
+            background: var(--b3-theme-primary, #4285f4);
+            color: var(--b3-theme-on-primary, #fff);
+            border-color: transparent;
+        }
+    }
+
+    &__subs {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        margin-bottom: 8px;
+    }
+
+    &__subrow {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+
+        input[type="text"] {
+            flex: 1;
+            min-width: 0;
+        }
+    }
+
+    &__switch {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 12px;
+        cursor: pointer;
+    }
+
+    &__switchtext {
+        font-size: 12px;
+    }
+
+    &__statbox {
+        padding: 8px;
+        border-radius: 4px;
+        background: var(--b3-list-hover);
+    }
+}
+
+/* 悬停才浮现的操作按钮 —— 写在 .syfe-pl 外面是为了让 Dock 里的同结构也能生效 */
+.syfe-pl__habitcard:hover .syfe-pl__cardacts,
+.syfe-pl__goalcard:hover .syfe-pl__cardacts,
+.syfe-pl__cdcard:hover .syfe-pl__cardacts,
+.syfe-pl__taskcard:hover .syfe-pl__rowacts,
+.syfe-pl__boardcard:hover .syfe-pl__boardacts,
+.syfe-pl__task:hover .syfe-pl__taskgo {
+    opacity: 1;
+}
+
+/* ---------------- 侧边 Dock ---------------- */
+
+.syfe-pl-dock {
+    .syfe-pl__overview {
+        padding: 8px 10px;
+        border-bottom: 1px solid var(--b3-border-color);
+    }
+
+    .syfe-pl__overviewrow {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+    }
+
+    .syfe-pl__ovmain {
+        font-size: 13px;
+        font-weight: 600;
+    }
+
+    .syfe-pl__ovsub {
+        font-size: 11px;
+        opacity: 0.66;
+    }
+
+    .syfe-pl__scroll {
+        overflow: auto;
+    }
+
+    .syfe-pl__docksec {
+        padding: 8px 10px;
+        border-bottom: 1px solid var(--b3-border-color);
+
+        &:last-child {
+            border-bottom: none;
+        }
+    }
+
+    .syfe-pl__docksechead {
+        font-size: 11px;
+        font-weight: 600;
+        opacity: 0.6;
+        margin-bottom: 6px;
+    }
+
+    .syfe-pl__dockinput {
+        font-size: 12px;
+        padding: 3px 6px;
+        margin-bottom: 6px;
+    }
+
+    .syfe-pl__habrow {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        padding: 3px 0;
+        cursor: pointer;
+        font-size: 12px;
+
+        &.is-done .syfe-pl__habname {
+            opacity: 0.5;
+            text-decoration: line-through;
+        }
+    }
+
+    .syfe-pl__habdot {
+        flex-shrink: 0;
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        border: 1.5px solid var(--pl-color);
+        font-size: 9px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: var(--pl-color);
+        cursor: pointer;
+
+        &:hover {
+            background: var(--b3-list-hover);
+        }
+    }
+
+    .syfe-pl__habname {
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .syfe-pl__habnum {
+        font-size: 10px;
+        opacity: 0.55;
+        font-variant-numeric: tabular-nums;
+    }
+
+    .syfe-pl__taskrow {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        padding: 3px 0;
+        cursor: pointer;
+        font-size: 12px;
+    }
+
+    .syfe-pl__taskrow .syfe-pl__taskcheck {
+        width: 13px;
+        height: 13px;
+    }
+
+    .syfe-pl__taskrow .syfe-pl__tasktitle {
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .syfe-pl__cdrow {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 3px 0;
+        font-size: 12px;
+        cursor: pointer;
+        border-left: 2px solid var(--pl-color);
+        padding-left: 6px;
+    }
+
+    .syfe-pl__cdrowtitle {
+        flex: 0 1 auto;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .syfe-pl__cdrowdays {
+        font-size: 11px;
+        opacity: 0.7;
+        white-space: nowrap;
+    }
+
+    .syfe-pl__timerbar {
+        border-top: 1px solid var(--b3-border-color);
+        padding: 6px 10px;
+        flex-shrink: 0;
+    }
+
+    .syfe-pl__timeridle {
+        text-align: center;
+        font-size: 12px;
+        padding: 4px;
+        cursor: pointer;
+        border-radius: 4px;
+        opacity: 0.7;
+
+        &:hover {
+            background: var(--b3-list-hover);
+            opacity: 1;
+        }
+    }
+
+    .syfe-pl__timerrow {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 12px;
+    }
+
+    .syfe-pl__timerph {
+        opacity: 0.6;
+        white-space: nowrap;
+    }
+
+    .syfe-pl__timerclock {
+        font-size: 15px;
+        font-weight: 600;
+        font-variant-numeric: tabular-nums;
+    }
+
+    .syfe-pl__timeract {
+        cursor: pointer;
+        padding: 0 4px;
+
+        &:hover {
+            color: var(--b3-theme-primary, #4285f4);
+        }
+    }
+}
