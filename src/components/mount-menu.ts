@@ -8,6 +8,8 @@ import {Menu, Dialog, showMessage} from "siyuan";
 import {addMountItem, listMountTargets, hasMounted, MountKind} from "../mount-tree";
 import {readDir} from "../api/file";
 import {basename, dirname} from "../utils/path";
+import {showOpenDialog} from "../utils/open-dialog";
+import {getNativeRequire} from "../utils/native-require";
 
 export interface MountPayload {
     kind: MountKind;
@@ -74,7 +76,33 @@ export async function detectIsDir(path: string): Promise<boolean> {
     }
 }
 
-// 输入路径挂载文件/文件夹(虚拟文档树面板右键「挂载文件/文件夹…」用)
+// 上次资源管理器浏览位置(localStorage 持久化,重启思源后仍记住)
+const LAST_BROWSE_DIR_KEY = "syfe-mount-last-dir";
+
+// 系统绝对路径(仅盘符形态;"/data/..." 是工作空间内路径,不能作为原生对话框的起始目录)
+const isNativeAbsPath = (p: string) => /^[A-Za-z]:[\\/]/.test(p);
+
+function rememberLastBrowseDir(p: string, isDirPick: boolean): void {
+    try {
+        // 选中的是文件夹 → 记住它本身;是文件 → 记住所在目录
+        const d = isDirPick ? p : dirname(p);
+        if (d) localStorage.setItem(LAST_BROWSE_DIR_KEY, d);
+    } catch {
+        // localStorage 不可用:静默跳过
+    }
+}
+
+function lastBrowseDir(): string {
+    try {
+        return localStorage.getItem(LAST_BROWSE_DIR_KEY) || "";
+    } catch {
+        return "";
+    }
+}
+
+// 输入路径挂载文件/文件夹(虚拟文档树面板右键「挂载文件/文件夹…」用)。
+// 附带「浏览文件…/浏览文件夹…」按钮:直接打开系统资源管理器选择,
+// 起始目录 = 输入框已有系统绝对路径时取其父目录,否则取上次浏览位置。
 export function promptMountPathDialog(
     title: string,
     onPicked: (p: string, isDir: boolean, name: string) => void,
@@ -85,7 +113,11 @@ export function promptMountPathDialog(
             <div class="b3-dialog__content">
                 <div style="margin-bottom:6px;">文件或文件夹路径</div>
                 <input class="b3-text-field fn__block" id="syfe-mtree-path" placeholder="E:\\notes 或 /data/子目录/笔记.md" />
-                <div style="margin-top:6px;font-size:12px;opacity:.7;">支持工作空间内路径(/data/...)与系统绝对路径</div>
+                <div style="margin-top:8px;display:flex;gap:8px;">
+                    <button class="b3-button b3-button--outline" id="syfe-mtree-browse-file">浏览文件…</button>
+                    <button class="b3-button b3-button--outline" id="syfe-mtree-browse-dir">浏览文件夹…</button>
+                </div>
+                <div style="margin-top:6px;font-size:12px;opacity:.7;">支持工作空间内路径(/data/...)与系统绝对路径;资源管理器会定位到上次选择的位置</div>
             </div>
             <div class="b3-dialog__action">
                 <button class="b3-button b3-button--cancel" id="syfe-mtree-cancel">取消</button>
@@ -95,6 +127,25 @@ export function promptMountPathDialog(
     });
     const inputEl = dialog.element.querySelector("#syfe-mtree-path") as HTMLInputElement;
     const close = () => dialog.destroy();
+
+    // 打开系统资源管理器选择(桌面端);选中后回填输入框并记住位置
+    const browse = async (isDir: boolean) => {
+        if (!getNativeRequire()) {
+            showMessage("打开资源管理器仅桌面端支持,请手动填写路径", 3000, "error");
+            return;
+        }
+        const cur = inputEl.value.trim();
+        const picked = await showOpenDialog({
+            properties: [isDir ? "openDirectory" : "openFile"],
+            title: isDir ? "选择要挂载的文件夹" : "选择要挂载的文件",
+            defaultPath: isNativeAbsPath(cur) ? dirname(cur) : lastBrowseDir(),
+        });
+        if (!picked) return;
+        rememberLastBrowseDir(picked, isDir);
+        inputEl.value = picked;
+        inputEl.focus();
+    };
+
     const submit = async () => {
         const p = inputEl.value.trim();
         if (!p) {
@@ -102,6 +153,8 @@ export function promptMountPathDialog(
             return;
         }
         const isDir = await detectIsDir(p);
+        // 手动输入的系统绝对路径也计入"上次位置",浏览按钮跟着走
+        if (isNativeAbsPath(p)) rememberLastBrowseDir(p, isDir);
         close();
         onPicked(p, isDir, basename(p));
     };
@@ -112,6 +165,8 @@ export function promptMountPathDialog(
             void submit();
         }
     });
+    dialog.element.querySelector("#syfe-mtree-browse-file")!.addEventListener("click", () => void browse(false));
+    dialog.element.querySelector("#syfe-mtree-browse-dir")!.addEventListener("click", () => void browse(true));
     dialog.element.querySelector("#syfe-mtree-ok")!.addEventListener("click", () => void submit());
     dialog.element.querySelector("#syfe-mtree-cancel")!.addEventListener("click", close);
 }
