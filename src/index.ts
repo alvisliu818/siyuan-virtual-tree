@@ -39,6 +39,7 @@ import {createSettingsPanel, settingsRow, SettingsPanel} from "./settings/plugin
 import {querySQL} from "./api/file";
 import {basename} from "./utils/path";
 import {loadAllExtensions} from "./extensions/extension-manager";
+import {loadBuiltinGrammars} from "./extensions/grammar-loader";
 import {loadTagData} from "./tags/tag-store";
 import {openTagManagerDialog} from "./tags/tag-ui";
 import {loadOpenWithData} from "./open-with/open-with-store";
@@ -241,6 +242,11 @@ export default class FileEditorPlugin extends Plugin {
     }
 
     onload(): void {
+        // 内置 TextMate 语法(python/js/ts 等官方语法接管着色,不依赖扩展)。
+        // 放 onload 最前:布局恢复建模型之前就开始取语法,注册完成后对既有
+        // 模型强制重分词(见 loadBuiltinGrammars)。内置先注册、扩展后注册 ——
+        // 扩展自带同语言语法时自然覆盖内置
+        void loadBuiltinGrammars();
         // 必须在注册 dock 之前:先把改名/卸载留下的僵尸 dock 记录摘掉,
         // 否则它们会和现役 dock 抢同一批 index/position 槽位(见方法注释)
         this.pruneStalePluginDocks();

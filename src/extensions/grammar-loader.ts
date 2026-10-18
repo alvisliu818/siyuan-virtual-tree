@@ -8,47 +8,154 @@ import {Registry, parseRawGrammar, INITIAL, StateStack, IGrammar} from "vscode-t
 import {loadWASM} from "vscode-oniguruma";
 import {InstalledExtension, GrammarContribution, LanguageContribution} from "./types";
 
+declare const __SYFE_PLUGIN_NAME__: string;
+
 let wasmLoaded = false;
 let registry: Registry | null = null;
+// ensureRegistry 的单例 promise:loadBuiltinGrammars 与扩展 loadGrammars 可能并发,
+// 各自 await ensureWasmLoaded 后同时看到 registry==null 会建两个 Registry,
+// 语法注册到不同实例上互相查不到(嵌入语法如 html 内嵌 js 全部失效)
+let registryPromise: Promise<Registry> | null = null;
 
-// 加载 oniguruma WASM(只需一次)
-// vscode-oniguruma 的 wasm 文件需要从 node_modules 复制或内联
-// 这里使用 CDN 作为 fallback
-async function ensureWasmLoaded(): Promise<void> {
-    if (wasmLoaded) return;
-    // 尝试从 vscode-oniguruma 包加载 wasm
-    // 在 webpack 环境中,需要 file-loader 处理 .wasm 文件
-    // 这里使用 fetch 从 CDN 加载作为可靠方案
-    const wasmUrl = "https://cdn.jsdelivr.net/npm/vscode-oniguruma@2.0.1/release/onig.wasm";
-    try {
-        const resp = await fetch(wasmUrl);
-        const wasmBuffer = await resp.arrayBuffer();
-        await loadWASM(wasmBuffer);
-        wasmLoaded = true;
-    } catch (e) {
-        console.error("[siyuan-file-editor] 加载 oniguruma WASM 失败:", e);
-        throw e;
-    }
+// 内置语法清单:VS Code 官方仓库 1.142.0 的语法文件,构建时原样复制到
+// dist/grammars/。file 必须与 src/grammars/ 下的文件名一致,scopeName 必须与
+// 文件内的 scopeName 字段一致(不一致时 addGrammar 会按文件里的注册,映射错乱)
+interface BuiltinGrammarEntry {
+    file: string;
+    scopeName: string;
+    // 要接管着色的 Monaco language id;空数组 = 仅注册语法不接管
+    // (供其他语法的嵌入引用,如 markdown 围栏内嵌 source.ts)
+    tokenLanguages: string[];
 }
 
-// 确保语法注册表已初始化
-async function ensureRegistry(): Promise<Registry> {
-    await ensureWasmLoaded();
-    if (!registry) {
-        registry = new Registry({
-            onigLib: Promise.resolve({
-                createOnigScanner: (sources: string[]) => new (require("vscode-oniguruma") as any).OnigScanner(sources),
-                createOnigString: (str: string) => new (require("vscode-oniguruma") as any).OnigString(str),
-            }),
-            loadGrammar: async (scopeName: string) => {
-                // 语法依赖的外部语法(如 source.js 内嵌在 html 中)
-                // 从已加载的语法映射中查找
-                const grammar = grammarMap.get(scopeName);
-                return grammar || null;
-            },
-        });
+const BUILTIN_GRAMMARS: BuiltinGrammarEntry[] = [
+    {file: "python.tmLanguage.json", scopeName: "source.python", tokenLanguages: ["python"]},
+    // source.js 自带 JSX 规则,.js/.jsx 共用这一个 language id 恰好都对
+    {file: "javascript.tmLanguage.json", scopeName: "source.js", tokenLanguages: ["javascript"]},
+    // "typescript" id 由 source.tsx 接管而非 source.ts:.tsx 也映射到该 id,
+    // TSX 语法 = TS 语法 + JSX 规则,对纯 .ts 几乎无差异、对 .tsx 是刚需。
+    // source.ts 仍注册进 grammarMap —— markdown 的 ```ts 围栏内嵌引用它
+    {file: "typescript.tmLanguage.json", scopeName: "source.ts", tokenLanguages: []},
+    {file: "typescriptreact.tmLanguage.json", scopeName: "source.tsx", tokenLanguages: ["typescript"]},
+    {file: "json.tmLanguage.json", scopeName: "source.json", tokenLanguages: ["json"]},
+    {file: "html.tmLanguage.json", scopeName: "text.html.basic", tokenLanguages: ["html"]},
+    {file: "css.tmLanguage.json", scopeName: "source.css", tokenLanguages: ["css"]},
+    {file: "markdown.tmLanguage.json", scopeName: "text.html.markdown", tokenLanguages: ["markdown"]},
+    {file: "yaml.tmLanguage.json", scopeName: "source.yaml", tokenLanguages: ["yaml"]},
+    {file: "xml.tmLanguage.json", scopeName: "text.xml", tokenLanguages: ["xml"]},
+    {file: "shell-unix-bash.tmLanguage.json", scopeName: "source.shell", tokenLanguages: ["shell"]},
+    // cpp 语法(source.cpp)同文件覆盖 C(LANG_MAP 里 .c/.h → c):C 代码用
+    // cpp 语法分词完全正确,scope 前缀差异不影响主题着色(主题按子 scope 匹配)
+    {file: "cpp.tmLanguage.json", scopeName: "source.cpp", tokenLanguages: ["cpp", "c"]},
+    {file: "java.tmLanguage.json", scopeName: "source.java", tokenLanguages: ["java"]},
+    {file: "go.tmLanguage.json", scopeName: "source.go", tokenLanguages: ["go"]},
+];
+
+let builtinLoaded = false;
+
+// 加载内置 TextMate 语法并接管对应 Monaco 语言的着色。
+// 幂等;失败按文件跳过,不抛出 —— 语法加载失败只应退回 Monarch,不该打断启动。
+// setTokensProvider 是覆盖语义,同一 language id 以最后注册者为准;
+// 扩展语法后于内置加载,自带语法时自然覆盖内置(与 VS Code 行为一致)。
+export async function loadBuiltinGrammars(): Promise<number> {
+    if (builtinLoaded) return 0;
+    builtinLoaded = true;
+    const reg = await ensureRegistry();
+    const base = `/plugins/${__SYFE_PLUGIN_NAME__}/grammars`;
+    let loadedCount = 0;
+    for (const item of BUILTIN_GRAMMARS) {
+        try {
+            const resp = await fetch(`${base}/${item.file}`);
+            if (!resp.ok) {
+                console.warn(`[siyuan-file-editor] 内置语法加载失败(HTTP ${resp.status}): ${item.file}`);
+                continue;
+            }
+            const content = await resp.text();
+            const rawGrammar = parseRawGrammar(content, item.file);
+            grammarMap.set(item.scopeName, rawGrammar);
+            const g = await reg.addGrammar(rawGrammar);
+            for (const lang of item.tokenLanguages) {
+                // setTokensProvider 对未注册语言直接抛错。Monaco 的 basic-languages
+                // 贡献是惰性 chunk,首个 .py 模型创建前 "python" 可能尚未注册,这里兜底。
+                // 重复注册 ModesRegistry 只是追加条目,无副作用;贡献 chunk 稍后照常
+                // 加载,补上语言配置(括号/注释规则)与 Monarch factory(不会覆盖
+                // 我们直接注册的 TextMate tokenizer —— TokenizationRegistry.getOrCreate
+                // 永远先查直接注册表)
+                if (!monaco.languages.getLanguages().some(l => l.id === lang)) {
+                    monaco.languages.register({id: lang});
+                }
+                languageToScope.set(lang, item.scopeName);
+                registerMonacoTokenizer(lang, g);
+            }
+            loadedCount++;
+        } catch (e) {
+            console.error(`[siyuan-file-editor] 内置语法注册失败 ${item.file}:`, e);
+        }
     }
-    return registry;
+    if (loadedCount > 0) {
+        console.info(`[siyuan-file-editor] 已加载 ${loadedCount} 个内置 TextMate 语法`);
+        // 对注册前已创建的模型强制重分词:布局恢复先于本函数执行时,模型在
+        // tokenizer 注册前创建,会一直停留在创建时的空分词结果上(表现为整文件
+        // 默认色)。plaintext→原语言翻转强制 GrammarTokens 重新 resolve,
+        // 着色立即生效;语言切换不影响光标/撤销栈。
+        const covered = new Set<string>(BUILTIN_GRAMMARS.flatMap(g => g.tokenLanguages));
+        for (const model of monaco.editor.getModels()) {
+            const lang = model.getLanguageId();
+            if (covered.has(lang)) {
+                monaco.editor.setModelLanguage(model, "plaintext");
+                monaco.editor.setModelLanguage(model, lang);
+            }
+        }
+    }
+    return loadedCount;
+}
+
+// 加载 oniguruma WASM(只需一次)
+// 优先从插件目录取(随插件分发,离线可用),CDN 仅作兜底
+async function ensureWasmLoaded(): Promise<void> {
+    if (wasmLoaded) return;
+    const candidates = [
+        `/plugins/${__SYFE_PLUGIN_NAME__}/grammars/onig.wasm`,
+        "https://cdn.jsdelivr.net/npm/vscode-oniguruma@2.0.1/release/onig.wasm",
+    ];
+    let lastErr: unknown = null;
+    for (const wasmUrl of candidates) {
+        try {
+            const resp = await fetch(wasmUrl);
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            const wasmBuffer = await resp.arrayBuffer();
+            await loadWASM(wasmBuffer);
+            wasmLoaded = true;
+            return;
+        } catch (e) {
+            lastErr = e;
+            console.warn(`[siyuan-file-editor] 加载 oniguruma WASM 失败(${wasmUrl}):`, e);
+        }
+    }
+    throw lastErr ?? new Error("oniguruma WASM 加载失败");
+}
+
+// 确保语法注册表已初始化(单例 promise,防并发建双 Registry)
+function ensureRegistry(): Promise<Registry> {
+    if (!registryPromise) {
+        registryPromise = (async () => {
+            await ensureWasmLoaded();
+            registry = new Registry({
+                onigLib: Promise.resolve({
+                    createOnigScanner: (sources: string[]) => new (require("vscode-oniguruma") as any).OnigScanner(sources),
+                    createOnigString: (str: string) => new (require("vscode-oniguruma") as any).OnigString(str),
+                }),
+                loadGrammar: async (scopeName: string) => {
+                    // 语法依赖的外部语法(如 source.js 内嵌在 html 中)
+                    // 从已加载的语法映射中查找
+                    const grammar = grammarMap.get(scopeName);
+                    return grammar || null;
+                },
+            });
+            return registry;
+        })();
+    }
+    return registryPromise;
 }
 
 // scopeName → RawGrammar 的映射(用于处理嵌入式语法)

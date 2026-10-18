@@ -170,6 +170,11 @@ module.exports = (env, argv) => {
                     ...zeromqPatterns(),
                     // pyright:Python 语言服务器(运行时独立进程,需整包复制)
                     ...pyrightPatterns(),
+                    // 内置 TextMate 语法(python/js/ts 等官方语法,入库 src/grammars/)
+                    // + oniguruma WASM:运行时 fetch /plugins/<name>/grammars/ 加载,
+                    // 着色不依赖 CDN(离线可用、加载确定性)
+                    {from: "src/grammars/", to: "./grammars/"},
+                    {from: "node_modules/vscode-oniguruma/release/onig.wasm", to: "./grammars/onig.wasm"},
                 ],
             }),
         );
@@ -194,6 +199,9 @@ module.exports = (env, argv) => {
                     ...zeromqPatterns(),
                     // pyright:Python 语言服务器(运行时独立进程,需整包复制)
                     ...pyrightPatterns(),
+                    // 内置 TextMate 语法 + oniguruma WASM(同生产模式)
+                    {from: "src/grammars/", to: "./grammars/"},
+                    {from: "node_modules/vscode-oniguruma/release/onig.wasm", to: "./grammars/onig.wasm"},
                 ],
             }),
         );
