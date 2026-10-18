@@ -82,7 +82,8 @@ async function readRawText(): Promise<string | null> {
         const data = await loader(SETTINGS_FILE);
         if (typeof data === "string") return data;
         if (data && typeof data === "object") return JSON.stringify(data, null, 4);
-        // loadData 对不存在的文件返回空(null/undefined):视作首次使用
+        // loadData 对"文件不存在"和"请求失败"都 resolve 空串(思源实现如此,
+        // 无法区分)→ 返回 "",parseInto 走空对象,一切键走注册表默认值
         return "";
     } catch (e) {
         // 读取失败(内核瞬时异常/页面卸载竞态)≠ 文件不存在。
@@ -134,10 +135,11 @@ export async function reloadUserSettings(): Promise<boolean> {
 }
 
 /**
- * 初始化:算出存储路径、读文件;文件不存在时按当前配置生成一份(旧版设置平滑迁移)。
+ * 初始化:算出存储路径、读文件。只读不写 —— 读不到(不存在/失败)时什么都不写,
+ * 设置走注册表默认值,文件由用户首次在面板改设置时创建。
  * 必须在 loadConfig 之后调用。
  */
-export async function initUserSettings(plugin: any, cfg?: EditorConfig): Promise<void> {
+export async function initUserSettings(plugin: any): Promise<void> {
     pluginRef = plugin;
     const name = String(plugin?.name || "");
     storagePath = `/data/storage/petal/${name}/settings.json`;
@@ -146,27 +148,16 @@ export async function initUserSettings(plugin: any, cfg?: EditorConfig): Promise
     saver = (n: string, d: any) => plugin.saveData(n, d);
 
     const text = await readRawText();
-    // text === null:读取失败。此时绝不能 seed(会把用户设置覆盖成默认值),
-    // 也不写文件 —— 保持未初始化状态,设置走注册表默认值,下次加载重试。
     if (text !== null) {
-        const own = parseInto(text);
-        // 文件不存在、或里面的内容根本不是用户设置(settings.json 这个名字早先被
-        // code-render 模块占用过)→ 重新生成一份,顺便把旧版 config.json 的编辑器设置迁过来
-        if (!text.trim() || !own || !rawText) {
-            const seed: Record<string, unknown> = {};
-            if (cfg) {
-                seed["editor.fontSize"] = cfg.fontSize;
-                seed["editor.tabSize"] = cfg.tabSize;
-                seed["editor.wordWrap"] = cfg.wordWrap === "on" ? "on" : "off";
-                seed["editor.minimap.enabled"] = cfg.showMinimap !== false;
-                seed["editor.formatOnSave"] = cfg.formatOnSave === true;
-            }
-            values = seed;
-            rawText = serializeAll();
-            parseOk = true;
-            await writeNow();
-        }
+        parseInto(text);
     }
+
+    // 注意:这里绝不能有"文件不存在时自动写入 seed/模板"的逻辑。
+    // 思源 Plugin.loadData 对"文件不存在"和"请求失败(内核未就绪的竞态窗口)"都静默
+    // resolve 空串,调用方无法区分 —— 一旦误判成首次使用就会用默认值覆盖用户设置
+    // (实测踩过两次:部署后字体丢失、每次重启字体丢失)。
+    // 现在的策略:读不到就什么都不写,一切键走注册表默认值;文件由用户首次在
+    // 面板改设置时创建,下次加载自然读到。
 
     // settings.json 在编辑器里被保存后,立刻重新加载并生效
     void (async () => {

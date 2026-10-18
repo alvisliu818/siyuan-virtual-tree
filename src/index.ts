@@ -420,7 +420,7 @@ export default class FileEditorPlugin extends Plugin {
         // 读完后把值回写进 config,这样所有读 plugin.config 的既有代码都自动拿到最终值,
         // 不需要在各处再加一层"先查 settings.json"的判断。
         try {
-            await initUserSettings(this, this.config);
+            await initUserSettings(this);
             applyUserSettingsToConfig(this.config);
             registerSettingsJsonSchema();
         } catch (e) {
