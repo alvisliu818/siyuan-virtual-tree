@@ -98,11 +98,32 @@ export function insertJsonText(text: string, key: string, value: unknown): strin
     return null;
 }
 
-/** 删掉一个顶层键(整行移除) */
+/**
+ * 删掉一个顶层键(整行移除)。
+ * 末项善后:删的是最后一项时,前一行会留下尾逗号(`"a": 1,` 直接接 `}`),
+ * JSON.parse 对尾逗号必抛错 → 之后每次启动 settings.json 解析全炸、设置静默回默认
+ * (实测踩过:字体/主题全丢)。所以删完检查最后一个数据行,是"逗号+}"就去掉逗号。
+ */
 export function removeJsonKey(text: string, key: string): string {
     const re = new RegExp("^\\s*\"" + escapeRe(key) + "\"\\s*:");
-    return (text || "")
-        .split("\n")
-        .filter(l => !re.test(l))
-        .join("\n");
+    const lines = (text || "").split("\n").filter(l => !re.test(l));
+    const isSkippable = (l: string) => {
+        const t = l.trim();
+        return !t || t.startsWith("//") || t.startsWith("/*") || t.startsWith("*");
+    };
+    for (let i = lines.length - 1; i >= 0; i--) {
+        if (isSkippable(lines[i])) continue;
+        // 找到最后一个数据行:若以 , 结尾且其后紧跟 },去掉逗号
+        if (lines[i].trimEnd().endsWith(",")) {
+            for (let j = i + 1; j < lines.length; j++) {
+                if (isSkippable(lines[j])) continue;
+                if (lines[j].trim().startsWith("}")) {
+                    lines[i] = lines[i].replace(/\s*,\s*$/, "");
+                }
+                break;
+            }
+        }
+        break;
+    }
+    return lines.join("\n");
 }

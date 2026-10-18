@@ -114,10 +114,18 @@ function parseInto(text: string): boolean {
     try {
         parsed = JSON.parse(stripJsonComments(text));
     } catch {
-        // 解析失败:保留内存里的既有值,交由调用方提示用户
-        rawText = text;
-        parseOk = false;
-        return false;
+        // 尾逗号容错(兜底):VS Code 的 settings.json 语义允许尾逗号(Monaco schema
+        // 也配了 trailingCommas:"ignore"),旧版 removeJsonKey 删末项时曾留下尾逗号,
+        // 导致之后每次启动解析全炸、设置静默回默认(实测踩过:字体丢失)。
+        // 首次失败后去尾逗号重试一次;值内容恰好含",}"时会被误改,可接受(仅兜底路径)。
+        try {
+            parsed = JSON.parse(stripJsonComments(text).replace(/,(\s*[}\]])/g, "$1"));
+        } catch {
+            // 解析失败:保留内存里的既有值,交由调用方提示用户
+            rawText = text;
+            parseOk = false;
+            return false;
+        }
     }
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
         parseOk = false;
