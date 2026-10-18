@@ -278,6 +278,13 @@ export async function removeDocByID(id: string): Promise<void> {
     await postJSON("/api/filetree/removeDocByID", {id});
 }
 
+// 移动文档(/api/filetree/moveDocsByID,与思源原生文档树拖拽/页签移动同款接口):
+// toID 为笔记本 id → 移到该笔记本顶层;为文档 id → 作为该文档的子文档。
+// 移入自身子树等非法目标由内核校验并返回非 0 code(postJSON 抛错)。
+export async function moveDocsByID(fromIDs: string[], toID: string): Promise<void> {
+    await postJSON("/api/filetree/moveDocsByID", {fromIDs, toID});
+}
+
 // 复制副本(仅文档自身内容,/api/filetree/duplicateDoc)
 export async function duplicateDoc(id: string): Promise<void> {
     await postJSON("/api/filetree/duplicateDoc", {id});

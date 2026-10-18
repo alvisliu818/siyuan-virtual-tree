@@ -1,7 +1,7 @@
 // 思源文档/笔记本的「原生」右键菜单:对齐思源文档树(initFileMenu / initNavigationMenu)的
 // 操作子集,全部通过内核 API 实现,操作结果与在思源文档树里操作完全一致。
 // 虚拟文档树(挂载的思源文档/笔记本/子文档)与标签面板(sydoc:// 条目)共用。
-import {Menu, confirm, showMessage} from "siyuan";
+import {Menu, confirm, showMessage, Dialog} from "siyuan";
 import {
     createDocWithMd,
     renameDocByID,
@@ -13,6 +13,9 @@ import {
     getRefText,
     getHPathByID,
     postJSON,
+    lsNotebooks,
+    listDocsByPath,
+    moveDocsByID,
 } from "../api/file";
 import {getDocInfo, clearDocInfoCache} from "../utils/virtual-tree";
 import {openSiyuanDoc, openSiyuanNotebook} from "./entry-menu";
@@ -54,6 +57,153 @@ function downloadText(fileName: string, content: string): void {
     a.click();
     a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+}
+
+function escapeHTML(s: string): string {
+    return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
+// 「移动」目标选择对话框:逐层浏览笔记本/文档,选笔记本 → 移到顶层,选文档 → 作为其子文档。
+// 底层走 /api/filetree/moveDocsByID(思源原生文档树拖拽/页签移动同款接口),
+// 样式复用挂载选择器的 .syfe-mount 系列(零新增 CSS)。
+// 源文档自身及其子树不能作为目标(内核也会拒绝),这里先行过滤,避免浏览进去后无处可移。
+async function moveDocTargetDialog(docId: string, name: string, after: () => void): Promise<void> {
+    // 源文档的归属(box + .sy 存储路径),用于排除自身子树;查不到(索引延迟等)就不过滤,内核兜底
+    const src = await getDocInfo(docId);
+    const dialog = new Dialog({
+        title: `${lang("move", "移动")}「${escapeHTML(name || docId)}」到…`,
+        content: `
+            <div class="b3-dialog__content syfe-mount">
+                <div class="syfe-mount__crumb"></div>
+                <div class="syfe-mount__list"></div>
+            </div>`,
+        width: "520px",
+    });
+    const listEl = dialog.element.querySelector(".syfe-mount__list") as HTMLElement;
+    const crumbEl = dialog.element.querySelector(".syfe-mount__crumb") as HTMLElement;
+
+    // 文档层状态;docId 为当前所在文档(顶层为 undefined,只挂「移动到顶层」)
+    type DocLayer = {nbId: string; nbName: string; docPath: string; docName: string; docId?: string};
+    let state: DocLayer | null = null;
+
+    const docIdFromPath = (syPath: string) => syPath.split("/").pop()?.replace(/\.sy$/i, "") || "";
+
+    // 目标是否是源文档自身/其子树(同笔记本且存储路径为源路径或其下,子文档存储路径嵌套在父 .sy/ 下)
+    const isOwnSubtree = (nbId: string, syPath: string): boolean =>
+        !!src && nbId === src.box && !!syPath &&
+        (syPath === src.path || syPath.startsWith(src.path + "/"));
+
+    const doMove = async (toId: string, label: string) => {
+        try {
+            await moveDocsByID([docId], toId);
+            dialog.destroy();
+            showMessage(`已移动到「${label}」`, 3000, "info");
+            after();
+        } catch (e: any) {
+            showMessage(`移动失败: ${e?.message || e}`, 4000, "error");
+        }
+    };
+
+    const enterRow = (row: HTMLElement) => {
+        if (!state) {
+            state = {
+                nbId: row.dataset.nb!,
+                nbName: row.querySelector(".syfe-mount__name")?.textContent?.trim() || row.dataset.nb!,
+                docPath: "/", docName: "",
+            };
+        } else if (row.dataset.sy) {
+            state = {
+                ...state,
+                docPath: row.dataset.sy,
+                docName: row.querySelector(".syfe-mount__name")?.textContent?.trim() || "",
+                docId: docIdFromPath(row.dataset.sy),
+            };
+        }
+        void render();
+    };
+
+    const render = async () => {
+        try {
+            listEl.innerHTML = `<div class="syfe-mount__hint">加载中…</div>`;
+            if (!state) {
+                // 笔记本层:每行可「移动到顶层」,或「进入」浏览子文档
+                const notebooks = (await lsNotebooks()).filter((n: any) => n && !n.closed);
+                crumbEl.innerHTML = `<span>选择目标笔记本,或进入浏览文档层级</span>`;
+                if (notebooks.length === 0) {
+                    listEl.innerHTML = `<div class="syfe-mount__hint">没有打开的笔记本</div>`;
+                    return;
+                }
+                listEl.innerHTML = notebooks.map((n: any) => `
+                    <div class="syfe-mount__row" data-nb="${escapeHTML(String(n.id))}">
+                        <svg class="syfe-mount__icon"><use xlink:href="#iconNotebook"></use></svg>
+                        <span class="syfe-mount__name" title="${escapeHTML(String(n.name || n.id))}">${escapeHTML(String(n.name || n.id))}</span>
+                        <span class="fn__flex-1"></span>
+                        <button class="b3-button b3-button--small b3-button--outline" data-act="enter">进入</button>
+                        <button class="b3-button b3-button--small" data-act="here-nb">移动到顶层</button>
+                    </div>`).join("");
+                return;
+            }
+            // 文档层:顶部「移动到此处」(作为当前文档的子文档)+ 子文档列表
+            const docs = await listDocsByPath(state.nbId, state.docPath);
+            crumbEl.innerHTML = `
+                <span class="syfe-mount__back" data-act="back" title="返回笔记本层">‹ 返回</span>
+                <span class="syfe-mount__mountcur">${escapeHTML(state.nbName)}${state.docName ? " / " + escapeHTML(state.docName) : ""}</span>
+                <span class="fn__flex-1"></span>
+                ${state.docId ? `<button class="b3-button b3-button--small" data-act="here-cur">移动到此处</button>` : ""}`;
+            if (!Array.isArray(docs) || docs.length === 0) {
+                listEl.innerHTML = `<div class="syfe-mount__hint">没有子文档</div>`;
+                return;
+            }
+            listEl.innerHTML = docs
+                .filter((d: any) => !isOwnSubtree(state!.nbId, String(d.path || "")))
+                .map((d: any) => `
+                    <div class="syfe-mount__row" data-sy="${escapeHTML(String(d.path || ""))}" data-name="${escapeHTML(String(d.name || ""))}">
+                        <svg class="syfe-mount__icon"><use xlink:href="#iconFile"></use></svg>
+                        <span class="syfe-mount__name" title="${escapeHTML(String(d.name || ""))}">${escapeHTML(String(d.name || ""))}</span>
+                        <span class="fn__flex-1"></span>
+                        <button class="b3-button b3-button--small b3-button--outline" data-act="enter">进入</button>
+                        <button class="b3-button b3-button--small" data-act="here-doc">移动到此处</button>
+                    </div>`).join("");
+        } catch (e) {
+            listEl.innerHTML = `<div class="syfe-mount__hint">加载失败: ${escapeHTML(String(e))}</div>`;
+        }
+    };
+
+    dialog.element.addEventListener("click", (ev: MouseEvent) => {
+        const btn = (ev.target as HTMLElement).closest("[data-act]") as HTMLElement | null;
+        if (btn) {
+            const act = btn.dataset.act;
+            const row = btn.closest(".syfe-mount__row") as HTMLElement | null;
+            if (act === "here-nb" && row) {
+                void doMove(row.dataset.nb!, row.querySelector(".syfe-mount__name")?.textContent?.trim() || row.dataset.nb!);
+                return;
+            }
+            if (act === "here-cur" && state?.docId) {
+                void doMove(state.docId, state.docName || state.docId);
+                return;
+            }
+            if (act === "here-doc" && row?.dataset.sy) {
+                const id = docIdFromPath(row.dataset.sy);
+                void doMove(id, row.dataset.name || id);
+                return;
+            }
+            if (act === "back") {
+                state = null;
+                void render();
+                return;
+            }
+            if (act === "enter" && row) {
+                enterRow(row);
+                return;
+            }
+            return;
+        }
+        // 行点击 = 进入
+        const row = (ev.target as HTMLElement).closest(".syfe-mount__row") as HTMLElement | null;
+        if (row) enterRow(row);
+    });
+    void render();
 }
 
 // 与思源文档树 copySubMenu 一致的复制子菜单(复制副本/复制文档树由调用方视情况追加)
@@ -286,6 +436,12 @@ export function showDocMenu(opts: {
                 after();
             })().catch((e: any) => showMessage(`重命名失败: ${e?.message || e}`, 3000, "error"));
         },
+    });
+    // 移动文档位置:选笔记本 → 顶层;选文档 → 作为其子文档(对齐原生文档树的「移动」)
+    menu.addItem({
+        icon: "iconMove",
+        label: lang("move", "移动"),
+        click: () => void moveDocTargetDialog(docId, opts.name || docId, after),
     });
     menu.addItem({
         icon: "iconTrashcan",
