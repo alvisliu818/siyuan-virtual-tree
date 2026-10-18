@@ -716,9 +716,37 @@ let globalServer: PythonLanguageServer | null = null;
  */
 export function getPythonLanguageServer(workspaceRoot?: string): PythonLanguageServer {
     if (!globalServer) {
-        globalServer = new PythonLanguageServer(workspaceRoot || "");
+        globalServer = new PythonLanguageServer(workspaceRoot || resolveDefaultWorkspaceRoot());
     }
     return globalServer;
+}
+
+/**
+ * workspaceRoot 缺省时的兜底解析。
+ *
+ * 首选来源是调用方传的「打开文件所在目录」(bridge 的 registerPythonEditor):
+ * 插件是 openFilesOnly 模式,root 只决定源文件枚举范围,单文件目录刚好。
+ *
+ * 警告:思源工作区目录绝不能当 root —— 枚举全部插件目录(pyright 整包、
+ * node_modules、git 仓库)实测超 10 秒,pyright 刷 "Enumeration of workspace
+ * source files is taking longer than 10 seconds"。这里保留 workspaceDir
+ * 兜底仅因「无 root 会退回 <default workspace root> 占位符警告」更难看,
+ * 正常路径(getPythonLanguageServer 首次调用来自编辑器注册)不会走到。
+ */
+function resolveDefaultWorkspaceRoot(): string {
+    try {
+        const pluginDir = (window as any).__SIYUAN_FILE_EDITOR_DIR__;
+        if (pluginDir) return pluginDir;
+    } catch {
+        // ignore
+    }
+    try {
+        const wsDir = (window as any).siyuan?.config?.system?.workspaceDir;
+        if (wsDir) return wsDir;
+    } catch {
+        // ignore
+    }
+    return "";
 }
 
 export async function stopPythonLanguageServer(): Promise<void> {
