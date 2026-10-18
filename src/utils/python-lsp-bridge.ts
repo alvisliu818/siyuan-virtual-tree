@@ -407,9 +407,40 @@ export function registerPythonLsp(): void {
     })));
     disposables.push(monacoDisposable(server.onLog((text) => emitStatus("log", text))));
 
+    // ---- 语义 token(basedpyright semanticTokens → Monaco 语义着色)----
+    // 必须等 server 就绪(legend 已知)再注册:monaco 的
+    // SemanticTokensStylingService.getStyling 会按 provider 缓存 getLegend()
+    // 的返回值,拿空 legend 注册会让所有语义 token 因 "not-in-legend" 被丢弃。
+    const registerSemanticProvider = (): void => {
+        const legend = server.semanticTokensLegend;
+        if (!legend) return;
+        // server 重启(crash 后 didOpen 自动重连)后 fire 一次,让已打开文档重拉
+        const semanticChanged = new monaco.Emitter<void>();
+        disposables.push(semanticChanged);
+        disposables.push(monaco.languages.registerDocumentSemanticTokensProvider(language, {
+            onDidChange: semanticChanged.event,
+            getLegend() {
+                return legend;
+            },
+            async provideDocumentSemanticTokens(model) {
+                const entry = currentEditors.find((e) => e.editor.getModel() === model);
+                if (!entry) return {data: new Uint32Array(0)};
+                const data = await server.semanticTokensFull(entry.path);
+                // LSP 与 monaco 的五元组编码完全一致
+                // (deltaLine, deltaStartChar, length, tokenType, tokenModifiers)
+                return {data: new Uint32Array(data || [])};
+            },
+            releaseDocumentSemanticTokens() {
+                // 无资源需要释放
+            },
+        }));
+    };
+
     emitStatus("starting");
+    // start() 幂等:已就绪时立即 resolve,两个分支(新启动/已就绪)都只注册一次
     void server.start().then((ok) => {
         emitStatus(ok ? "ready" : "error", ok ? server.version : "启动失败");
+        if (ok) registerSemanticProvider();
     });
 }
 

@@ -172,6 +172,11 @@ export function createEditor(
         // 因为创建实例时的 theme 参数会全局覆盖 setTheme,导致扩展代码主题失效
         theme: getActiveThemeName() ?? (getCurrentMode() === 1 ? "siyuan-dark" : "siyuan-light"),
         automaticLayout: true,
+        // 语义 token 着色(basedpyright semanticTokens → 参数名/函数调用等 VS Code 同款颜色)。
+        // monaco standalone 默认关闭:主题没有 semanticHighlighting 标志入口,
+        // 这里靠编辑器选项经 updateConfigurationService 写入全局配置激活
+        // (isSemanticColoringEnabled 会查 configurationService 的该键)。
+        "semanticHighlighting.enabled": true,
         ...(buildEditorOptions() as monaco.editor.IStandaloneEditorConstructionOptions),
     };
     const editor = monaco.editor.create(container, options);

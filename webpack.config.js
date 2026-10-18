@@ -39,10 +39,15 @@ const SIYUAN_PLUGIN_DIR = process.env.SYFI_PLUGIN_DIR
 const NODE_PTY_SRC = path.resolve(__dirname, "scripts", "node_modules", "node-pty");
 const NODE_PTY_DEST = "node_modules/node-pty";
 
-// pyright(Python 语言服务器)依赖目录。它是**运行时**用 ELECTRON_RUN_AS_NODE
-// 拉起的独立 Node 进程,不能被 webpack 打包(webpack 会把它的 require 图当
-// 浏览器代码处理,连 fs 都用不了),必须原样复制。
-const PYRIGHT_SRC = path.resolve(__dirname, "node_modules", "pyright");
+// basedpyright(pyright 的开源 fork,MIT)语言服务器依赖目录。它是**运行时**用
+// ELECTRON_RUN_AS_NODE 拉起的独立 Node 进程,不能被 webpack 打包(webpack 会把
+// 它的 require 图当浏览器代码处理,连 fs 都用不了),必须原样复制。
+// 选用 basedpyright 而非原版 pyright:原版没有 semanticTokensProvider 能力
+// (VS Code 的语义高亮在闭源的 Pylance 里),basedpyright 在 initialize 结果里
+// 静态声明该能力,是语义着色(参数名/函数调用等)的数据源。
+// 注意:运行时入口路径仍是 <插件目录>/pyright/langserver.index.js —— 目标目录名
+// 保持 "pyright" 不变,python-lsp.ts 的定位逻辑与已部署的目录结构都不用动。
+const PYRIGHT_SRC = path.resolve(__dirname, "node_modules", "basedpyright");
 const PYRIGHT_DEST = "pyright";
 
 // zeromq(Task D / Jupyter 后端)。同为原生模块(.node 二进制 + 平台相关 build 目录),
@@ -54,14 +59,13 @@ const ZEROMQ_DEST = "node_modules/zeromq";
 /**
  * 生成 pyright 的复制规则。
  *
- * 整包原样复制(29M),不做任何排除 —— 用户明确要求「不需要管体积, 能用都用上」。
+ * 整包原样复制(约 35M),不做任何排除 —— 用户明确要求「不需要管体积, 能用都用上」。
  * 保留全部内容的理由(每项都会实际影响功能):
- *   dist/typeshed-fallback/stdlib  4.3M  Python 标准库存根,缺了满屏红波浪线
- *   dist/typeshed-fallback/stubs  18M   第三方库存根,缺了 import 全部报
+ *   dist/typeshed-fallback/stdlib  ~5M   Python 标准库存根,缺了满屏红波浪线
+ *   dist/typeshed-fallback/stubs   ~20M  第三方库存根,缺了 import 全部报
  *                                        "Import could not be resolved"
- *   dist/*.map                     ~3M   调试符号,排查 pyright 自身崩溃时有用
- *   dist/tests                      -     pyright 自测,留着无害
- * 相比这些,29M 体积不构成取舍理由。
+ *   dist/*.map                     ~8M   调试符号,排查 basedpyright 自身崩溃时有用
+ * 相比这些,体积不构成取舍理由。
  */
 function pyrightPatterns() {
     if (!fs.existsSync(PYRIGHT_SRC)) return [];

@@ -31,6 +31,18 @@ export type LogListener = (text: string) => void;
 /** CompletionItemKind 全量值(1..25),声明缺失会让 pyright 过滤掉部分补全 */
 const ALL_COMPLETION_ITEM_KINDS = Array.from({length: 25}, (_, i) => i + 1);
 
+/** 客户端可解码的语义 token 类型/修饰符(basedpyright 1.40 的 legend,实测探针取得)。
+ *  服务端会用它自己的 legend 返回,这里声明只是能力握手的一部分。 */
+const SEMANTIC_TOKEN_TYPES = [
+    "namespace", "type", "class", "enum", "typeParameter", "parameter", "variable",
+    "property", "enumMember", "function", "method", "keyword", "decorator",
+    "selfParameter", "clsParameter",
+];
+const SEMANTIC_TOKEN_MODIFIERS = [
+    "declaration", "definition", "readonly", "static", "async", "defaultLibrary",
+    "builtin", "classMember", "parameter",
+];
+
 /** 客户端能力声明。
  *  只声明真正实现了的:monaco 侧要能消费 completion / hover / definition /
  *  references / signatureHelp / documentSymbol / diagnostics。
@@ -75,6 +87,22 @@ const CLIENT_CAPABILITIES = {
         typeDefinition: {dynamicRegistration: false, linkSupport: false},
         references: {dynamicRegistration: false},
         documentSymbol: {dynamicRegistration: false, hierarchicalDocumentSymbolSupport: true},
+        // 语义 token:basedpyright 实测 gate —— dynamicRegistration=false 时
+        // initialize 结果里根本不会声明 semanticTokensProvider(探针两次对照),
+        // 必须声明 true 才拿得到语义着色数据源。虽然我们不会处理服务端的
+        // 动态注册通知(client/registerCapability 回 null),但 basedpyright
+        // 是静态声明 provider 的,动态注册那一路实际不会走。
+        semanticTokens: {
+            dynamicRegistration: true,
+            tokenTypes: SEMANTIC_TOKEN_TYPES,
+            tokenModifiers: SEMANTIC_TOKEN_MODIFIERS,
+            formats: ["relative"],
+            requests: {range: false, full: {delta: false}},
+            multilineTokenSupport: false,
+            overlappingTokenSupport: false,
+            serverCancelSupport: false,
+            augmentsSyntaxTokens: true,
+        },
         // 诊断走 push(publishDiagnostics),不 pull
         publishDiagnostics: {
             relatedInformation: true,
@@ -130,6 +158,13 @@ export class PythonLanguageServer {
 
     get version(): string {
         return this.serverInfo.version || "";
+    }
+
+    /** 语义 token legend(server 就绪后才有值;null = 服务端不支持语义 token) */
+    private semanticLegend: {tokenTypes: string[]; tokenModifiers: string[]} | null = null;
+
+    get semanticTokensLegend(): {tokenTypes: string[]; tokenModifiers: string[]} | null {
+        return this.semanticLegend;
     }
 
     onDiagnostics(cb: DiagnosticsListener): () => void {
@@ -281,6 +316,15 @@ export class PythonLanguageServer {
             }, 40000);
 
             this.serverInfo = result?.serverInfo || {};
+            // 捕获语义 token legend(provider 在 server 就绪后才注册,见 bridge)
+            const stp = result?.capabilities?.semanticTokensProvider;
+            if (stp?.legend?.tokenTypes?.length) {
+                this.semanticLegend = {
+                    tokenTypes: stp.legend.tokenTypes,
+                    tokenModifiers: stp.legend.tokenModifiers || [],
+                };
+                this.log(`semanticTokens 可用:${this.semanticLegend.tokenTypes.length} types`);
+            }
             // initialized 必须在 initialize 响应之后发,少一步服务商会一直不响应
             conn.notify("initialized", {});
 
@@ -569,6 +613,25 @@ export class PythonLanguageServer {
         }
     }
 
+    /** 全文档语义 token(LSP 五元组 deltaLine/deltaStartChar/length/type/modifiers)。
+     *  与 Monaco 期望的编码完全一致,bridge 层直接转 Uint32Array 即可。 */
+    async semanticTokensFull(fsPath: string): Promise<number[] | null> {
+        const conn = this.requireConn();
+        if (!conn || !this.semanticLegend) return null;
+        const uri = pathToUri(fsPath);
+        if (!this.openDocs.has(uri)) return null;
+        try {
+            const res = await conn.request<{data?: number[]}>(
+                "textDocument/semanticTokens/full",
+                {textDocument: {uri}},
+                10000,
+            );
+            return res?.data ?? null;
+        } catch {
+            return null;
+        }
+    }
+
     /** 主动拉一次诊断(pull 模式)。
      *  pyright 默认 push,但切到 pull 时、或刚 didChange 后想立刻看结果时用。 */
     async pullDiagnostics(fsPath: string): Promise<LspDiagnostic[] | null> {
@@ -614,6 +677,8 @@ function locatePyrightEntry(): string | null {
         if (pluginDir) {
             candidates.push(path.join(pluginDir, "pyright", "langserver.index.js"));
         }
+        // 开发态:basedpyright(语义 token 数据源)优先,pyright 作为旧安装兜底
+        candidates.push(path.join(process.cwd(), "node_modules", "basedpyright", "langserver.index.js"));
         candidates.push(path.join(process.cwd(), "node_modules", "pyright", "langserver.index.js"));
     } catch {
         // ignore
