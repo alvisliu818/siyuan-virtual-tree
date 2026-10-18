@@ -1,6 +1,6 @@
 {
   "name": "siyuan-virtual-tree",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "VSCode-like file editor & Obsidian-like file manager for SiYuan, powered by Monaco Editor.",
   "main": "index.js",
   "scripts": {
