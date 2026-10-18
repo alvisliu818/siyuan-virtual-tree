@@ -4393,12 +4393,56 @@ button.syfe-editor__arrow--exp:hover {
     line-height: 1.5;
 }
 
+/* VS Code 式左右分栏:左分类树 + 右设置项 */
+.syfe-es__main {
+    display: flex;
+    align-items: stretch;
+    min-height: 0;
+    max-height: 52vh;
+    border: 1px solid var(--b3-border-color);
+    border-radius: var(--b3-border-radius, 4px);
+    overflow: hidden;
+}
+
+.syfe-es__nav {
+    flex-shrink: 0;
+    width: 168px;
+    overflow: auto;
+    padding: 6px 6px;
+    border-right: 1px solid var(--b3-border-color);
+    background: var(--b3-theme-background-light, transparent);
+}
+
+.syfe-es__navitem {
+    padding: 4px 10px;
+    margin: 1px 0;
+    border-radius: 4px;
+    font-size: 13px;
+    cursor: pointer;
+    color: var(--b3-theme-on-background);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+
+    &:hover {
+        background: var(--b3-list-hover);
+    }
+}
+
+.syfe-es__navitem--active {
+    background: var(--b3-list-hover);
+    color: var(--b3-theme-primary);
+    font-weight: 500;
+}
+
 .syfe-es__body {
+    flex: 1;
+    min-width: 0;
     display: flex;
     flex-direction: column;
     gap: 14px;
-    max-height: 52vh;
     overflow: auto;
+    padding: 10px 12px 10px 14px;
 }
 
 .syfe-es__grouptitle {

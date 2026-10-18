@@ -173,8 +173,13 @@ export function buildEditorSettingsBlock(): HTMLElement {
         ),
     );
 
-    // 分组
-    const groups: Array<{name: string; el: HTMLElement; rows: HTMLElement[]}> = [];
+    // 左树 + 右内容(VS Code 式):分组行一次性全部构建,切换分类只切 display——
+    // syncFns 因此只收集一次,不会随切换重复增长
+    const main = h("div", "syfe-es__main");
+    const nav = h("div", "syfe-es__nav");
+    const body = h("div", "syfe-es__body");
+
+    const groups: Array<{name: string; el: HTMLElement; rows: HTMLElement[]; navItem: HTMLElement}> = [];
     const byGroup = new Map<string, SettingDef[]>();
     EDITOR_DEFS.forEach(d => {
         const list = byGroup.get(d.group) || [];
@@ -183,7 +188,30 @@ export function buildEditorSettingsBlock(): HTMLElement {
     });
     const ordered = [...GROUP_ORDER.filter(g => byGroup.has(g)), ...[...byGroup.keys()].filter(g => GROUP_ORDER.indexOf(g) < 0)];
 
-    const body = h("div", "syfe-es__body");
+    let active = "";
+    try {
+        active = localStorage.getItem("syfe-es-category") || "";
+    } catch {
+        // localStorage 不可用时落到第一组
+    }
+    if (ordered.indexOf(active) < 0) active = ordered[0] || "";
+
+    const select = (name: string) => {
+        active = name;
+        try {
+            localStorage.setItem("syfe-es-category", name);
+        } catch {
+            // 忽略
+        }
+        if (search.value) search.value = "";
+        groups.forEach(g => {
+            const on = g.name === name;
+            g.el.style.display = on ? "" : "none";
+            g.navItem.classList.toggle("syfe-es__navitem--active", on);
+        });
+        body.scrollTop = 0;
+    };
+
     for (const name of ordered) {
         const defs = byGroup.get(name) || [];
         const group = h("div", "syfe-es__group");
@@ -194,20 +222,33 @@ export function buildEditorSettingsBlock(): HTMLElement {
             group.appendChild(row);
             rows.push(row);
         }
-        groups.push({name, el: group, rows});
+        const navItem = h("div", "syfe-es__navitem", `${name} (${defs.length})`);
+        navItem.title = name;
+        navItem.addEventListener("click", () => select(name));
+        nav.appendChild(navItem);
+        groups.push({name, el: group, rows, navItem});
         body.appendChild(group);
     }
-    root.appendChild(body);
+    main.appendChild(nav);
+    main.appendChild(body);
+    root.appendChild(main);
+    select(active);
 
-    // 搜索过滤:同时匹配键名、标题、说明与分组名,便于"只记得中文"时也能找到
+    // 搜索过滤:跨分组平铺(命中的组都显示,组内只留命中行),左侧树取消高亮;
+    // 清空搜索回到当前选中分类
     search.addEventListener("input", () => {
         const q = search.value.trim().toLowerCase();
+        if (!q) {
+            select(active);
+            return;
+        }
         groups.forEach(g => {
+            g.navItem.classList.remove("syfe-es__navitem--active");
             let visible = 0;
             g.rows.forEach(row => {
                 const def = EDITOR_DEFS.find(d => d.key === row.dataset.key);
                 const hay = `${row.dataset.key} ${def?.title || ""} ${def?.description || ""} ${g.name}`.toLowerCase();
-                const hit = !q || hay.indexOf(q) >= 0;
+                const hit = hay.indexOf(q) >= 0;
                 row.style.display = hit ? "" : "none";
                 if (hit) visible++;
             });
