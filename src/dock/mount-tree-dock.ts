@@ -619,12 +619,17 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
              * 文档不在挂载范围时不弹提示、也不强行展开面板 —— 打开文档才是主动作,
              * 树的闪烁只是顺带告诉你"它在这儿"。
              */
-            const locateDocInMountTree = async (docId: string, silent = false): Promise<void> => {
-                // 面板不可见 → 先点 dock 图标展开(闪烁要看得见才有意义)
+            const locateDocInMountTree = async (docId: string, silent = false, revealPanel = true): Promise<void> => {
                 const dockItem = document.querySelector(`.dock__item[data-type$="${MOUNT_TREE_DOCK_TYPE}"]`) as HTMLElement | null;
                 const dockVisible = !!document.querySelector(".syfe-mtree-dock")?.getClientRects().length;
-                if (!dockVisible && dockItem) dockItem.click();
-                if (!dockVisible) await sleepMs(300);
+                if (revealPanel) {
+                    // 面板不可见 → 先点 dock 图标展开(闪烁要看得见才有意义)
+                    if (!dockVisible && dockItem) dockItem.click();
+                    if (!dockVisible) await sleepMs(300);
+                } else if (!dockVisible) {
+                    // 被动定位(打开文档后顺带闪一下):面板没显示就别展开、也别白等
+                    return;
+                }
                 const rows = await querySQL(`SELECT box, path FROM blocks WHERE id = '${docId.replace(/'/g, "''")}' AND type = 'd' LIMIT 1`);
                 const stPath = rows && rows[0] ? String(rows[0].path || "") : "";
                 if (!stPath) {
@@ -725,10 +730,13 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
             };
             const locateMountHandler = () => { void locateActiveInMountTree(); };
             window.addEventListener("syfe:mount-tree-locate", locateMountHandler);
-            // 外部触发:点击固定/最近里的思源文档时,顺带在树上闪烁定位(静默失败)
+            // 外部触发:点击固定/最近里的思源文档时,顺带在树上闪烁定位(静默失败)。
+            // detail.revealPanel=false(默认,见 entry-menu 的顺带定位)→ 面板没开就不展开
             window.addEventListener("syfe:mount-tree-locate-doc", (e: Event) => {
-                const id = (e as CustomEvent).detail?.docId;
-                if (typeof id === "string" && id) void locateDocInMountTree(id, true);
+                const detail = (e as CustomEvent).detail || {};
+                const id = detail?.docId;
+                const revealPanel = detail?.revealPanel !== false;
+                if (typeof id === "string" && id) void locateDocInMountTree(id, true, revealPanel);
             });
 
             /** 定位当前文档:退出聚焦 → 展开沿途 → 滚动到该行并闪烁提示 */

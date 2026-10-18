@@ -116,9 +116,11 @@ export function openSiyuanDocAuto(id: string, app?: any): void {
     })();
 }
 
-// 让虚拟文档树闪烁定位到某篇文档(挂载树面板监听;未挂载时静默无动作)
-export function locateSiyuanDocInMountTree(docId: string): void {
-    dispatchMountTreeEvent("syfe:mount-tree-locate-doc", {docId});
+// 让虚拟文档树闪烁定位到某篇文档(挂载树面板监听;未挂载时静默无动作)。
+// revealPanel 默认 false:打开文档后的"顺带定位"只在面板本来就开着时闪一下,
+// 绝不替用户把面板展开 —— 从新标签页/最近使用点文档时弹出面板属于打扰。
+export function locateSiyuanDocInMountTree(docId: string, revealPanel = false): void {
+    dispatchMountTreeEvent("syfe:mount-tree-locate-doc", {docId}, {revealPanel});
 }
 
 // 打开条目:文档 → 自动识别文档/笔记本后打开(笔记本 id 用 openSiyuanDoc 打不开);

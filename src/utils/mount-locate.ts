@@ -7,10 +7,17 @@
 
 const DOCK_ITEM_SEL = '.dock__item[data-type$="siyuan-file-editor-mount-tree-dock"]';
 
-export function dispatchMountTreeEvent(type: string, detail: Record<string, unknown>): void {
+// opts.revealPanel=false:只是"顺带闪烁定位",面板没打开时**不要**替用户打开它
+// (从新标签页/最近使用点一篇思源文档就弹出虚拟文档树面板,属于打扰)。
+export function dispatchMountTreeEvent(
+    type: string,
+    detail: Record<string, unknown>,
+    opts?: {revealPanel?: boolean},
+): void {
+    const revealPanel = opts?.revealPanel !== false;
     const fire = () => {
         try {
-            window.dispatchEvent(new CustomEvent(type, {detail}));
+            window.dispatchEvent(new CustomEvent(type, {detail: {...detail, revealPanel}}));
         } catch {
             // 派发失败静默(调用方的主动作不受影响)
         }
@@ -20,6 +27,8 @@ export function dispatchMountTreeEvent(type: string, detail: Record<string, unkn
         fire();
         return;
     }
+    // 不主动展开:面板从未创建 → 事件没人接,直接跳过(创建即显示,会打扰用户)
+    if (!revealPanel) return;
     // 面板从未创建:点一次 dock 图标触发创建并显示,等它出现后再发
     const dockItem = document.querySelector<HTMLElement>(DOCK_ITEM_SEL);
     if (!dockItem) {
