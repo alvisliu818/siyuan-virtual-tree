@@ -46,23 +46,36 @@ function openDocByProtocol(id: string): void {
 }
 
 // 打开思源文档:优先 openTab 在当前应用内直接打开正文(挂载文档/最近文档等场景
-// 系统协议未注册或无法唤起时协议跳转会静默失败);失败再回退 siyuan:// 协议
-export function openSiyuanDoc(id: string, app?: any): void {
+// 系统协议未注册或无法唤起时协议跳转会静默失败);失败再回退 siyuan:// 协议。
+// 返回:openTab 成功 → true;openTab 失败转协议 / 未传 app 走协议 → false
+// (协议跳转是 fire-and-forget,结果无法确认,调用方不能据此声称"已打开")。
+export function openSiyuanDoc(id: string, app?: any): Promise<boolean> {
     if (app) {
         try {
-            void openTab({app, doc: {id}}).catch(() => openDocByProtocol(id));
-            return;
+            return openTab({app, doc: {id}}).then(
+                () => true,
+                () => {
+                    openDocByProtocol(id);
+                    return false;
+                });
         } catch {
             // openTab 不可用时走协议跳转
         }
     }
     openDocByProtocol(id);
+    return Promise.resolve(false);
 }
 
 // 打开思源笔记本:笔记本 id 与文档 id 同格式,但 openTab/siyuan:// 协议都打不开
-// (两者只认文档/块 id,对笔记本 id 静默失败)。这里打开笔记本下的第一篇文档;
-// 笔记本为空时给出提示。
+// (两者只认文档/块 id,对笔记本 id 静默失败)。「启用顶层笔记本文档」时笔记本
+// 自己就是那篇顶层文档(id 相同),直接按文档打开;否则打开笔记本下的第一篇文档,
+// 且只在确认打开成功后才提示——协议回退的结果无法确认,不能谎称"已打开"。
 export async function openSiyuanNotebook(id: string, app?: any): Promise<void> {
+    if (isBoxDocEnabled()) {
+        await openSiyuanDoc(id, app);
+        locateSiyuanDocInMountTree(id);
+        return;
+    }
     let first: {name: string; docId: string} | null = null;
     try {
         const kids = await virtualListDir(VIRTUAL_PREFIX + "nb/" + id);
@@ -75,10 +88,12 @@ export async function openSiyuanNotebook(id: string, app?: any): Promise<void> {
         showMessage("该笔记本下还没有文档", 2500, "info");
         return;
     }
-    openSiyuanDoc(first.docId, app);
+    const ok = await openSiyuanDoc(first.docId, app);
     // 树里若挂载了该笔记本/文档,顺带闪烁定位到打开的这篇
     locateSiyuanDocInMountTree(first.docId);
-    showMessage(`笔记本没有自己的正文,已打开其中的文档:${first.name}`, 3000, "info");
+    if (ok) {
+        showMessage(`笔记本没有自己的正文,已打开其中的文档:${first.name}`, 3000, "info");
+    }
 }
 
 // 自动识别文档/笔记本后走对应的打开逻辑(固定/收藏/最近里的条目可能是笔记本 id)
@@ -142,7 +157,7 @@ export function showEntryMenu(opts: {
             icon: "iconOpen",
             label: "打开文档",
             // 条目可能是笔记本 id,走自动识别(笔记本 → 打开其中第一篇文档)
-            click: () => openSiyuanDocAuto(target.id!),
+            click: () => openSiyuanDocAuto(target.id!, plugin.app),
         });
         menu.addSeparator();
         menu.addItem({

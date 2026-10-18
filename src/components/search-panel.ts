@@ -641,8 +641,8 @@ export function createSearchTabConfig(plugin: IPluginForSearch) {
                 if (!path) return;
                 const docId = item.dataset.docId;
                 if (docId) {
-                    // 虚拟文档树:思源文档/块 → 打开并定位
-                    openSiyuanDoc(docId);
+                    // 虚拟文档树:思源文档/块 → 打开并定位(传 app 走 openTab,协议回退会静默失败)
+                    openSiyuanDoc(docId, plugin.app);
                     return;
                 }
                 if (item.dataset.kind === "name") {

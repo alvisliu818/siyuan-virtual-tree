@@ -1328,14 +1328,16 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
             };
 
             // 打开挂载项(文件→编辑器;笔记本→打开其中第一篇文档;文档/块→思源协议定位)
+            // 必须传 plugin.app:openTab 在应用内直接打开;不传会走 siyuan:// 系统协议,
+            // 协议未注册/唤起失败时静默失败(什么都不打开)。
             const openMount = (item: MountItem) => {
                 if (item.kind === "file" && item.path) {
                     openFileTab(plugin as any, item.path);
                 } else if (item.kind === "notebook" && item.targetId) {
                     // 笔记本 id 用 openSiyuanDoc(openTab/协议)打不开,走打开其中第一篇文档
-                    void openSiyuanNotebook(item.targetId);
+                    void openSiyuanNotebook(item.targetId, plugin.app);
                 } else if (item.targetId) {
-                    openSiyuanDoc(item.targetId);
+                    openSiyuanDoc(item.targetId, plugin.app);
                 }
             };
 
@@ -1484,16 +1486,16 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                     return;
                 }
                 if (row.kind === "doc") {
-                    openSiyuanDoc(row.docId);
+                    openSiyuanDoc(row.docId, plugin.app);
                     return;
                 }
                 // 自动挂载行:点名称打开文档(箭头由上面统一分支处理展开/收起)
                 if (row.kind === "auto") {
-                    openSiyuanDoc(row.docId);
+                    openSiyuanDoc(row.docId, plugin.app);
                     return;
                 }
                 if (row.kind === "block") {
-                    openSiyuanDoc(row.blockId);
+                    openSiyuanDoc(row.blockId, plugin.app);
                     return;
                 }
             };
@@ -1684,7 +1686,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                     // 挂载的块:定位/复制块链接/文档标签 + 固定收藏 + 取消挂载/挂载入口
                     const it = row.item;
                     const menu = new Menu();
-                    menu.addItem({icon: "iconOpen", label: "定位到块", click: () => openSiyuanDoc(it.targetId!)});
+                    menu.addItem({icon: "iconOpen", label: "定位到块", click: () => openSiyuanDoc(it.targetId!, plugin.app)});
                     menu.addItem({
                         icon: "iconLink",
                         label: "复制块链接",
@@ -1728,7 +1730,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 }
                 if (row.kind === "block") {
                     const menu = new Menu();
-                    menu.addItem({icon: "iconOpen", label: "定位到块", click: () => openSiyuanDoc(row.blockId)});
+                    menu.addItem({icon: "iconOpen", label: "定位到块", click: () => openSiyuanDoc(row.blockId, plugin.app)});
                     menu.addItem({
                         icon: "iconTags",
                         label: "文档标签…",
