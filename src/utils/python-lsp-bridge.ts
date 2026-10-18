@@ -57,12 +57,6 @@ function toMarkerSeverity(sev: number | undefined): monaco.MarkerSeverity {
     }
 }
 
-/** 取路径的目录部分(兼容 / 与 \ 分隔;渲染进程没有 node path) */
-function dirnameOf(fsPath: string): string {
-    const i = Math.max(fsPath.lastIndexOf("/"), fsPath.lastIndexOf("\\"));
-    return i > 0 ? fsPath.slice(0, i) : fsPath;
-}
-
 /** LSP CompletionItemKind(1..25) → Monaco CompletionItemKind(1..24) */
 function toCompletionItemKind(kind: number | undefined): monaco.languages.CompletionItemKind {
     // 两者取值基本一致,只需处理越界(避免 undefined 落到 0)
@@ -103,11 +97,10 @@ export function registerPythonEditor(
     editorPathMap.set(editor, fsPath);
 
     if (isPyrightAvailable()) {
-        // root 用打开文件所在目录,而不是思源工作区:插件是 openFilesOnly 模式,
-        // 语义分析只依赖打开文件 + typeshed,root 只决定源文件枚举范围。
-        // root 给工作区(E:\HOME\SiYuan)会枚举全部插件目录(pyright 整包、
-        // node_modules、git 仓库等),实测 10 秒枚举超时警告刷屏。
-        const server = getPythonLanguageServer(dirnameOf(fsPath));
+        // workspaceRoot 保持为空(用户定案):不指向任何磁盘目录,pyright 对
+        // 打开文件的语义分析(openFilesOnly)不受影响,只是没有 workspace 枚举。
+        // root 为空时 pyright 会打 <default workspace root> 占位符日志,属预期。
+        const server = getPythonLanguageServer();
         // 后台启动,不阻塞编辑器可用性;ready 之前 provider 会走内核兜底
         void server.start().then((ok) => {
             if (ok) {
