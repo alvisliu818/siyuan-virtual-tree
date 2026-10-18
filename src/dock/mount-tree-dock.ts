@@ -973,8 +973,11 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
             };
 
             // 思源文档/笔记本下的子文档(按虚拟路径 sydoc://… 缓存;笔记本根是 sydoc://nb/<id>)。
-            // ownerUid = 这些行所属的挂载节点(虚拟文档行不是挂载项,右键嵌套挂载时要用它定位宿主)
-            const emitDocs = (vPath: string, depth: number, out: Row[], ownerUid?: string): void => {
+            // owner = 这些行所属的挂载节点:虚拟文档行不是挂载项,右键嵌套挂载时要用它定位宿主。
+            // 同层去重且**位置保持**:同一文档若已作为显式挂载子项挂在 owner 下,不再另出虚拟行,
+            // 而是在虚拟行的原位置渲染挂载行(renderMount,由 walk 传入)——挂载行是虚拟行的
+            // 超集(可嵌套挂载/取消挂载),信息无损;取消挂载后虚拟行自然回来。
+            const emitDocs = (vPath: string, depth: number, out: Row[], owner?: MountItem, renderMount?: (it: MountItem, depth: number) => void): void => {
                 const key = "d:" + vPath;
                 const kids = self._cache!.get(key) as DirEntry[] | undefined;
                 if (!kids) {
@@ -985,19 +988,31 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                     out.push({kind: "empty", depth});
                     return;
                 }
+                const mountedMap = new Map(
+                    (owner?.children || [])
+                        .filter(c => c.kind === "doc" || c.kind === "notebook")
+                        .map(c => [c.targetId || "", c] as const),
+                );
                 for (const e of kids) {
                     const childPath = String(e.path);
+                    const childId = virtualId(childPath);
+                    const mountedChild = mountedMap.get(childId);
+                    if (mountedChild) {
+                        // 已挂载:顶替虚拟行、在原位置渲染挂载行
+                        if (renderMount) renderMount(mountedChild, depth);
+                        continue;
+                    }
                     const ex = self._expanded!.has("d:" + childPath);
                     // icon/subFileCount 来自 listDocsByPath,用于渲染思源文档树同款图标
                     out.push({
-                        kind: "doc", docId: virtualId(childPath), name: String(e.name), depth, expanded: ex,
-                        icon: e.icon, subFileCount: e.subFileCount, ownerUid,
+                        kind: "doc", docId: childId, name: String(e.name), depth, expanded: ex,
+                        icon: e.icon, subFileCount: e.subFileCount, ownerUid: owner?.uid,
                     });
-                    if (ex) emitDocs(childPath, depth + 1, out, ownerUid);
+                    if (ex) emitDocs(childPath, depth + 1, out, owner, renderMount);
                 }
             };
 
-            const emitBlocks = (blockId: string, depth: number, out: Row[], ownerUid?: string): void => {
+            const emitBlocks = (blockId: string, depth: number, out: Row[], owner?: MountItem, renderMount?: (it: MountItem, depth: number) => void): void => {
                 const key = "b:" + blockId;
                 const kids = self._cache!.get(key) as BlockNode[] | undefined;
                 if (!kids) {
@@ -1008,10 +1023,19 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                     out.push({kind: "empty", depth});
                     return;
                 }
+                // 同层去重且位置保持:已显式挂载的块顶替虚拟块行
+                const mountedMap = new Map(
+                    (owner?.children || []).filter(c => c.kind === "block").map(c => [c.targetId || "", c] as const),
+                );
                 for (const b of kids) {
+                    const mountedChild = mountedMap.get(b.id);
+                    if (mountedChild) {
+                        if (renderMount) renderMount(mountedChild, depth);
+                        continue;
+                    }
                     const ex = self._expanded!.has("b:" + b.id);
-                    out.push({kind: "block", blockId: b.id, name: blockTitle(b.content, b.type), depth, expanded: ex, ownerUid});
-                    if (ex) emitBlocks(b.id, depth + 1, out, ownerUid);
+                    out.push({kind: "block", blockId: b.id, name: blockTitle(b.content, b.type), depth, expanded: ex, ownerUid: owner?.uid});
+                    if (ex) emitBlocks(b.id, depth + 1, out, owner, renderMount);
                 }
             };
 
@@ -1113,15 +1137,31 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                     const hasChildren = mountHasKids(item);
                     rows.push({kind: "mount", uid: item.uid, depth, expanded, hasChildren, item});
                     if (!expanded) return;
-                    for (const c of item.children) walk(c, depth + 1);
+                    // 与自动子项(思源子文档/子块)同目标的挂载子项不在顶部渲染——
+                    // 它们会在下面的 emitDocs/emitBlocks 里顶替虚拟行,保持文档中的原位置。
+                    // 子项列表尚未加载(cache undefined)时先按老行为全量渲染,加载后重绘即归位。
+                    let autoIds: Set<string> | null = null;
+                    if (item.kind === "doc" || item.kind === "notebook") {
+                        const autoKids = self._cache!.get(autoKeyOf(item)) as DirEntry[] | undefined;
+                        autoIds = new Set((autoKids || []).map(e => virtualId(String(e.path || ""))));
+                    } else if (item.kind === "block") {
+                        const autoKids = self._cache!.get(autoKeyOf(item)) as BlockNode[] | undefined;
+                        autoIds = new Set((autoKids || []).map(b => b.id));
+                    }
+                    for (const c of item.children) {
+                        const isCounterpart = !!autoIds && !!c.targetId && autoIds.has(c.targetId)
+                            && (item.kind === "block" ? c.kind === "block" : c.kind === "doc" || c.kind === "notebook");
+                        if (isCounterpart) continue;
+                        walk(c, depth + 1);
+                    }
                     if (item.kind === "file" && item.isDir) emitDir(item.path!, depth + 1, rows);
                     else if (item.kind === "doc") {
                         // 引用配置开启:子项 = 自动挂载行(引用文档 + 物理子文档);关闭:回退为仅子文档
                         if (relationEnabled()) emitAutoLevel(item.targetId!, findRelationNode(relationRoots, item.targetId!)?.children || [], depth + 1, rows);
-                        else emitDocs("sydoc://" + item.targetId!, depth + 1, rows, item.uid);
+                        else emitDocs("sydoc://" + item.targetId!, depth + 1, rows, item, (c, d) => walk(c, d));
                     }
-                    else if (item.kind === "notebook") emitDocs("sydoc://nb/" + item.targetId!, depth + 1, rows, item.uid);
-                    else if (item.kind === "block") emitBlocks(item.targetId!, depth + 1, rows, item.uid);
+                    else if (item.kind === "notebook") emitDocs("sydoc://nb/" + item.targetId!, depth + 1, rows, item, (c, d) => walk(c, d));
+                    else if (item.kind === "block") emitBlocks(item.targetId!, depth + 1, rows, item, (c, d) => walk(c, d));
                 };
                 for (const r of getRoots()) walk(r, 0);
                 return rows;
