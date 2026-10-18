@@ -7,7 +7,7 @@
 // - 「代码编辑器」父页 = buildEditorAllPanel()(工具条 + 全部子组平铺)
 // - 每个子分类 = buildEditorGroupPanel(name)(单组)
 // 组 DOM 只构建一次并缓存,父页与子页共享同一份(切换时 DOM 移动,不重复构建)。
-import {showMessage} from "siyuan";
+import {Menu, showMessage} from "siyuan";
 import {
     EDITOR_DEFS,
     GROUP_ORDER,
@@ -51,6 +51,79 @@ function toControlText(d: SettingDef, value: any): string {
 function fromControlText(d: SettingDef, text: string): any {
     if (d.kind === "numberArray") return parseNumberList(text);
     return normalizeValue(d, text);
+}
+
+// ---------- 字体族"+"选择器 ----------
+
+// 候选字体:常见等宽/编程字体 + 常见中文字体(用 canvas 宽度探测是否真的安装,
+// 不依赖 Local Font Access API 权限 —— Electron 里 queryLocalFonts 默认被拒)。
+const FONT_CANDIDATES: string[] = [
+    "Consolas", "Cascadia Code", "Cascadia Mono", "Courier New", "Lucida Console",
+    "JetBrains Mono", "Fira Code", "Fira Mono", "Source Code Pro", "IBM Plex Mono",
+    "Roboto Mono", "Ubuntu Mono", "DejaVu Sans Mono", "Inconsolata", "Hack",
+    "Victor Mono", "Iosevka", "Maple Mono", "LXGW WenKai Mono", "霞鹜文楷 等宽",
+    "Sarasa Mono SC", "Sarasa Term SC", "更纱黑体 Mono", "Menlo", "Monaco",
+    "SF Mono", "Andale Mono", "Liberation Mono", "Noto Sans Mono", "Noto Sans Mono CJK SC",
+    "Microsoft YaHei Mono", "微软雅黑", "等线", "黑体", "宋体",
+];
+
+/** 用 canvas 测宽探测候选字体哪些真的装了(未安装时回退 monospace,宽度与基准一致) */
+function detectInstalledFonts(): string[] {
+    try {
+        const canvas = document.createElement("canvas");
+        canvas.width = 300;
+        canvas.height = 60;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return [];
+        // 探测文本:等宽字形密集 + 中文字形,保证等宽字体之间、等宽与 CJK 字体之间有宽度差
+        const probe = "mmmwwwiiilll1009一國體";
+        const baseW = (() => {
+            ctx.font = "48px monospace";
+            return ctx.measureText(probe).width;
+        })();
+        return FONT_CANDIDATES.filter(name => {
+            ctx.font = `48px "${name}", monospace`;
+            const w = ctx.measureText(probe).width;
+            return Math.abs(w - baseW) > 0.5;
+        });
+    } catch {
+        return [];
+    }
+}
+
+/** 把选中的字体名追加到字体族输入框(带空格的名字自动加引号,逗号分隔) */
+function appendFontFamily(input: HTMLInputElement, font: string): void {
+    const token = /\s/.test(font) ? `'${font}'` : font;
+    const cur = input.value.trim();
+    // 已存在(不区分引号)就不重复追加
+    const exists = cur.split(",").some(part => part.trim().replace(/^['"]|['"]$/g, "") === font);
+    if (exists) {
+        showMessage(`字体族里已有 ${font}`, 2000, "info");
+        return;
+    }
+    input.value = cur ? `${cur.replace(/,\s*$/, "")}, ${token}` : token;
+    input.dispatchEvent(new Event("change"));
+}
+
+/** 弹出字体列表菜单(仅列出探测到的已安装字体) */
+function openFontPicker(input: HTMLInputElement, btn: HTMLElement): void {
+    const installed = detectInstalledFonts();
+    // 第三个参 independent=true:独立菜单。共用全局菜单时,首次弹出后全局菜单的
+    // data-name 残留为同 id → 再次构造 isOpen=true → addItem/open 全部被跳过,菜单永不弹出
+    const menu = new Menu("syfe-font-picker", () => undefined, true);
+    if (installed.length === 0) {
+        menu.addItem({iconHTML: "", label: "未检测到候选字体", click: () => undefined});
+    } else {
+        for (const font of installed) {
+            menu.addItem({
+                iconHTML: "",
+                label: font,
+                click: () => appendFontFamily(input, font),
+            });
+        }
+    }
+    const rect = btn.getBoundingClientRect();
+    menu.open({x: rect.left, y: rect.bottom + 4});
 }
 
 // ---------- 单个设置项 ----------
@@ -109,7 +182,29 @@ function buildRow(d: SettingDef): {row: HTMLElement; sync: () => void} {
             input.type = "text";
             if (d.placeholder) input.placeholder = d.placeholder;
         }
-        control = input;
+        if (d.fontPicker) {
+            // 字体族:输入框尾部加"+"按钮,弹出系统已安装字体列表选中追加
+            const wrap = h("div", "b3-form__group");
+            wrap.style.display = "flex";
+            wrap.style.alignItems = "center";
+            wrap.style.gap = "4px";
+            wrap.style.flex = "1";
+            input.style.flex = "1";
+            const btn = document.createElement("button");
+            btn.type = "button";
+            btn.className = "b3-button b3-button--text";
+            btn.title = "从系统字体列表添加";
+            btn.style.padding = "0 6px";
+            btn.style.fontSize = "16px";
+            btn.style.lineHeight = "1";
+            btn.textContent = "+";
+            btn.addEventListener("click", () => openFontPicker(input, btn));
+            wrap.appendChild(input);
+            wrap.appendChild(btn);
+            control = wrap;
+        } else {
+            control = input;
+        }
         read = () => setUserValue(d.key, fromControlText(d, input.value));
         sync = () => { input.value = toControlText(d, getResolved(d.key)); };
         input.addEventListener("change", () => {

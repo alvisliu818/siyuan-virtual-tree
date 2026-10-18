@@ -76,16 +76,21 @@ function serializeAll(): string {
 
 // ---------- 读写 ----------
 
-async function readRawText(): Promise<string> {
+async function readRawText(): Promise<string | null> {
     if (!loader) return "";
     try {
         const data = await loader(SETTINGS_FILE);
         if (typeof data === "string") return data;
         if (data && typeof data === "object") return JSON.stringify(data, null, 4);
-    } catch {
-        // 读不到(首次使用)按空处理
+        // loadData 对不存在的文件返回空(null/undefined):视作首次使用
+        return "";
+    } catch (e) {
+        // 读取失败(内核瞬时异常/页面卸载竞态)≠ 文件不存在。
+        // 返回 null 让调用方跳过 seed —— 否则部署/重载后偶发的读取失败会把
+        // 用户的 settings.json 用 seed 默认值整个覆盖掉(实测踩过:字体设置丢失)。
+        console.warn("[siyuan-file-editor] settings.json 读取失败,本次跳过初始化(不 seed):", e);
+        return null;
     }
-    return "";
 }
 
 function parseInto(text: string): boolean {
@@ -141,22 +146,26 @@ export async function initUserSettings(plugin: any, cfg?: EditorConfig): Promise
     saver = (n: string, d: any) => plugin.saveData(n, d);
 
     const text = await readRawText();
-    const own = parseInto(text);
-    // 文件不存在、或里面的内容根本不是用户设置(settings.json 这个名字早先被
-    // code-render 模块占用过)→ 重新生成一份,顺便把旧版 config.json 的编辑器设置迁过来
-    if (!text.trim() || !own || !rawText) {
-        const seed: Record<string, unknown> = {};
-        if (cfg) {
-            seed["editor.fontSize"] = cfg.fontSize;
-            seed["editor.tabSize"] = cfg.tabSize;
-            seed["editor.wordWrap"] = cfg.wordWrap === "on" ? "on" : "off";
-            seed["editor.minimap.enabled"] = cfg.showMinimap !== false;
-            seed["editor.formatOnSave"] = cfg.formatOnSave === true;
+    // text === null:读取失败。此时绝不能 seed(会把用户设置覆盖成默认值),
+    // 也不写文件 —— 保持未初始化状态,设置走注册表默认值,下次加载重试。
+    if (text !== null) {
+        const own = parseInto(text);
+        // 文件不存在、或里面的内容根本不是用户设置(settings.json 这个名字早先被
+        // code-render 模块占用过)→ 重新生成一份,顺便把旧版 config.json 的编辑器设置迁过来
+        if (!text.trim() || !own || !rawText) {
+            const seed: Record<string, unknown> = {};
+            if (cfg) {
+                seed["editor.fontSize"] = cfg.fontSize;
+                seed["editor.tabSize"] = cfg.tabSize;
+                seed["editor.wordWrap"] = cfg.wordWrap === "on" ? "on" : "off";
+                seed["editor.minimap.enabled"] = cfg.showMinimap !== false;
+                seed["editor.formatOnSave"] = cfg.formatOnSave === true;
+            }
+            values = seed;
+            rawText = serializeAll();
+            parseOk = true;
+            await writeNow();
         }
-        values = seed;
-        rawText = serializeAll();
-        parseOk = true;
-        await writeNow();
     }
 
     // settings.json 在编辑器里被保存后,立刻重新加载并生效

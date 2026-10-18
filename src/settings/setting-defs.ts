@@ -36,6 +36,8 @@ export interface SettingDef {
     monacoKey?: string;
     /** true = 不写入 Monaco(本项目自己实现的编辑器行为) */
     skipMonaco?: boolean;
+    /** true = 字符串输入框尾部带"+"按钮,弹出系统字体列表选中追加(字体族专用) */
+    fontPicker?: boolean;
     /** 插件自有设置:从配置读 */
     get?: (cfg: EditorConfig) => any;
     /** 插件自有设置:写入配置 */
@@ -83,6 +85,7 @@ export const EDITOR_DEFS: SettingDef[] = [
         description: "如 Consolas, 'Courier New', monospace;留空使用默认等宽字体",
         default: "",
         placeholder: "Consolas, 'Courier New', monospace",
+        fontPicker: true,
     },
     {
         key: "editor.fontLigatures",
