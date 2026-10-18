@@ -34,7 +34,6 @@ const SCHEMA_URI = "https://siyuan-note.github.io/syfe-user-settings.json";
 let storagePath = "";
 let storageUri = "";
 let pluginRef: any = null;
-let loader: ((name: string) => Promise<any>) | null = null;
 let saver: ((name: string, data: any) => Promise<any>) | null = null;
 
 /** 用户显式设置过的键值 */
@@ -77,19 +76,29 @@ function serializeAll(): string {
 // ---------- 读写 ----------
 
 async function readRawText(): Promise<string | null> {
-    if (!loader) return "";
+    if (!storagePath) return "";
     try {
-        const data = await loader(SETTINGS_FILE);
-        if (typeof data === "string") return data;
-        if (data && typeof data === "object") return JSON.stringify(data, null, 4);
-        // loadData 对"文件不存在"和"请求失败"都 resolve 空串(思源实现如此,
-        // 无法区分)→ 返回 "",parseInto 走空对象,一切键走注册表默认值
-        return "";
+        // 为什么不走 plugin.loadData:内核把 /api/file/getFile 响应标成 application/json,
+        // 而 fetchPost 对 JSON 头会 response.json() 解析文件内容 —— settings.json 是
+        // JSONC(带 // 注释)不是合法 JSON,解析必抛 → failCallback → loadData 静默
+        // resolve 空串(实测 2026-10-18,每次读取必失败,与竞态无关;无注释的文件都正常)。
+        // 所以这里用原生 fetch 直读原文,文本不走 JSON 解析。
+        const w = window as any;
+        const token = w?.siyuan?.config?.system?.conf?.api?.token;
+        const resp = await fetch("/api/file/getFile", {
+            method: "POST",
+            headers: {"Content-Type": "application/json", ...(token ? {Authorization: `Token ${token}`} : {})},
+            body: JSON.stringify({path: storagePath}),
+        });
+        // 202 = 内核明确表示"文件没有正常读取"(不存在等);403/404 时 resp.ok 为 false
+        if (resp.status === 202) return "";
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        return new TextDecoder("utf-8").decode(new Uint8Array(await resp.arrayBuffer()));
     } catch (e) {
         // 读取失败(内核瞬时异常/页面卸载竞态)≠ 文件不存在。
-        // 返回 null 让调用方跳过 seed —— 否则部署/重载后偶发的读取失败会把
-        // 用户的 settings.json 用 seed 默认值整个覆盖掉(实测踩过:字体设置丢失)。
-        console.warn("[siyuan-file-editor] settings.json 读取失败,本次跳过初始化(不 seed):", e);
+        // 返回 null 让调用方跳过解析 —— 绝不能把"读不到"当成"空文件"去写,
+        // 否则会把用户的 settings.json 用默认值整个覆盖掉(实测踩过:字体设置丢失)。
+        console.warn("[siyuan-file-editor] settings.json 读取失败,本次跳过初始化(不写文件):", e);
         return null;
     }
 }
@@ -135,6 +144,31 @@ export async function reloadUserSettings(): Promise<boolean> {
 }
 
 /**
+ * 探测 settings.json 在内核侧是否真实存在(readDir 列 petal 目录,不依赖 loadData)。
+ * - "yes":文件在 → loadData 返回空串必然是读取失败,应重试
+ * - "no": 目录/文件不存在 → 真实首次使用,走默认值即可
+ * - "unknown":HTTP 层失败(内核未就绪)→ 当作可能存在,允许重试
+ */
+async function probeSettingsFileExists(petalDir: string): Promise<"yes" | "no" | "unknown"> {
+    try {
+        const w = window as any;
+        const token = w?.siyuan?.config?.system?.conf?.api?.token;
+        const resp = await fetch("/api/file/readDir", {
+            method: "POST",
+            headers: {"Content-Type": "application/json", ...(token ? {Authorization: `Token ${token}`} : {})},
+            body: JSON.stringify({path: petalDir}),
+        });
+        if (!resp.ok) return "unknown";
+        const json = await resp.json();
+        if (json.code !== 0) return "no";
+        const has = (json.data?.files || []).some((f: any) => f.name === SETTINGS_FILE && !f.isDir);
+        return has ? "yes" : "no";
+    } catch {
+        return "unknown";
+    }
+}
+
+/**
  * 初始化:算出存储路径、读文件。只读不写 —— 读不到(不存在/失败)时什么都不写,
  * 设置走注册表默认值,文件由用户首次在面板改设置时创建。
  * 必须在 loadConfig 之后调用。
@@ -142,22 +176,40 @@ export async function reloadUserSettings(): Promise<boolean> {
 export async function initUserSettings(plugin: any): Promise<void> {
     pluginRef = plugin;
     const name = String(plugin?.name || "");
-    storagePath = `/data/storage/petal/${name}/settings.json`;
+    const petalDir = `/data/storage/petal/${name}`;
+    storagePath = `${petalDir}/settings.json`;
     storageUri = "siyuan://file" + storagePath;
-    loader = (n: string) => plugin.loadData(n);
     saver = (n: string, d: any) => plugin.saveData(n, d);
 
-    const text = await readRawText();
+    // 读取用 readRawText(原生 fetch 直读,见其注释:loadData 对 JSONC 文件必失败)。
+    // 写入仍走 plugin.saveData —— putFile 的响应是合法 JSON,不受影响。
+    //
+    // 读不到(文件不存在/请求失败)时什么都不写,一切键走注册表默认值,
+    // 文件由用户首次在面板改设置时创建;读到空串则用 readDir 确认文件是否真的
+    // 存在,在就重试(每 800ms,最多 6 轮 ≈ 5s,覆盖内核未就绪窗口),不存在立即放弃。
+    // 绝不写文件/seed —— 读到什么就是什么,写只能由用户在面板/编辑器里触发。
+    let text = await readRawText();
+    let retried = false;
+    for (let i = 0; i < 6 && (text === null || !text.trim()); i++) {
+        const probe = await probeSettingsFileExists(petalDir);
+        if (probe === "no") break; // 文件根本不存在:真实首次使用,走默认值
+        if (!retried) {
+            retried = true;
+            console.warn("[siyuan-file-editor] settings.json 首次读取为空但文件存在,重试中…(loadData 竞态)");
+        }
+        await new Promise(r => setTimeout(r, 800));
+        text = await readRawText();
+    }
     if (text !== null) {
         parseInto(text);
     }
-
-    // 注意:这里绝不能有"文件不存在时自动写入 seed/模板"的逻辑。
-    // 思源 Plugin.loadData 对"文件不存在"和"请求失败(内核未就绪的竞态窗口)"都静默
-    // resolve 空串,调用方无法区分 —— 一旦误判成首次使用就会用默认值覆盖用户设置
-    // (实测踩过两次:部署后字体丢失、每次重启字体丢失)。
-    // 现在的策略:读不到就什么都不写,一切键走注册表默认值;文件由用户首次在
-    // 面板改设置时创建,下次加载自然读到。
+    if (retried) {
+        if (text && text.trim()) {
+            console.info("[siyuan-file-editor] settings.json 重试读取成功");
+        } else {
+            console.warn("[siyuan-file-editor] settings.json 重试 6 轮仍为空,本会话走默认值(文件未写,下次加载再试)");
+        }
+    }
 
     // settings.json 在编辑器里被保存后,立刻重新加载并生效
     void (async () => {

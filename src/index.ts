@@ -422,6 +422,9 @@ export default class FileEditorPlugin extends Plugin {
         try {
             await initUserSettings(this);
             applyUserSettingsToConfig(this.config);
+            // 布局恢复的编辑器可能创建于 settings.json 读取完成之前(读到空值时
+            // buildEditorOptions 出的是空选项)→ 这里统一刷一遍已存在的编辑器
+            applyEditorOptions();
             registerSettingsJsonSchema();
         } catch (e) {
             console.error("[siyuan-file-editor] 加载 settings.json 失败:", e);
