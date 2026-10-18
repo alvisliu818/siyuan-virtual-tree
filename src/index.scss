@@ -4361,12 +4361,193 @@ button.syfe-editor__arrow--exp:hover {
 /* ==== 代码编辑器设置(settings/) ==== */
 /* 铺在思源设置对话框里的「代码编辑器」分组:一行一项,右侧控件、下方说明 */
 
-/* 「代码编辑器」设置块宿主项:纵向布局(标题/描述在上,设置块占满在下)。
-   思源 column 项默认左右两列,右侧 width:100% 的块会把左列挤成 0 宽(竖排文字) */
-.b3-label:has(> .syfe-es) {
+/* ============================ 全局设置面板(VS Code 式) ============================ */
+
+/* Dialog 内容区默认不是纵向 flex,这里强制铺满以承载 .syfe-set(height:100%) */
+.b3-dialog__content:has(> .syfe-set__mount) {
+    display: flex;
     flex-direction: column;
+    min-height: 0;
 }
 
+.syfe-set__mount {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+}
+
+.syfe-set {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 0;
+}
+
+.syfe-set__topbar {
+    flex-shrink: 0;
+    padding: 10px 14px 8px;
+}
+
+.syfe-set__search {
+    width: 100%;
+}
+
+.syfe-set__mainrow {
+    display: flex;
+    align-items: stretch;
+    flex: 1;
+    min-height: 0;
+}
+
+.syfe-set__nav {
+    flex-shrink: 0;
+    width: 176px;
+    overflow: auto;
+    padding: 4px 8px;
+    border-right: 1px solid var(--b3-border-color);
+}
+
+.syfe-set__navitem {
+    padding: 4px 10px;
+    margin: 1px 0;
+    border-radius: 4px;
+    font-size: 13px;
+    cursor: pointer;
+    color: var(--b3-theme-on-background);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+
+    &:hover {
+        background: var(--b3-list-hover);
+    }
+}
+
+.syfe-set__navitem--child {
+    padding-left: 26px;
+    font-size: 12.5px;
+    color: var(--b3-theme-on-surface);
+}
+
+.syfe-set__navitem--active {
+    background: var(--b3-list-hover);
+    color: var(--b3-theme-primary);
+    font-weight: 500;
+}
+
+.syfe-set__right {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+}
+
+.syfe-set__pages,
+.syfe-set__results {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    padding: 12px 16px 16px;
+}
+
+.syfe-set__page {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+/* 普通设置行:左标题+说明,右控件 */
+.syfe-set__row {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 7px 0;
+
+    & + .syfe-set__row {
+        border-top: 1px solid var(--b3-border-color);
+    }
+}
+
+.syfe-set__rowtext {
+    flex: 1;
+    min-width: 0;
+}
+
+.syfe-set__rowtitle {
+    font-size: 13px;
+    font-weight: 500;
+}
+
+.syfe-set__rowdesc {
+    margin-top: 2px;
+    font-size: 12px;
+    color: var(--b3-theme-on-surface);
+    line-height: 1.5;
+}
+
+.syfe-set__rowctrl {
+    flex-shrink: 0;
+    display: flex;
+    justify-content: flex-end;
+
+    .b3-select,
+    .b3-text-field {
+        width: 240px;
+    }
+}
+
+/* 搜索结果 */
+.syfe-set__hit {
+    margin-bottom: 14px;
+}
+
+.syfe-set__hitsrc {
+    font-size: 11.5px;
+    color: var(--b3-theme-primary);
+    margin-bottom: 2px;
+}
+
+.syfe-set__empty {
+    padding: 24px 0;
+    text-align: center;
+    color: var(--b3-theme-on-surface);
+    font-size: 13px;
+}
+
+/* 代码块渲染等"块级"设置组 */
+.syfe-set__block {
+    margin-bottom: 16px;
+}
+
+.syfe-set__blocktitle {
+    font-size: 13.5px;
+    font-weight: 600;
+    margin-bottom: 4px;
+}
+
+.syfe-set__blockdesc {
+    font-size: 12px;
+    color: var(--b3-theme-on-surface);
+    margin-bottom: 8px;
+    line-height: 1.5;
+}
+
+.syfe-set__footer {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+    padding: 10px 14px;
+    border-top: 1px solid var(--b3-border-color);
+}
+
+.syfe-set__cache {
+    display: none;
+}
+
+/* 「代码编辑器」面板(编辑器父页内容) */
 .syfe-es {
     display: flex;
     flex-direction: column;
@@ -4393,46 +4574,11 @@ button.syfe-editor__arrow--exp:hover {
     line-height: 1.5;
 }
 
-/* VS Code 式左右分栏:左分类树 + 右设置项 */
-.syfe-es__main {
-    display: flex;
-    align-items: stretch;
-    min-height: 0;
-    max-height: 52vh;
-    border: 1px solid var(--b3-border-color);
-    border-radius: var(--b3-border-radius, 4px);
-    overflow: hidden;
-}
-
-.syfe-es__nav {
-    flex-shrink: 0;
-    width: 168px;
-    overflow: auto;
-    padding: 6px 6px;
-    border-right: 1px solid var(--b3-border-color);
-    background: var(--b3-theme-background-light, transparent);
-}
-
-.syfe-es__navitem {
-    padding: 4px 10px;
-    margin: 1px 0;
-    border-radius: 4px;
-    font-size: 13px;
-    cursor: pointer;
-    color: var(--b3-theme-on-background);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-
-    &:hover {
-        background: var(--b3-list-hover);
-    }
-}
-
-.syfe-es__navitem--active {
-    background: var(--b3-list-hover);
-    color: var(--b3-theme-primary);
-    font-weight: 500;
+.syfe-es__hint {
+    font-size: 12px;
+    color: var(--b3-theme-on-surface);
+    opacity: 0.75;
+    line-height: 1.5;
 }
 
 .syfe-es__body {

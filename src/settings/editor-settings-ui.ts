@@ -1,7 +1,12 @@
-// 设置面板里的「代码编辑器」分组:把注册表里全部 editor.* 设置项铺成控件。
+// 「代码编辑器」设置页:把注册表里全部 editor.* 设置项铺成控件。
 //
 // 这些控件改的就是 settings.json(与 VS Code 的"设置 UI 写 settings.json"一致),
 // 所以面板和文件不会打架:面板改完写文件,文件在编辑器里改完保存也会回写面板。
+//
+// 面板结构由全局设置树(../settings/plugin-settings-dialog.ts)接管后:
+// - 「代码编辑器」父页 = buildEditorAllPanel()(工具条 + 全部子组平铺)
+// - 每个子分类 = buildEditorGroupPanel(name)(单组)
+// 组 DOM 只构建一次并缓存,父页与子页共享同一份(切换时 DOM 移动,不重复构建)。
 import {showMessage} from "siyuan";
 import {
     EDITOR_DEFS,
@@ -24,6 +29,9 @@ import {
 // 每个控件的"从设置回读"函数,供外部(settings.json 保存后)统一刷新
 const syncFns: Array<() => void> = [];
 let registered = false;
+
+// 组面板缓存:组 DOM 全生命周期只构建一次(行控件与监听同步保留)
+const groupCache = new Map<string, HTMLElement>();
 
 function h(tag: string, className?: string, text?: string): HTMLElement {
     const el = document.createElement(tag);
@@ -50,6 +58,8 @@ function fromControlText(d: SettingDef, text: string): any {
 function buildRow(d: SettingDef): {row: HTMLElement; sync: () => void} {
     const row = h("div", "syfe-es__row");
     row.dataset.key = d.key;
+    // 全局设置搜索的匹配文本(键名+标题+说明+分组)
+    row.dataset.tags = `${d.key} ${d.title} ${d.description} ${d.group}`.toLowerCase();
 
     const head = h("div", "syfe-es__head");
     const title = h("div", "syfe-es__title");
@@ -123,15 +133,42 @@ function afterChange(d: SettingDef): void {
     void d;
 }
 
-// ---------- 整块 ----------
+// ---------- 组与页 ----------
 
-export function buildEditorSettingsBlock(): HTMLElement {
-    syncFns.length = 0;
-    if (!registered) {
-        registered = true;
-        registerSettingsChangedHandler(() => refreshEditorSettingsUi());
+/** 编辑器子分类清单(组名 + 项数),供全局设置树生成二级树节点 */
+export function getEditorSubgroups(): Array<{name: string; count: number}> {
+    const byGroup = new Map<string, number>();
+    EDITOR_DEFS.forEach(d => byGroup.set(d.group, (byGroup.get(d.group) || 0) + 1));
+    const names = [...byGroup.keys()];
+    const ordered = [...GROUP_ORDER.filter(g => byGroup.has(g)), ...names.filter(g => GROUP_ORDER.indexOf(g) < 0)];
+    return ordered.map(name => ({name, count: byGroup.get(name) || 0}));
+}
+
+/** 构建单个子分类面板(缓存共享;每次调用都返回同一份 DOM) */
+export function buildEditorGroupPanel(name: string): HTMLElement {
+    let group = groupCache.get(name);
+    if (group) return group;
+    ensureRegistered();
+    group = h("div", "syfe-es__group");
+    group.dataset.group = name;
+    group.appendChild(h("div", "syfe-es__grouptitle", name));
+    for (const d of EDITOR_DEFS) {
+        if (d.group !== name) continue;
+        group.appendChild(buildRow(d).row);
     }
+    groupCache.set(name, group);
+    return group;
+}
 
+function ensureRegistered(): void {
+    if (registered) return;
+    registered = true;
+    registerSettingsChangedHandler(() => refreshEditorSettingsUi());
+}
+
+/** 「代码编辑器」父页:工具条(搜索/打开 settings.json/恢复默认) + 全部子组平铺 */
+export function buildEditorAllPanel(): HTMLElement {
+    ensureRegistered();
     const root = h("div", "syfe-es");
 
     // 工具条:搜索 / 打开 settings.json / 恢复默认
@@ -139,7 +176,7 @@ export function buildEditorSettingsBlock(): HTMLElement {
     const search = document.createElement("input");
     search.className = "b3-text-field syfe-es__search";
     search.type = "text";
-    search.placeholder = "搜索设置(键名或中文名)…";
+    search.placeholder = "搜索编辑器设置(键名或中文名)…";
     bar.appendChild(search);
 
     const openBtn = document.createElement("button");
@@ -173,87 +210,31 @@ export function buildEditorSettingsBlock(): HTMLElement {
         ),
     );
 
-    // 左树 + 右内容(VS Code 式):分组行一次性全部构建,切换分类只切 display——
-    // syncFns 因此只收集一次,不会随切换重复增长
-    const main = h("div", "syfe-es__main");
-    const nav = h("div", "syfe-es__nav");
-    const body = h("div", "syfe-es__body");
-
-    const groups: Array<{name: string; el: HTMLElement; rows: HTMLElement[]; navItem: HTMLElement}> = [];
-    const byGroup = new Map<string, SettingDef[]>();
-    EDITOR_DEFS.forEach(d => {
-        const list = byGroup.get(d.group) || [];
-        list.push(d);
-        byGroup.set(d.group, list);
-    });
-    const ordered = [...GROUP_ORDER.filter(g => byGroup.has(g)), ...[...byGroup.keys()].filter(g => GROUP_ORDER.indexOf(g) < 0)];
-
-    let active = "";
-    try {
-        active = localStorage.getItem("syfe-es-category") || "";
-    } catch {
-        // localStorage 不可用时落到第一组
-    }
-    if (ordered.indexOf(active) < 0) active = ordered[0] || "";
-
-    const select = (name: string) => {
-        active = name;
-        try {
-            localStorage.setItem("syfe-es-category", name);
-        } catch {
-            // 忽略
-        }
-        if (search.value) search.value = "";
-        groups.forEach(g => {
-            const on = g.name === name;
-            g.el.style.display = on ? "" : "none";
-            g.navItem.classList.toggle("syfe-es__navitem--active", on);
-        });
-        body.scrollTop = 0;
-    };
-
-    for (const name of ordered) {
-        const defs = byGroup.get(name) || [];
-        const group = h("div", "syfe-es__group");
-        group.appendChild(h("div", "syfe-es__grouptitle", name));
-        const rows: HTMLElement[] = [];
-        for (const d of defs) {
-            const {row} = buildRow(d);
-            group.appendChild(row);
-            rows.push(row);
-        }
-        const navItem = h("div", "syfe-es__navitem", `${name} (${defs.length})`);
-        navItem.title = name;
-        navItem.addEventListener("click", () => select(name));
-        nav.appendChild(navItem);
-        groups.push({name, el: group, rows, navItem});
+    // 全部子组平铺(组 DOM 来自缓存,与子页共享)
+    const body = h("div", "syfe-es__body syfe-es__body--all");
+    const rowsOf = new Map<HTMLElement, Array<HTMLElement>>();
+    for (const {name} of getEditorSubgroups()) {
+        const group = buildEditorGroupPanel(name);
+        rowsOf.set(group, Array.from(group.querySelectorAll<HTMLElement>(".syfe-es__row")));
         body.appendChild(group);
     }
-    main.appendChild(nav);
-    main.appendChild(body);
-    root.appendChild(main);
-    select(active);
+    root.appendChild(body);
 
-    // 搜索过滤:跨分组平铺(命中的组都显示,组内只留命中行),左侧树取消高亮;
-    // 清空搜索回到当前选中分类
+    // 父页内搜索过滤:跨组平铺(命中的组显示,组内只留命中行),清空恢复
     search.addEventListener("input", () => {
         const q = search.value.trim().toLowerCase();
-        if (!q) {
-            select(active);
-            return;
-        }
-        groups.forEach(g => {
-            g.navItem.classList.remove("syfe-es__navitem--active");
+        for (const [group, rows] of rowsOf) {
+            const groupName = group.dataset.group || "";
             let visible = 0;
-            g.rows.forEach(row => {
+            rows.forEach(row => {
                 const def = EDITOR_DEFS.find(d => d.key === row.dataset.key);
-                const hay = `${row.dataset.key} ${def?.title || ""} ${def?.description || ""} ${g.name}`.toLowerCase();
-                const hit = hay.indexOf(q) >= 0;
+                const hay = `${row.dataset.key} ${def?.title || ""} ${def?.description || ""} ${groupName}`.toLowerCase();
+                const hit = !q || hay.indexOf(q) >= 0;
                 row.style.display = hit ? "" : "none";
                 if (hit) visible++;
             });
-            g.el.style.display = visible ? "" : "none";
-        });
+            group.style.display = visible ? "" : "none";
+        }
     });
 
     return root;

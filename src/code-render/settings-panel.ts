@@ -1,5 +1,4 @@
 /** 设置面板：规则管理 / 数据源管理 / 外观。直接铺在思源设置对话框里，不套中间 Dialog。 */
-import type {Setting} from "siyuan";
 import { listRenderers, getRenderer } from "./registry";
 import { bindPersist, getSettings, SETTINGS_NAME, uid, updateSettings } from "./settings";
 import { testDataSource } from "./datasource";
@@ -362,35 +361,21 @@ function dataSourceRow(ds: DataSource, refresh: () => void): HTMLElement {
 
 /* -------------------------------- 入口 -------------------------------- */
 
-export function setupCodeRenderSettings(setting: Setting, deps: {
+/** 代码块渲染设置的三个块(外观/规则/数据源)定义,供全局设置面板装配成单页 */
+export function buildCodeRenderPages(deps: {
     saveData: (file: string, data: unknown) => Promise<unknown> | void;
     rescan: () => void;
-}): void {
+}): Array<{id: string; label: string; desc: string; buildEl: () => HTMLElement}> {
     // 存对象（思源会自行 JSON.stringify）；loadData 返回原始字符串，读取侧再 parse。
-    // 挂进宿主插件已有的 Setting 实例（不新建、不覆盖宿主 plugin.setting）。
+    // persist 绑定在构建块定义时执行一次(全局面板首次 open 装配时触发)。
     bindPersist((s) => {
         void Promise.resolve(deps.saveData(SETTINGS_NAME, s)).catch(() => undefined);
         deps.rescan();
     });
 
-    setting.addItem({
-        title: t("groupAppearance"),
-        description: t("groupRulesDesc"),
-        direction: "column",
-        createActionElement: () => buildAppearance(),
-    });
-
-    setting.addItem({
-        title: t("groupRules"),
-        description: t("groupRulesDesc"),
-        direction: "column",
-        createActionElement: () => buildRules(),
-    });
-
-    setting.addItem({
-        title: t("groupDataSource"),
-        description: t("groupDataSourceDesc"),
-        direction: "column",
-        createActionElement: () => buildDataSources(),
-    });
+    return [
+        {id: "codeRenderAppearance", label: t("groupAppearance"), desc: t("groupRulesDesc"), buildEl: buildAppearance},
+        {id: "codeRenderRules", label: t("groupRules"), desc: t("groupRulesDesc"), buildEl: buildRules},
+        {id: "codeRenderSources", label: t("groupDataSource"), desc: t("groupDataSourceDesc"), buildEl: buildDataSources},
+    ];
 }

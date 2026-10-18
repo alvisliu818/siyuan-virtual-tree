@@ -3,18 +3,16 @@
 // 原独立插件(siyuan-plugin-code-render)的 onload/onunload 拆成 init/destroy:
 //  - 事件挂宿主 plugin.eventBus(loaded-protyle-static/dynamic、switch-protyle、code-language-*)
 //  - 设置持久化走宿主 saveData("code-render-settings.json")
-//  - 设置 UI 挂进宿主已有的 Setting 实例(见 settings-panel.setupCodeRenderSettings,
-//    不自建 Setting —— 那会覆盖宿主的 plugin.setting,宿主设置面板直接消失)
+//  - 设置 UI 以块定义形式装配进宿主全局设置面板(见 settings-panel.buildCodeRenderPages)
 // 引擎/inplace/渲染器等其余文件与独立插件版本保持一致,便于跟随上游。
 import "./styles.css";
-import type {Setting} from "siyuan";
 import {closeAll, rerenderAll, scan} from "./engine";
 import {restoreAll, stopWatching, sweepInplace} from "./inplace";
 import {initI18n} from "./i18n";
 import {registerRenderer} from "./registry";
 import {mysqlRenderer} from "./renderers/mysql";
 import {getSettings, mergeSettings, replaceSettings, LEGACY_SETTINGS_NAME, SETTINGS_NAME} from "./settings";
-import {setupCodeRenderSettings} from "./settings-panel";
+import {buildCodeRenderPages} from "./settings-panel";
 
 let scanScheduled = false;
 
@@ -93,9 +91,9 @@ export function initCodeRender(host: any): void {
     window.setTimeout(() => scanAllCodeRender(), 2000);
 }
 
-/** 宿主设置面板调用:把外观/规则/数据源三组挂进宿主 Setting 实例 */
-export function setupCodeRenderSettingItems(setting: Setting, host: any): void {
-    setupCodeRenderSettings(setting, {
+/** 宿主设置面板调用:代码块渲染设置块定义(外观/规则/数据源),装配进全局设置面板 */
+export function buildCodeRenderSettingPages(host: any) {
+    return buildCodeRenderPages({
         saveData: (file, data) => host.saveData(file, data),
         rescan: () => {
             // 关掉就地渲染后必须还原,否则代码块会停留在本模块的着色里

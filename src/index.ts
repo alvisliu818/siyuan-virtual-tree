@@ -1,4 +1,4 @@
-import {Plugin, Setting, showMessage} from "siyuan";
+import {Plugin, showMessage} from "siyuan";
 import {
     WORKSPACE_ROOT,
     DEFAULT_TERMINAL_SERVER_URL,
@@ -34,7 +34,8 @@ import {
     registerSettingsJsonSchema,
     syncUserSettingsFromConfig,
 } from "./settings/user-settings";
-import {buildEditorSettingsBlock} from "./settings/editor-settings-ui";
+import {buildEditorAllPanel, buildEditorGroupPanel, getEditorSubgroups} from "./settings/editor-settings-ui";
+import {createSettingsPanel, settingsRow, SettingsPanel} from "./settings/plugin-settings-dialog";
 import {querySQL} from "./api/file";
 import {basename} from "./utils/path";
 import {loadAllExtensions} from "./extensions/extension-manager";
@@ -76,7 +77,7 @@ import {stopPythonLanguageServer} from "./utils/python-lsp";
 import {installLuteGuard} from "./utils/lute-guard";
 import {refreshAllExpanded} from "./components/file-tree";
 import {refreshAllTabIcons} from "./utils/tab-icon";
-import {destroyCodeRender, initCodeRender, setupCodeRenderSettingItems} from "./code-render";
+import {destroyCodeRender, initCodeRender, buildCodeRenderSettingPages} from "./code-render";
 import "./index.scss";
 
 // 守卫必须在插件加载的第一时间生效 —— 早于任何 vditor 实例被创建。
@@ -100,6 +101,39 @@ export default class FileEditorPlugin extends Plugin {
     // 「接管打开用分栏」开关
     private takeoverSplitOpenInput?: HTMLInputElement;
     private treeBacklinkIconInput?: HTMLInputElement;
+    // VS Code 式设置面板(左分类树 + 右内容);onload 装配,openSetting 打开
+    private settingsPanel?: SettingsPanel;
+
+    /** 内核设置菜单点击时打开自绘设置面板(覆盖 Plugin.openSetting 默认实现) */
+    public openSetting(): void {
+        this.settingsPanel?.open();
+    }
+
+    /** 代码块渲染设置(外观/规则/数据源三块)装配为单个设置页 */
+    private addCodeRenderSettingsPage(): void {
+        if (!this.settingsPanel) return;
+        const blocks = buildCodeRenderSettingPages(this);
+        const host = document.createElement("div");
+        host.className = "syfe-set__page";
+        for (const b of blocks) {
+            const wrap = document.createElement("div");
+            wrap.className = "syfe-set__block";
+            wrap.dataset.tags = `${b.label} ${b.desc}`.toLowerCase();
+            const head = document.createElement("div");
+            head.className = "syfe-set__blocktitle";
+            head.textContent = b.label;
+            wrap.appendChild(head);
+            if (b.desc) {
+                const desc = document.createElement("div");
+                desc.className = "syfe-set__blockdesc";
+                desc.textContent = b.desc;
+                wrap.appendChild(desc);
+            }
+            wrap.appendChild(b.buildEl());
+            host.appendChild(wrap);
+        }
+        this.settingsPanel.addPage({id: "codeRender", label: "代码块渲染", build: () => host});
+    }
     private searchMaxSizeInput?: HTMLInputElement;
     private fileTreeRootInput?: HTMLInputElement;
     private terminalBackendSelect?: HTMLSelectElement;
@@ -355,13 +389,15 @@ export default class FileEditorPlugin extends Plugin {
             callback: () => openExtensionMarket(this),
         });
 
-        // 设置面板
-        this.setting = new Setting({
-            confirmCallback: () => this.saveSettings(),
+        // 设置面板(VS Code 式:左分类树 + 右内容,自绘 Dialog)
+        this.settingsPanel = createSettingsPanel({
+            title: "虚拟文档树 设置",
+            onOpen: () => this.syncSettingUI(),
+            onSave: () => this.saveSettings(),
         });
         this.buildSettingItems();
-        // 代码块渲染(并入自 siyuan-plugin-code-render):设置三组 + 引擎初始化
-        setupCodeRenderSettingItems(this.setting!, this);
+        // 代码块渲染(并入自 siyuan-plugin-code-render):设置页 + 引擎初始化
+        this.addCodeRenderSettingsPage();
         initCodeRender(this);
 
         // 主题同步
@@ -715,250 +751,280 @@ export default class FileEditorPlugin extends Plugin {
         }
     }
 
-    // 构建设置面板项
+    // 构建设置面板页(VS Code 式:左分类树 + 右内容,面板框架见 settings/plugin-settings-dialog.ts)。
+    // 普通设置行按页聚合,页 DOM 只构建一次;编辑器页由 editor-settings-ui 提供构建器。
     private buildSettingItems(): void {
-        // 代码编辑器:全部编辑器设置项(自动换行、字体、缩进、光标、导航窗格……)。
-        // 这些控件改的是 settings.json,与直接编辑该文件完全等价 —— 见 settings/ 目录。
-        // 旧版分散在面板里的「字体大小 / Tab 宽度 / 自动换行 / 保存时格式化 / 导航窗格」
-        // 五项已并入这里,避免同一个值有两个入口互相打架。
-        this.setting!.addItem({
-            title: "代码编辑器",
-            description: "代码编辑器(含 Markdown 源码、Notebook 单元格)的全部设置项。改动立即生效并写入 settings.json;也可以点「打开 settings.json」按 VS Code 的习惯手写",
-            direction: "column",
-            createActionElement: () => buildEditorSettingsBlock(),
-        });
+        const panel = this.settingsPanel!;
+        const pageRows = new Map<string, HTMLElement[]>();
+        const addRow = (page: string, title: string, description: string, control: HTMLElement): void => {
+            let rows = pageRows.get(page);
+            if (!rows) {
+                rows = [];
+                pageRows.set(page, rows);
+            }
+            rows.push(settingsRow(title, description, control));
+        };
+        const addRowsPage = (id: string, label: string, parent?: string): void => {
+            const rows = pageRows.get(id) || [];
+            const host = document.createElement("div");
+            host.className = "syfe-set__page";
+            rows.forEach(r => host.appendChild(r));
+            panel.addPage({id, label, parent, build: () => host});
+        };
 
-        // 标签管理(新建/编辑/删除预设标签,支持嵌套、颜色、图标)
+        // ---------- 代码编辑器(父页 + 子分类二级树节点) ----------
+        // 全部编辑器设置项(自动换行、字体、缩进、光标、导航窗格……)。
+        // 这些控件改的是 settings.json,与直接编辑该文件完全等价 —— 见 settings/ 目录。
+        panel.addPage({id: "editor", label: "代码编辑器", build: () => buildEditorAllPanel()});
+        for (const sub of getEditorSubgroups()) {
+            panel.addPage({
+                id: "editor:" + sub.name,
+                label: `${sub.name} (${sub.count})`,
+                parent: "editor",
+                build: () => buildEditorGroupPanel(sub.name),
+            });
+        }
+
+        // ---------- 标签 ----------
         const tagManageBtn = document.createElement("button");
-        tagManageBtn.className = "b3-button b3-button--outline fn__size200";
+        tagManageBtn.className = "b3-button b3-button--outline";
         tagManageBtn.textContent = "管理标签…";
         tagManageBtn.addEventListener("click", () => {
             openTagManagerDialog(this, () => this.refreshFileTrees());
         });
-this.setting!.addItem({
-title: "标签",
-            description: "管理预设标签(支持嵌套、颜色、图标);在文件树右键条目可打标签,工具栏标签按钮可按标签筛选",
-actionElement: tagManageBtn,
-        });
+        addRow("tags", "标签", "管理预设标签(支持嵌套、颜色、图标);在文件树右键条目可打标签,工具栏标签按钮可按标签筛选", tagManageBtn);
 
-   // 自定义打开方式(预置 VS Code / Cursor / Windsurf / 记事本 / 资源管理器,可增删改)
+        // ---------- 文件与打开 ----------
+        // 自定义打开方式(预置 VS Code / Cursor / Windsurf / 记事本 / 资源管理器,可增删改)
         const openWithBtn = document.createElement("button");
-      openWithBtn.className = "b3-button b3-button--outline fn__size200";
-      openWithBtn.textContent = "管理打开方式…";
+        openWithBtn.className = "b3-button b3-button--outline";
+        openWithBtn.textContent = "管理打开方式…";
         openWithBtn.addEventListener("click", () => {
-  openOpenWithManagerDialog(this, () => this.refreshFileTrees());
-  });
-     this.setting!.addItem({
-      title: "自定义打开方式",
-            description: "为文件与文件夹配置「用 XX 打开」的入口(预置 VS Code / Cursor / Windsurf / 记事本 / 资源管理器,可自行增删改命令与参数);配置后出现在文件树、虚拟文档树、搜索结果的右键「打开方式」里",
-            actionElement: openWithBtn,
-   });
+            openOpenWithManagerDialog(this, () => this.refreshFileTrees());
+        });
+        addRow("openFiles", "自定义打开方式", "为文件与文件夹配置「用 XX 打开」的入口(预置 VS Code / Cursor / Windsurf / 记事本 / 资源管理器,可自行增删改命令与参数);配置后出现在文件树、虚拟文档树、搜索结果的右键「打开方式」里", openWithBtn);
 
         // 接管思源文档内打开文件(open-asset/open-link 事件)
         this.docOpenTakeoverSelect = document.createElement("select");
-        this.docOpenTakeoverSelect.className = "b3-select fn__size200";
+        this.docOpenTakeoverSelect.className = "b3-select";
         this.docOpenTakeoverSelect.innerHTML =
             `<option value="off">不接管</option>` +
             `<option value="exts">指定扩展名</option>` +
             `<option value="all">全部接管</option>`;
-        this.setting!.addItem({
-            title: "接管文档内打开文件",
-            description: "点击文档里的 assets/ 链接、file:// 或本地路径文件时,改用本插件的编辑器打开(按扩展名自动分派 markdown/图片/媒体/office 页签);仅思源文档内的链接生效",
-            actionElement: this.docOpenTakeoverSelect,
-        });
+        addRow("openFiles", "接管文档内打开文件", "点击文档里的 assets/ 链接、file:// 或本地路径文件时,改用本插件的编辑器打开(按扩展名自动分派 markdown/图片/媒体/office 页签);仅思源文档内的链接生效", this.docOpenTakeoverSelect);
         this.docOpenTakeoverExtsInput = document.createElement("input");
-        this.docOpenTakeoverExtsInput.className = "b3-text-field fn__size200";
+        this.docOpenTakeoverExtsInput.className = "b3-text-field";
         this.docOpenTakeoverExtsInput.placeholder = "md,txt,log";
-        this.setting!.addItem({
-            title: "接管扩展名",
-            description: "「指定扩展名」模式下生效,逗号分隔,如 md,txt,log;留空则不接管任何类型",
-            actionElement: this.docOpenTakeoverExtsInput,
-        });
+        addRow("openFiles", "接管扩展名", "「指定扩展名」模式下生效,逗号分隔,如 md,txt,log;留空则不接管任何类型", this.docOpenTakeoverExtsInput);
 
         // 关闭未保存标签页时的行为
         this.closeUnsavedSelect = document.createElement("select");
-        this.closeUnsavedSelect.className = "b3-select fn__size200";
+        this.closeUnsavedSelect.className = "b3-select";
         this.closeUnsavedSelect.innerHTML =
             `<option value="ask">每次询问(保存 / 放弃)</option>` +
             `<option value="discard">不提示,直接放弃修改</option>` +
             `<option value="save">不提示,直接保存</option>`;
-        this.setting!.addItem({
-            title: "关闭未保存标签页时",
-            description: "关闭有未保存修改的编辑器 / Markdown / 笔记本 / Office 页签时的行为;「直接放弃」丢失的修改无法找回",
-            actionElement: this.closeUnsavedSelect,
-        });
+        addRow("openFiles", "关闭未保存标签页时", "关闭有未保存修改的编辑器 / Markdown / 笔记本 / Office 页签时的行为;「直接放弃」丢失的修改无法找回", this.closeUnsavedSelect);
 
         // 文档内链接接管打开:是否用分栏
         this.takeoverSplitOpenInput = document.createElement("input");
         this.takeoverSplitOpenInput.type = "checkbox";
         this.takeoverSplitOpenInput.className = "b3-switch";
-        this.setting!.addItem({
-            title: "接管打开用分栏",
-            description: "在思源文档里点击链接被本插件接管打开文件时,用右侧分栏打开(文档与文件同屏);关闭则在当前页签区打开",
-            actionElement: this.takeoverSplitOpenInput,
-        });
+        addRow("openFiles", "接管打开用分栏", "在思源文档里点击链接被本插件接管打开文件时,用右侧分栏打开(文档与文件同屏);关闭则在当前页签区打开", this.takeoverSplitOpenInput);
 
-        // 虚拟文档树:行末「查看引用」链接图标开关
+        // Markdown 默认模式(对齐 Obsidian:实时预览 / 源码 / 阅读)
+        this.markdownModeSelect = document.createElement("select");
+        this.markdownModeSelect.className = "b3-select";
+        this.markdownModeSelect.innerHTML = `
+            <option value="live">实时预览</option>
+            <option value="source">源码</option>
+            <option value="reading">阅读</option>`;
+        addRow("openFiles", "Markdown 默认模式", "打开 .md 文件时的默认模式,Tab 顶部可随时切换。实时预览=边写边渲染(光标行显示源码);源码=纯文本;阅读=完整渲染且只读。超过 512KB 的大文件始终以源码模式打开", this.markdownModeSelect);
+
+        // 全局阅读模式:Markdown 默认只读打开(优先级高于上面的默认模式)
+        this.globalReadingModeInput = document.createElement("input");
+        this.globalReadingModeInput.type = "checkbox";
+        this.globalReadingModeInput.className = "b3-switch";
+        addRow("openFiles", "全局阅读模式", "开启后所有 Markdown 文件默认以「阅读」(只读渲染)方式打开,需要编辑时再用页签顶部的按钮切换;关闭则使用上面的「Markdown 默认模式」", this.globalReadingModeInput);
+
+        // 导入 Markdown 到思源时,是否把源文件作为资源插入文档顶部的引述块
+        this.importMdSourceAssetInput = document.createElement("input");
+        this.importMdSourceAssetInput.type = "checkbox";
+        this.importMdSourceAssetInput.className = "b3-switch";
+        addRow("openFiles", "导入 Markdown:插入源文件资源引述块", "导入 .md 到思源后,把源文件上传为资源,并在文档顶部插入一个引述块链接到它(保留出处,便于回溯原文件);仅对单个 Markdown 文件生效,导入文件夹时不处理", this.importMdSourceAssetInput);
+
+        // 版本控制:每文件保留多少个修改前版本
+        this.versionKeepCountInput = document.createElement("input");
+        this.versionKeepCountInput.className = "b3-text-field";
+        this.versionKeepCountInput.type = "number";
+        this.versionKeepCountInput.min = "0";
+        this.versionKeepCountInput.placeholder = "10";
+        addRow("openFiles", "版本控制:保留版本数", "每次保存时自动把修改前的内容存为历史版本(文本文件通用,含代码文件),页签顶部「历史版本」可查看与恢复;0 = 关闭版本控制", this.versionKeepCountInput);
+
+        // ---------- 虚拟文档树 ----------
+        // 行末「查看引用」链接图标开关
         this.treeBacklinkIconInput = document.createElement("input");
         this.treeBacklinkIconInput.type = "checkbox";
         this.treeBacklinkIconInput.className = "b3-switch";
-        this.setting!.addItem({
-            title: "显示引用图标",
-            description: "在「虚拟文档树」行末显示「查看引用」链接图标(鼠标悬停显示),点击可查看引用当前文件/文件夹/文档的反链",
-            actionElement: this.treeBacklinkIconInput,
-        });
+        addRow("virtualTree", "显示引用图标", "在「虚拟文档树」行末显示「查看引用」链接图标(鼠标悬停显示),点击可查看引用当前文件/文件夹/文档的反链", this.treeBacklinkIconInput);
 
-// 百度网盘(接入方式配置 + 挂载入口说明)
+        // 引用关系树(移植自 siyuan-virtual-tree)
+        this.mountTreeRelationEnabledInput = document.createElement("input");
+        this.mountTreeRelationEnabledInput.type = "checkbox";
+        this.mountTreeRelationEnabledInput.className = "b3-switch";
+        addRow("virtualTree", "引用关系树", "在「虚拟文档树」面板顶部额外显示一棵按文档首块引用关系自动构建的树(被引用方为父,发起引用方为子,自动挑出没有上级的文档作为根)。它是只读的派生视图,不改动你手动挂载的内容", this.mountTreeRelationEnabledInput);
+
+        this.mountTreeRelationSortSelect = document.createElement("select");
+        this.mountTreeRelationSortSelect.className = "b3-select";
+        this.mountTreeRelationSortSelect.innerHTML = `
+            <option value="name">按名称排序</option>
+            <option value="weight">按权重排序</option>`;
+        addRow("virtualTree", "引用子层级:排序方式", "自动挂载行(引用子层级)的回退排序;在虚拟文档树开拖拽模式拖动后的顺序存在挂载配置里,优先生效", this.mountTreeRelationSortSelect);
+
+        this.mountTreeRelationWeightInput = document.createElement("input");
+        this.mountTreeRelationWeightInput.className = "b3-text-field";
+        this.mountTreeRelationWeightInput.type = "text";
+        this.mountTreeRelationWeightInput.placeholder = "weight";
+        addRow("virtualTree", "关系树:权重属性名", "文档自定义属性中用于排序的权重字段名,缺失则权重为 0(仅「按权重排序」时生效)", this.mountTreeRelationWeightInput);
+
+        this.mountTreeRelationPhysicalInput = document.createElement("input");
+        this.mountTreeRelationPhysicalInput.type = "checkbox";
+        this.mountTreeRelationPhysicalInput.className = "b3-switch";
+        addRow("virtualTree", "关系树:包含物理子树", "开启后,文档在思源原生层级的物理子文档也会作为关系树的子节点显示", this.mountTreeRelationPhysicalInput);
+
+        this.mountTreeRelationCaseInput = document.createElement("input");
+        this.mountTreeRelationCaseInput.type = "checkbox";
+        this.mountTreeRelationCaseInput.className = "b3-switch";
+        addRow("virtualTree", "关系树:排序区分大小写", "按名称排序时是否区分大小写", this.mountTreeRelationCaseInput);
+
+        this.mountTreeRelationDepthInput = document.createElement("input");
+        this.mountTreeRelationDepthInput.className = "b3-text-field";
+        this.mountTreeRelationDepthInput.type = "number";
+        this.mountTreeRelationDepthInput.min = "1";
+        this.mountTreeRelationDepthInput.placeholder = "8";
+        addRow("virtualTree", "关系树:最大递归深度", "构建子树时的最大层数,防止深层引用造成卡顿", this.mountTreeRelationDepthInput);
+
+        this.mountTreeRelationNodesInput = document.createElement("input");
+        this.mountTreeRelationNodesInput.className = "b3-text-field";
+        this.mountTreeRelationNodesInput.type = "number";
+        this.mountTreeRelationNodesInput.placeholder = "500";
+        addRow("virtualTree", "关系树:最大节点数", "关系树最多显示多少个文档,超出则停止构建", this.mountTreeRelationNodesInput);
+
+        this.mountTreeRelationExpandInput = document.createElement("input");
+        this.mountTreeRelationExpandInput.className = "b3-text-field";
+        this.mountTreeRelationExpandInput.type = "number";
+        this.mountTreeRelationExpandInput.placeholder = "1";
+        addRow("virtualTree", "关系树:默认展开层级", "0 = 全部折叠,-1 = 全部展开,N = 展开前 N 层(修改后点「刷新」生效)", this.mountTreeRelationExpandInput);
+
+        // ---------- 百度网盘 ----------
         const bdPanBtn = document.createElement("button");
-        bdPanBtn.className = "b3-button b3-button--outline fn__size200";
+        bdPanBtn.className = "b3-button b3-button--outline";
         bdPanBtn.textContent = "百度网盘账号…";
         bdPanBtn.addEventListener("click", () => openBaiduPanDialog());
-        this.setting!.addItem({
-            title: "百度网盘",
-            description: "接入方式:官方 API(推荐,开放平台 AppKey/SecretKey + 设备码授权,未过审仅能访问 /apps/应用名/ 目录)或网页 Cookie(全盘 + 同步空间,非官方)。配置后点击文件树工具栏云图标挂载网盘目录,支持浏览、编辑并保存回网盘",
-            actionElement: bdPanBtn,
-        });
+        addRow("baiduPan", "百度网盘", "接入方式:官方 API(推荐,开放平台 AppKey/SecretKey + 设备码授权,未过审仅能访问 /apps/应用名/ 目录)或网页 Cookie(全盘 + 同步空间,非官方)。配置后点击文件树工具栏云图标挂载网盘目录,支持浏览、编辑并保存回网盘", bdPanBtn);
 
+        // ---------- 文件树 ----------
         // 搜索最大文件大小
         this.searchMaxSizeInput = document.createElement("input");
-        this.searchMaxSizeInput.className = "b3-text-field fn__size200";
+        this.searchMaxSizeInput.className = "b3-text-field";
         this.searchMaxSizeInput.type = "number";
         this.searchMaxSizeInput.min = "100";
         this.searchMaxSizeInput.max = "10240";
-        this.setting!.addItem({
-            title: "搜索最大文件大小(KB)",
-            description: "超过此大小的文件不参与搜索",
-            actionElement: this.searchMaxSizeInput,
-        });
+        addRow("fileTree", "搜索最大文件大小(KB)", "超过此大小的文件不参与搜索", this.searchMaxSizeInput);
 
         // 文件树根目录
         this.fileTreeRootInput = document.createElement("input");
-        this.fileTreeRootInput.className = "b3-text-field fn__flex-1";
+        this.fileTreeRootInput.className = "b3-text-field";
         this.fileTreeRootInput.type = "text";
         this.fileTreeRootInput.placeholder = "/data 或 E:\\HOME\\BaiduSyncdisk";
-        this.setting!.addItem({
-            title: "文件树根目录",
-            description: "文件管理器 Dock 默认打开的目录路径。思源工作空间内填 /data 或 /data/public;工作空间外填系统绝对路径(如 E:\\HOME\\BaiduSyncdisk,仅桌面端支持)",
-            actionElement: this.fileTreeRootInput,
-        });
+        addRow("fileTree", "文件树根目录", "文件管理器 Dock 默认打开的目录路径。思源工作空间内填 /data 或 /data/public;工作空间外填系统绝对路径(如 E:\\HOME\\BaiduSyncdisk,仅桌面端支持)", this.fileTreeRootInput);
 
-        // 终端后端模式
+        // 删除方式:回收站二选一(没有"直接删除";环境不支持时删除会中止并提示)
+        this.deleteModeSelect = document.createElement("select");
+        this.deleteModeSelect.className = "b3-select";
+        this.deleteModeSelect.innerHTML = `
+            <option value="plugin">插件回收站(推荐,可一键恢复)</option>
+            <option value="system">系统回收站</option>`;
+        addRow("fileTree", "删除方式", "文件/文件夹删除时移入对应回收站:插件回收站按原路径镜像存放(工作空间 .siyuan/virtual-tree-trash),可随时恢复;系统回收站由操作系统管理。百度网盘文件始终走网盘删除(由网盘回收站兜底)", this.deleteModeSelect);
+
+        // 回收站管理入口:查看/恢复/彻底删除/清空
+        const trashManageBtn = document.createElement("button");
+        trashManageBtn.className = "b3-button b3-button--outline";
+        trashManageBtn.textContent = "打开回收站…";
+        trashManageBtn.addEventListener("click", () => {
+            openTrashDialog(this as any);
+        });
+        addRow("fileTree", "回收站", "查看插件回收站内容,可恢复到原位置、彻底删除或清空;删除方式为「系统回收站」时请到系统回收站里恢复", trashManageBtn);
+
+        // ---------- 终端 ----------
         this.terminalBackendSelect = document.createElement("select");
-        this.terminalBackendSelect.className = "b3-select fn__size200";
+        this.terminalBackendSelect.className = "b3-select";
         this.terminalBackendSelect.innerHTML = `
             <option value="auto">自动(推荐)</option>
             <option value="builtin">内置(开箱即用)</option>
             <option value="server">外部服务(完整 PTY)</option>`;
-        this.setting!.addItem({
-            title: "终端后端",
-            description: "内置:直接在思源中启动 shell,无需额外服务(不支持 vim/htop 等全屏交互程序)。外部服务:需启动 scripts/start-terminal.bat,支持完整 PTY 交互。自动:桌面端优先内置",
-            actionElement: this.terminalBackendSelect,
-        });
+        addRow("terminal", "终端后端", "内置:直接在思源中启动 shell,无需额外服务(不支持 vim/htop 等全屏交互程序)。外部服务:需启动 scripts/start-terminal.bat,支持完整 PTY 交互。自动:桌面端优先内置", this.terminalBackendSelect);
 
-        // 终端服务地址
         this.terminalServerUrlInput = document.createElement("input");
-        this.terminalServerUrlInput.className = "b3-text-field fn__flex-1";
+        this.terminalServerUrlInput.className = "b3-text-field";
         this.terminalServerUrlInput.type = "text";
         this.terminalServerUrlInput.placeholder = "ws://127.0.0.1:9800";
-        this.setting!.addItem({
-            title: "终端服务地址",
-            description: "仅「外部服务」模式需要。需先启动服务:双击 scripts/start-terminal.bat 或运行 node scripts/terminal-server.js",
-            actionElement: this.terminalServerUrlInput,
-        });
+        addRow("terminal", "终端服务地址", "仅「外部服务」模式需要。需先启动服务:双击 scripts/start-terminal.bat 或运行 node scripts/terminal-server.js", this.terminalServerUrlInput);
 
-        // 思源工作空间路径
         this.siyuanWorkspacePathInput = document.createElement("input");
-        this.siyuanWorkspacePathInput.className = "b3-text-field fn__flex-1";
+        this.siyuanWorkspacePathInput.className = "b3-text-field";
         this.siyuanWorkspacePathInput.type = "text";
         this.siyuanWorkspacePathInput.placeholder = "留空则自动检测";
-        this.setting!.addItem({
-            title: "思源工作空间路径",
-            description: "思源工作空间在文件系统中的绝对路径,用于将终端工作目录从 /data/... 转换为系统路径。留空则自动从思源配置获取",
-            actionElement: this.siyuanWorkspacePathInput,
-        });
+        addRow("terminal", "思源工作空间路径", "思源工作空间在文件系统中的绝对路径,用于将终端工作目录从 /data/... 转换为系统路径。留空则自动从思源配置获取", this.siyuanWorkspacePathInput);
 
-        // 终端 Shell 选择
         this.terminalShellSelect = document.createElement("select");
-        this.terminalShellSelect.className = "b3-select fn__size200";
+        this.terminalShellSelect.className = "b3-select";
         this.terminalShellSelect.innerHTML = `
             <option value="auto">自动检测</option>
             <option value="pwsh">PowerShell 7</option>
             <option value="powershell">Windows PowerShell</option>
             <option value="cmd">命令提示符 (cmd)</option>`;
-        this.setting!.addItem({
-            title: "终端 Shell",
-            description: "集成终端使用的 shell 程序,需重启终端 Tab 后生效",
-            actionElement: this.terminalShellSelect,
-        });
+        addRow("terminal", "终端 Shell", "集成终端使用的 shell 程序,需重启终端 Tab 后生效", this.terminalShellSelect);
 
-        // 代码主题(扩展加载后填充选项)
+        // ---------- 外观 ----------
         this.colorThemeSelect = document.createElement("select");
-        this.colorThemeSelect.className = "b3-select fn__size200";
+        this.colorThemeSelect.className = "b3-select";
         this.colorThemeSelect.innerHTML = `<option value="">自动(优先扩展主题)</option>`;
-        this.setting!.addItem({
-            title: "代码主题",
-            description: "Monaco 编辑器配色主题。安装主题类扩展(如 One Light)后可在此选择,保存后立即生效",
-            actionElement: this.colorThemeSelect,
-        });
+        addRow("appearance", "代码主题", "Monaco 编辑器配色主题。安装主题类扩展(如 One Light)后可在此选择,保存后立即生效", this.colorThemeSelect);
 
-        // 图标主题(扩展加载后填充选项)
         this.iconThemeSelect = document.createElement("select");
-        this.iconThemeSelect.className = "b3-select fn__size200";
+        this.iconThemeSelect.className = "b3-select";
         this.iconThemeSelect.innerHTML = `<option value="">自动(使用第一个图标主题)</option>`;
-        this.setting!.addItem({
-            title: "图标主题",
-            description: "文件树与 Tab 的文件/文件夹图标。安装图标类扩展(如 Material Icon Theme)后可在此选择,保存后立即生效",
-            actionElement: this.iconThemeSelect,
-        });
+        addRow("appearance", "图标主题", "文件树与 Tab 的文件/文件夹图标。安装图标类扩展(如 Material Icon Theme)后可在此选择,保存后立即生效", this.iconThemeSelect);
 
-        // 新标签页:接管顶部「+」
+        // ---------- 新标签页 ----------
         this.newTabReplacePlusInput = document.createElement("input");
         this.newTabReplacePlusInput.type = "checkbox";
         this.newTabReplacePlusInput.className = "b3-switch";
-        this.setting!.addItem({
-            title: "新标签页:接管顶部「+」",
-            description: "开启后,点击思源顶部的「+」不再新建文档,而是打开插件「新标签页」(搜索文件 + 固定 + 最近打开 + 收藏)。页内「新建思源文档」按钮保留原生新建能力",
-            actionElement: this.newTabReplacePlusInput,
-        });
+        addRow("newTab", "接管顶部「+」", "开启后,点击思源顶部的「+」不再新建文档,而是打开插件「新标签页」(搜索文件 + 固定 + 最近打开 + 收藏)。页内「新建思源文档」按钮保留原生新建能力", this.newTabReplacePlusInput);
 
-        // 新标签页:各分区显隐
         this.newTabShowPinnedInput = document.createElement("input");
         this.newTabShowPinnedInput.type = "checkbox";
         this.newTabShowPinnedInput.className = "b3-switch";
-        this.setting!.addItem({
-            title: "新标签页:显示「固定」",
-            description: "固定区钉在页顶,可在文件树右键「固定到新标签页」添加",
-            actionElement: this.newTabShowPinnedInput,
-        });
+        addRow("newTab", "显示「固定」", "固定区钉在页顶,可在文件树右键「固定到新标签页」添加", this.newTabShowPinnedInput);
 
         this.newTabShowRecentInput = document.createElement("input");
         this.newTabShowRecentInput.type = "checkbox";
         this.newTabShowRecentInput.className = "b3-switch";
-        this.setting!.addItem({
-            title: "新标签页:显示「最近打开」",
-            description: "最近打开的文件与思源文档(来自「最近使用」列表)",
-            actionElement: this.newTabShowRecentInput,
-        });
+        addRow("newTab", "显示「最近打开」", "最近打开的文件与思源文档(来自「最近使用」列表)", this.newTabShowRecentInput);
 
         this.newTabShowFavoritesInput = document.createElement("input");
         this.newTabShowFavoritesInput.type = "checkbox";
         this.newTabShowFavoritesInput.className = "b3-switch";
-        this.setting!.addItem({
-            title: "新标签页:显示「收藏」",
-            description: "收藏区,可在文件树右键「收藏」添加",
-            actionElement: this.newTabShowFavoritesInput,
-        });
+        addRow("newTab", "显示「收藏」", "收藏区,可在文件树右键「收藏」添加", this.newTabShowFavoritesInput);
 
+        // ---------- 运行内核 ----------
         // 默认运行内核:代码块(内核模式)/py 文件 ▶ 运行/ipynb 共用的全局兜底环境。
         // 选项含内置内核 + 本机全部 Jupyter kernelspec + conda 环境自动扫描结果
         this.kernelDefaultSelect = document.createElement("select");
-        this.kernelDefaultSelect.className = "b3-select fn__size200";
+        this.kernelDefaultSelect.className = "b3-select";
         this.kernelDefaultSelect.innerHTML = `<option value="syfe">内置 Python 内核</option>`;
-        this.setting!.addItem({
-            title: "默认运行内核",
-            description: "代码块(内核模式)、py 文件的 ▶ 运行、ipynb 在没有单独选过内核时,都用这个环境。conda 环境无需注册 kernelspec(自动扫描,环境需装有 ipykernel);单个文档/笔记本仍可在内核菜单里另行选择,会覆盖此默认",
-            actionElement: this.kernelDefaultSelect,
-        });
+        addRow("jupyter", "默认运行内核", "代码块(内核模式)、py 文件的 ▶ 运行、ipynb 在没有单独选过内核时,都用这个环境。conda 环境无需注册 kernelspec(自动扫描,环境需装有 ipykernel);单个文档/笔记本仍可在内核菜单里另行选择,会覆盖此默认", this.kernelDefaultSelect);
         void (async () => {
             // 异步填充动态选项并回显当前全局默认
             try {
@@ -988,155 +1054,16 @@ actionElement: tagManageBtn,
             }
         })();
 
-        // 「虚拟文档树」面板:引用关系树(移植自 siyuan-virtual-tree)
-        this.mountTreeRelationEnabledInput = document.createElement("input");
-        this.mountTreeRelationEnabledInput.type = "checkbox";
-        this.mountTreeRelationEnabledInput.className = "b3-switch";
-        this.setting!.addItem({
-            title: "虚拟文档树:引用关系树",
-            description: "在「虚拟文档树」面板顶部额外显示一棵按文档首块引用关系自动构建的树(被引用方为父,发起引用方为子,自动挑出没有上级的文档作为根)。它是只读的派生视图,不改动你手动挂载的内容",
-            actionElement: this.mountTreeRelationEnabledInput,
-        });
-
-        this.mountTreeRelationSortSelect = document.createElement("select");
-        this.mountTreeRelationSortSelect.className = "b3-select fn__size200";
-        this.mountTreeRelationSortSelect.innerHTML = `
-            <option value="name">按名称排序</option>
-            <option value="weight">按权重排序</option>`;
-        this.setting!.addItem({
-            title: "引用子层级:排序方式",
-            description: "自动挂载行(引用子层级)的回退排序;在虚拟文档树开拖拽模式拖动后的顺序存在挂载配置里,优先生效",
-            actionElement: this.mountTreeRelationSortSelect,
-        });
-
-        this.mountTreeRelationWeightInput = document.createElement("input");
-        this.mountTreeRelationWeightInput.className = "b3-text-field fn__flex1";
-        this.mountTreeRelationWeightInput.type = "text";
-        this.mountTreeRelationWeightInput.placeholder = "weight";
-        this.setting!.addItem({
-            title: "关系树:权重属性名",
-            description: "文档自定义属性中用于排序的权重字段名,缺失则权重为 0(仅「按权重排序」时生效)",
-            actionElement: this.mountTreeRelationWeightInput,
-        });
-
-        this.mountTreeRelationPhysicalInput = document.createElement("input");
-        this.mountTreeRelationPhysicalInput.type = "checkbox";
-        this.mountTreeRelationPhysicalInput.className = "b3-switch";
-        this.setting!.addItem({
-            title: "关系树:包含物理子树",
-            description: "开启后,文档在思源原生层级的物理子文档也会作为关系树的子节点显示",
-            actionElement: this.mountTreeRelationPhysicalInput,
-        });
-
-        this.mountTreeRelationCaseInput = document.createElement("input");
-        this.mountTreeRelationCaseInput.type = "checkbox";
-        this.mountTreeRelationCaseInput.className = "b3-switch";
-        this.setting!.addItem({
-            title: "关系树:排序区分大小写",
-            description: "按名称排序时是否区分大小写",
-            actionElement: this.mountTreeRelationCaseInput,
-        });
-
-        this.mountTreeRelationDepthInput = document.createElement("input");
-        this.mountTreeRelationDepthInput.className = "b3-text-field fn__size200";
-        this.mountTreeRelationDepthInput.type = "number";
-        this.mountTreeRelationDepthInput.min = "1";
-        this.mountTreeRelationDepthInput.placeholder = "8";
-        this.setting!.addItem({
-            title: "关系树:最大递归深度",
-            description: "构建子树时的最大层数,防止深层引用造成卡顿",
-            actionElement: this.mountTreeRelationDepthInput,
-        });
-
-        this.mountTreeRelationNodesInput = document.createElement("input");
-        this.mountTreeRelationNodesInput.className = "b3-text-field fn__size200";
-        this.mountTreeRelationNodesInput.type = "number";
-        this.mountTreeRelationNodesInput.placeholder = "500";
-        this.setting!.addItem({
-            title: "关系树:最大节点数",
-            description: "关系树最多显示多少个文档,超出则停止构建",
-            actionElement: this.mountTreeRelationNodesInput,
-        });
-
-        this.mountTreeRelationExpandInput = document.createElement("input");
-        this.mountTreeRelationExpandInput.className = "b3-text-field fn__size200";
-        this.mountTreeRelationExpandInput.type = "number";
-        this.mountTreeRelationExpandInput.placeholder = "1";
-        this.setting!.addItem({
-            title: "关系树:默认展开层级",
-            description: "0 = 全部折叠,-1 = 全部展开,N = 展开前 N 层(修改后点「刷新」生效)",
-            actionElement: this.mountTreeRelationExpandInput,
-        });
-
-        // 导入 Markdown 到思源时,是否把源文件作为资源插入文档顶部的引述块
-        this.importMdSourceAssetInput = document.createElement("input");
-        this.importMdSourceAssetInput.type = "checkbox";
-        this.importMdSourceAssetInput.className = "b3-switch";
-        this.setting!.addItem({
-            title: "导入 Markdown:插入源文件资源引述块",
-            description: "导入 .md 到思源后,把源文件上传为资源,并在文档顶部插入一个引述块链接到它(保留出处,便于回溯原文件);仅对单个 Markdown 文件生效,导入文件夹时不处理",
-            actionElement: this.importMdSourceAssetInput,
-        });
-
-        // Markdown 默认模式(对齐 Obsidian:实时预览 / 源码 / 阅读)
-        this.markdownModeSelect = document.createElement("select");
-        this.markdownModeSelect.className = "b3-select fn__size200";
-        this.markdownModeSelect.innerHTML = `
-            <option value="live">实时预览</option>
-            <option value="source">源码</option>
-            <option value="reading">阅读</option>`;
-        this.setting!.addItem({
-            title: "Markdown 默认模式",
-            description: "打开 .md 文件时的默认模式,Tab 顶部可随时切换。实时预览=边写边渲染(光标行显示源码);源码=纯文本;阅读=完整渲染且只读。超过 512KB 的大文件始终以源码模式打开",
-            actionElement: this.markdownModeSelect,
-        });
-
-        // 全局阅读模式:Markdown 默认只读打开(优先级高于上面的默认模式)
-        this.globalReadingModeInput = document.createElement("input");
-        this.globalReadingModeInput.type = "checkbox";
-        this.globalReadingModeInput.className = "b3-switch";
-        this.setting!.addItem({
-            title: "全局阅读模式",
-            description: "开启后所有 Markdown 文件默认以「阅读」(只读渲染)方式打开,需要编辑时再用页签顶部的按钮切换;关闭则使用上面的「Markdown 默认模式」",
-            actionElement: this.globalReadingModeInput,
-        });
-
-        // 版本控制:每文件保留多少个修改前版本
-        this.versionKeepCountInput = document.createElement("input");
-        this.versionKeepCountInput.className = "b3-text-field fn__size200";
-        this.versionKeepCountInput.type = "number";
-        this.versionKeepCountInput.min = "0";
-        this.versionKeepCountInput.placeholder = "10";
-        this.setting!.addItem({
-            title: "版本控制:保留版本数",
-            description: "每次保存时自动把修改前的内容存为历史版本(文本文件通用,含代码文件),页签顶部「历史版本」可查看与恢复;0 = 关闭版本控制",
-            actionElement: this.versionKeepCountInput,
-        });
-
-        // 删除方式:回收站二选一(没有"直接删除";环境不支持时删除会中止并提示)
-        this.deleteModeSelect = document.createElement("select");
-        this.deleteModeSelect.className = "b3-select fn__size200";
-        this.deleteModeSelect.innerHTML = `
-            <option value="plugin">插件回收站(推荐,可一键恢复)</option>
-            <option value="system">系统回收站</option>`;
-        this.setting!.addItem({
-            title: "删除方式",
-            description: "文件/文件夹删除时移入对应回收站:插件回收站按原路径镜像存放(工作空间 .siyuan/virtual-tree-trash),可随时恢复;系统回收站由操作系统管理。百度网盘文件始终走网盘删除(由网盘回收站兜底)",
-            actionElement: this.deleteModeSelect,
-        });
-
-        // 回收站管理入口:查看/恢复/彻底删除/清空
-        const trashManageBtn = document.createElement("button");
-        trashManageBtn.className = "b3-button b3-button--outline fn__size200";
-        trashManageBtn.textContent = "打开回收站…";
-        trashManageBtn.addEventListener("click", () => {
-            openTrashDialog(this as any);
-        });
-        this.setting!.addItem({
-            title: "回收站",
-            description: "查看插件回收站内容,可恢复到原位置、彻底删除或清空;删除方式为「系统回收站」时请到系统回收站里恢复",
-            actionElement: trashManageBtn,
-        });
+        // ---------- 页面注册(树顺序) ----------
+        addRowsPage("appearance", "外观");
+        addRowsPage("openFiles", "文件与打开");
+        addRowsPage("virtualTree", "虚拟文档树");
+        addRowsPage("tags", "标签");
+        addRowsPage("fileTree", "文件树");
+        addRowsPage("baiduPan", "百度网盘");
+        addRowsPage("terminal", "终端");
+        addRowsPage("newTab", "新标签页");
+        addRowsPage("jupyter", "运行内核");
     }
 
     // 同步设置面板控件值为当前配置
