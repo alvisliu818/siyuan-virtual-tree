@@ -1,10 +1,10 @@
 // 「字体族」选择器的全量字体枚举:Node 侧列字体目录 + 解析字体文件 name 表。
 //
-// 为什么不拿 queryLocalFonts 当主力:思源 Electron 没配 local-fonts 权限 handler,
-// Chromium 对未放行的权限默认拒绝 → 该 API 在思源里永远 SecurityError
-// (实测 2026-10-18,与页面可见性无关)。浏览器沙箱内没有其他全量枚举途径,
-// 而 本插件跑在思源 renderer(nodeIntegration)→ 直接解析系统字体文件拿真实 family 名。
-// 兜底链:queryLocalFonts(未来放行时最优) > 本文件(真实全量) > canvas 候选探测。
+// 为什么不用 queryLocalFonts:思源 Electron 未配 local-fonts 权限 handler 时默认拒绝;
+// 即使放行(用户实机可见+手势时成功),它返回的 family 也只有 137 个,
+// 比本文件的文件解析(209 个)残缺 —— 这个 API 的返回本身就不全,不能当数据源。
+// 本插件跑在思源 renderer(nodeIntegration)→ 解析系统字体文件拿真实 family 名,
+// 兜底:本文件(主力,真实全量) > canvas 候选探测(editor-settings-ui.ts)。
 import {getNativeRequire} from "../utils/native-require";
 
 // 会话内缓存:字体安装变化极少,没必要每次点"+"都扫盘

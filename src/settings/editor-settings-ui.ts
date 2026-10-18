@@ -93,21 +93,12 @@ function detectInstalledFonts(): string[] {
     }
 }
 
-/** 枚举系统全部字体族,三级兜底:
- *  1. queryLocalFonts(浏览器全量 API,但思源 Electron 未放行 local-fonts 权限,基本必拒——留给未来)
- *  2. Node 侧解析字体文件 name 表(真实全量,不受权限/可见性限制,主力)
- *  3. canvas 测宽探测候选清单(非 node 环境的最后防线) */
+/** 枚举系统全部字体族:
+ *  1. Node 侧解析字体文件 name 表(真实全量,不受权限/可见性限制,唯一主力)
+ *  2. canvas 测宽探测候选清单(node 模块不可用时的最后防线)
+ *  注:不用 queryLocalFonts——实测它在 Electron 放行权限时也只返回部分字体
+ *  (用户实机 137 个 vs 文件枚举 209 个),列表反而更残缺,不能当数据源。 */
 async function loadFontFamilies(): Promise<string[]> {
-    try {
-        const qlf = (window as any).queryLocalFonts as (() => Promise<Array<{family: string}>>) | undefined;
-        if (typeof qlf === "function") {
-            const fonts = await qlf.call(window);
-            const fams = [...new Set(fonts.map(f => f.family).filter(Boolean))];
-            if (fams.length) return fams.sort((a, b) => a.localeCompare(b, "zh-Hans-CN"));
-        }
-    } catch {
-        // SecurityError(Electron 权限未放行/页面不可见) → 下一级
-    }
     try {
         const fams = await enumFontFamiliesViaFs();
         if (fams.length) return fams;
