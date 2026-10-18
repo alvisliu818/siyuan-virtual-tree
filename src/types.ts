@@ -40,6 +40,7 @@ export interface EditorConfig {
     siyuanWorkspacePath: string; // 思源工作空间系统路径(用于终端工作目录转换)
     colorTheme: string; // 代码主题:""=自动(优先扩展主题);"__siyuan__"=思源配色;其他=主题 name
     iconTheme: string; // 图标主题:""=自动(第一个);"__none__"=思源内置图标;其他=扩展 id
+    marketTopBarIcon: boolean; // 顶栏「扩展市场」图标:false=隐藏(仍可用命令 ⇧⌘E 打开)
     markdownDefaultMode: "live" | "source" | "reading"; // Markdown 默认模式:实时预览 / 源码 / 阅读(对齐 Obsidian)
     newTabReplacePlus: boolean;      // 接管思源顶部「+」:点击改为打开新标签页(而非新建文档)
     newTabShowPinned: boolean;       // 新标签页显示「固定」区
@@ -242,6 +243,7 @@ export const DEFAULT_CONFIG: EditorConfig = {
     siyuanWorkspacePath: "", // 留空则自动从思源配置获取
     colorTheme: "", // 自动
     iconTheme: "", // 自动
+    marketTopBarIcon: true, // 顶栏默认显示「扩展市场」图标
     markdownDefaultMode: "live", // 实时预览(类 Obsidian Live Preview)
     newTabReplacePlus: true,        // 默认接管顶部「+」
     newTabShowPinned: true,

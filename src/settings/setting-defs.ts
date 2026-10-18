@@ -964,6 +964,16 @@ export const PLUGIN_DEFS: SettingDef[] = [
         set: (c, v) => { c.iconTheme = String(v ?? ""); },
     },
     {
+        key: "workbench.marketTopBarIcon",
+        kind: "boolean",
+        group: G_WORKBENCH,
+        title: "顶栏「扩展市场」图标",
+        description: "顶栏右侧的拼图图标,点击打开扩展市场;隐藏后仍可用命令(⇧⌘E)打开",
+        default: true,
+        get: (c) => c.marketTopBarIcon !== false,
+        set: (c, v) => { c.marketTopBarIcon = v !== false; },
+    },
+    {
         key: "workbench.newTabReplacePlus",
         kind: "boolean",
         group: G_WORKBENCH,

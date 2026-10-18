@@ -31,6 +31,7 @@ import {
     getResolved,
     getNumberSetting,
     initUserSettings,
+    registerSettingsChangedHandler,
     registerSettingsJsonSchema,
     syncUserSettingsFromConfig,
 } from "./settings/user-settings";
@@ -143,6 +144,9 @@ export default class FileEditorPlugin extends Plugin {
     private terminalShellSelect?: HTMLSelectElement;
     private colorThemeSelect?: HTMLSelectElement;
     private iconThemeSelect?: HTMLSelectElement;
+    // 顶栏「扩展市场」图标:元素引用(显隐控制)+ 设置面板开关
+    private marketTopBarIconEl?: HTMLElement;
+    private marketTopBarIconInput?: HTMLInputElement;
     private markdownModeSelect?: HTMLSelectElement;
     private newTabReplacePlusInput?: HTMLInputElement;
     private newTabShowPinnedInput?: HTMLInputElement;
@@ -388,7 +392,8 @@ export default class FileEditorPlugin extends Plugin {
         });
 
         // 顶栏图标:扩展市场(自定义拼图 SVG,currentColor 自适应工具栏配色)
-        this.addTopBar({
+        // 显隐跟随 config.marketTopBarIcon(默认显示),onLayoutReady 里按配置收起
+        this.marketTopBarIconEl = this.addTopBar({
             icon: `<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M20.5 11H19V7c0-1.1-.9-2-2-2h-4V3.5C13 2.67 12.33 2 11.5 2S10 2.67 10 3.5V5H6c-1.1 0-2 .9-2 2v3.8h1.5c.83 0 1.5.67 1.5 1.5s-.67 1.5-1.5 1.5H4V17c0 1.1.9 2 2 2h3.8v-1.5c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5V19H17c1.1 0 2-.9 2-2v-3.8h1.5c.83 0 1.5-.67 1.5-1.5s-.67-1.5-1.5-1.5z"/></svg>`,
             title: "扩展市场",
             position: "right",
@@ -429,6 +434,10 @@ export default class FileEditorPlugin extends Plugin {
         } catch (e) {
             console.error("[siyuan-file-editor] 加载 settings.json 失败:", e);
         }
+        // 顶栏「扩展市场」图标显隐跟随配置(默认显示,配置为 false 时在此收起)
+        this.applyMarketTopBarIcon();
+        // settings.json 在编辑器里保存后图标显隐跟着变(上面 applyUserSettingsToConfig 已先同步 config)
+        registerSettingsChangedHandler(() => this.applyMarketTopBarIcon());
         // 版本控制保留条数以**磁盘配置**为准 —— onload 里那次跑在 loadConfig 之前,
         // 拿到的是 DEFAULT_CONFIG 的值,改设置后不重启也不会生效,必须在这里补一次
         setVersionKeepCount(this.config.versionKeepCount ?? 10);
@@ -779,6 +788,12 @@ export default class FileEditorPlugin extends Plugin {
         }
     }
 
+    // 顶栏「扩展市场」图标显隐跟随配置;设置面板保存 / settings.json 变更后调用,立即生效
+    private applyMarketTopBarIcon(): void {
+        if (!this.marketTopBarIconEl) return;
+        this.marketTopBarIconEl.style.display = this.config?.marketTopBarIcon === false ? "none" : "";
+    }
+
     // 构建设置面板页(VS Code 式:左分类树 + 右内容,面板框架见 settings/plugin-settings-dialog.ts)。
     // 普通设置行按页聚合,页 DOM 只构建一次;编辑器页由 editor-settings-ui 提供构建器。
     private buildSettingItems(): void {
@@ -1025,6 +1040,12 @@ export default class FileEditorPlugin extends Plugin {
         this.iconThemeSelect.innerHTML = `<option value="">自动(使用第一个图标主题)</option>`;
         addRow("appearance", "图标主题", "文件树与 Tab 的文件/文件夹图标。安装图标类扩展(如 Material Icon Theme)后可在此选择,保存后立即生效", this.iconThemeSelect);
 
+        // 顶栏「扩展市场」图标显隐
+        this.marketTopBarIconInput = document.createElement("input");
+        this.marketTopBarIconInput.type = "checkbox";
+        this.marketTopBarIconInput.className = "b3-switch";
+        addRow("appearance", "顶栏「扩展市场」图标", "顶栏右侧的拼图图标,点击打开扩展市场;隐藏后仍可用命令面板或快捷键 ⇧⌘E 打开,保存后立即生效", this.marketTopBarIconInput);
+
         // ---------- 新标签页 ----------
         this.newTabReplacePlusInput = document.createElement("input");
         this.newTabReplacePlusInput.type = "checkbox";
@@ -1112,6 +1133,7 @@ export default class FileEditorPlugin extends Plugin {
         if (this.versionKeepCountInput) this.versionKeepCountInput.value = String(this.config.versionKeepCount ?? 10);
         if (this.deleteModeSelect) this.deleteModeSelect.value = this.config.deleteMode || "plugin";
         if (this.newTabReplacePlusInput) this.newTabReplacePlusInput.checked = this.config.newTabReplacePlus !== false;
+        if (this.marketTopBarIconInput) this.marketTopBarIconInput.checked = this.config.marketTopBarIcon !== false;
         if (this.newTabShowPinnedInput) this.newTabShowPinnedInput.checked = this.config.newTabShowPinned !== false;
         if (this.newTabShowRecentInput) this.newTabShowRecentInput.checked = this.config.newTabShowRecent !== false;
         if (this.newTabShowFavoritesInput) this.newTabShowFavoritesInput.checked = this.config.newTabShowFavorites !== false;
@@ -1153,6 +1175,7 @@ export default class FileEditorPlugin extends Plugin {
             siyuanWorkspacePath: (this.siyuanWorkspacePathInput?.value || "").trim(),
             colorTheme: this.colorThemeSelect?.value || "",
             iconTheme: this.iconThemeSelect?.value || "",
+            marketTopBarIcon: this.marketTopBarIconInput?.checked ?? true,
             markdownDefaultMode: (this.markdownModeSelect?.value as "live" | "source" | "reading") || "live",
             globalReadingMode: this.globalReadingModeInput?.checked ?? true,
             versionKeepCount: Math.max(0, parseInt(this.versionKeepCountInput?.value || "10", 10) || 0),
@@ -1208,6 +1231,8 @@ export default class FileEditorPlugin extends Plugin {
         setCloseUnsavedAction(this.config.closeUnsavedAction);
         // 主题设置立即生效
         this.applyConfiguredThemes();
+        // 顶栏「扩展市场」图标显隐立即生效
+        this.applyMarketTopBarIcon();
         // 编辑器设置(字体/换行/导航窗格……)对已打开的编辑器立即生效
         applyEditorOptions();
         this.refreshFileTrees();
