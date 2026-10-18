@@ -117,6 +117,16 @@ export async function loadRecents(plugin: Plugin): Promise<RecentEntry[]> {
     return cached;
 }
 
+// 从存储重读最近使用(其他前端窗口写入 recents.json 后,由 onDataChanged 调用)。
+// 内容无变化时不派发事件(避免面板无谓重绘),返回是否有变化。
+export async function reloadRecentsIfChanged(plugin: Plugin): Promise<boolean> {
+    const before = JSON.stringify(cached);
+    await loadRecents(plugin);
+    if (JSON.stringify(cached) === before) return false;
+    emitRecentsChanged();
+    return true;
+}
+
 // 获取全部条目(按时间倒序;无 ts 的旧数据按存储顺序)
 export function getRecentEntries(): RecentEntry[] {
     if (!loaded) return [];

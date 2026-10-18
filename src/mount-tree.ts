@@ -84,8 +84,8 @@ async function persist(): Promise<void> {
     }
 }
 
-// 初始化(插件 onLayoutReady 时调用)
-export async function initMountTree(plugin: Plugin): Promise<void> {
+// 初始化(插件 onLayoutReady 时调用);dispatch=false 供"重读不改"场景使用
+export async function initMountTree(plugin: Plugin, dispatch = true): Promise<void> {
     saver = (data: any) => plugin.saveData(STORAGE_VIRTUAL_TREE, data);
     roots = [];
     try {
@@ -107,7 +107,17 @@ export async function initMountTree(plugin: Plugin): Promise<void> {
         roots = [];
     }
     loaded = true;
+    if (dispatch) dispatchChanged();
+}
+
+// 从存储重读挂载树(其他前端窗口写入本插件存储后,由 onDataChanged 调用)。
+// 内容无变化时不派发事件(避免面板无谓重绘),返回是否有变化。
+export async function reloadMountTreeIfChanged(plugin: Plugin): Promise<boolean> {
+    const before = JSON.stringify({roots, autoOrder});
+    await initMountTree(plugin, false);
+    if (JSON.stringify({roots, autoOrder}) === before) return false;
     dispatchChanged();
+    return true;
 }
 
 // 顶层挂载项(只读副本)

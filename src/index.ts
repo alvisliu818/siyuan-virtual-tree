@@ -48,7 +48,7 @@ import {registerDocOpenTakeover} from "./open-takeover/doc-open-takeover";
 import {initFileVersions, setVersionKeepCount} from "./version-control/file-versions";
 import {setTrashMode} from "./utils/trash";
 import {openTrashDialog} from "./components/trash-dialog";
-import {loadRecents, addRecent, addRecentDoc, flushRecents} from "./recent-files";
+import {loadRecents, addRecent, addRecentDoc, flushRecents, reloadRecentsIfChanged} from "./recent-files";
 import {loadStartPage, itemFromPath, itemFromDoc, toggleInGroup} from "./start-page";
 import {isVirtualPath, virtualId, initMountStore, getMountList, dropSyDocMounts} from "./utils/virtual-tree";
 import {initBaiduPanStore} from "./api/baidu-pan";
@@ -58,7 +58,7 @@ import {registerLinkReveal} from "./protyle/link-reveal";
 import {registerMountMenu} from "./protyle/mount-menu";
 import {registerCodeBlockRun, disposeCodeBlockRun} from "./protyle/code-block-run";
 import {loadCodeBlockRunData, flushCodeBlockRunData} from "./protyle/code-block-run-store";
-import {initMountTree, migrateSyDocMounts, SYFE_RELATION_TREE_CHANGED_EVENT} from "./mount-tree";
+import {initMountTree, reloadMountTreeIfChanged, migrateSyDocMounts, SYFE_RELATION_TREE_CHANGED_EVENT} from "./mount-tree";
 import {createMountTreeDockConfig} from "./dock/mount-tree-dock";
 import {createTerminalDockConfig} from "./dock/terminal-dock";
 import {openExtensionMarket} from "./extensions/market-ui";
@@ -582,6 +582,25 @@ export default class FileEditorPlugin extends Plugin {
         }
         if (!title && path) title = basename(path).replace(/\.sy$/i, "");
         await addRecentDoc(this as any, rootID, title || rootID, hpath || undefined);
+    }
+
+    // 存储数据被其他前端实例写入(内核对写入者以外的窗口广播 dataChangePlugins)。
+    // **必须覆写**:未覆写时思源 lifecycle 会把数据变更升级为整个插件重载
+    // (重新执行插件脚本 + onload + onLayoutReady),新窗口与主窗口互相触发,
+    // 形成无限乒乓 —— 实测右键"在新窗口打开"文档后 19 秒内完整重载 19 次,
+    // 表现为插件面板反复加载、编辑器 tab 被重建到空白。
+    // 这里只做定向同步:重读跨窗口最常写的挂载树与最近使用,内容有变化才刷新对应面板。
+    async onDataChanged(_reason?: "sync" | "overwrite"): Promise<void> {
+        try {
+            await reloadMountTreeIfChanged(this as any);
+        } catch {
+            // ignore
+        }
+        try {
+            await reloadRecentsIfChanged(this as any);
+        } catch {
+            // ignore
+        }
     }
 
     onunload(): void {
