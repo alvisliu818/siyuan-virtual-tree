@@ -165,17 +165,28 @@ function processMdImages(tab: MarkdownTabInstance): void {
     });
 }
 
-// 内联 HTML 图片(<img src="..." style="zoom:50%">):Lute 在 WYSIWYG 中渲染为
-// <code data-type="html-inline"> 源码文本而非真实图片。
-// 此处解析标签内容,将 code 替换为真实渲染的 img(原始标签存入 data-syfe-html,
-// 序列化时由 patchLuteDOM2Md 还原为 code,保证文档无损往返)。
+// 内联 HTML 图片(<img src="..." style="zoom:50%">):Lute 不渲染成真实图片,
+// 源码节点有两种模式形态(实测 Lute 输出):
+//   WYSIWYG(阅读): <code data-type="html-inline">源码</code>(data-type 在 code 上)
+//   IR(实时预览):  <span data-type="html-inline" class="vditor-ir__node">
+//                  <code class="vditor-ir__marker">源码</code></span>(data-type 在 span 上)
+// 此处解析标签内容,把宿主节点(IR=整个 span,WYSIWYG=code)替换为真实渲染的 img
+// (原始标签存入 data-syfe-html,序列化时由 patchLuteDOM2Md 按模式还原,保证无损往返)。
 function processHtmlInlineImages(tab: MarkdownTabInstance): void {
     const contentEl = tab._contentEl;
     if (!contentEl) return;
-    const codes = contentEl.querySelectorAll<HTMLElement>('code[data-type="html-inline"]:not([data-syfe-himg])');
-    if (codes.length === 0) return;
+    // 两种形态收敛为 {host: 待替换节点, code: 源码文本所在节点}
+    const nodes: Array<{host: HTMLElement; code: HTMLElement}> = [];
+    contentEl.querySelectorAll<HTMLElement>('span[data-type="html-inline"]:not([data-syfe-himg])')
+        .forEach(span => {
+            const code = span.querySelector(":scope > code.vditor-ir__marker");
+            if (code) nodes.push({host: span, code: code as HTMLElement});
+        });
+    contentEl.querySelectorAll<HTMLElement>('code[data-type="html-inline"]:not([data-syfe-himg])')
+        .forEach(code => nodes.push({host: code, code}));
+    if (nodes.length === 0) return;
     const mdPath = tab._path!;
-    Array.from(codes).forEach(code => {
+    nodes.forEach(({host, code}) => {
         // Lute 生成的 code 内容首部带 ZWSP(U+200B),trim() 不会移除,必须显式剔除
         const raw = (code.textContent || "").replace(/\u200B/g, "").trim();
         // 仅处理完整的单个 <img ...> 标签
@@ -185,15 +196,15 @@ function processHtmlInlineImages(tab: MarkdownTabInstance): void {
         tmp.innerHTML = raw;
         const parsed = tmp.querySelector("img");
         if (!parsed) return;
-        // 光标位于该 code 内时跳过:正在编辑原始 HTML,替换节点会破坏选区
+        // 光标位于该节点内时跳过:正在编辑原始 HTML,替换节点会破坏选区
         const sel = window.getSelection();
-        if (sel && sel.anchorNode && code.contains(sel.anchorNode)) return;
+        if (sel && sel.anchorNode && host.contains(sel.anchorNode)) return;
         const src = parsed.getAttribute("src") || "";
         const resolved = resolveAssetSrc(mdPath, src);
         if (resolved === null) return; // 网络/内联图片不处理(浏览器可直接加载)
-        code.setAttribute("data-syfe-himg", "1");
+        host.setAttribute("data-syfe-himg", "1");
         loadBlobUrl(tab, resolved, src).then(url => {
-            if (!url || !code.isConnected) return;
+            if (!url || !host.isConnected) return;
             const img = document.createElement("img");
             // 复制原标签属性(alt/style/width/height 等);
             // 过滤 on* 事件处理器(防 XSS)与 srcset(相对路径会失效)
@@ -204,7 +215,7 @@ function processHtmlInlineImages(tab: MarkdownTabInstance): void {
             img.setAttribute("src", url);
             img.setAttribute("data-syfe-himg", "1");
             img.setAttribute("data-syfe-html", raw); // 原始标签,序列化还原用
-            code.replaceWith(img);
+            host.replaceWith(img);
         });
     });
 }
@@ -230,26 +241,42 @@ async function loadBlobUrl(tab: MarkdownTabInstance, resolved: string, raw: stri
     return url;
 }
 
-// 覆写 Vditor 实例的 Lute 序列化方法:把 innerHTML 中的 blob URL 还原为原始 markdown 路径
+// 覆写 Vditor 实例的 Lute 序列化方法:把渲染用的 img 还原回 Lute 的源码节点形态。
+// **两个方法都要补**:WYSIWYG(阅读)取值走 VditorDOM2Md,IR(实时预览)取值走
+// VditorIRDOM2Md(vditor.ir.element.innerHTML)。不补 IR 侧的话,渲染态图片在
+// 保存时会被 Lute 静默丢弃(实测 VditorIRDOM2Md 对裸 <img> 直接吞掉,标签整个消失)。
+// 还原的目标结构随模式不同(与 Lute 各自的 DOM 生成形态一致,已实测无损往返):
+//   WYSIWYG: <code data-type="html-inline">原标签</code>(无 ZWSP 也能往返)
+//   IR:      <span data-type="html-inline" class="vditor-ir__node">
+//            <code class="vditor-ir__marker">原标签</code></span>
 function patchLuteDOM2Md(tab: MarkdownTabInstance, vditor: Vditor): void {
     const lute = (vditor as any).lute;
     if (!lute || lute.__syfePatched) return;
-    const orig = lute.VditorDOM2Md.bind(lute);
-    lute.VditorDOM2Md = (html: string) => {
-        // 1) 内联 HTML 图片还原:渲染用的 <img data-syfe-html="..."> →
-        //    <code data-type="html-inline">原标签</code>(实测:无 ZWSP 也能无损往返)
-        html = html.replace(/<img\b[^>]*\sdata-syfe-html="([^"]*)"[^>]*>/g, (_m, esc: string) => {
-            return `<code data-type="html-inline">${esc}</code>`;
-        });
-        // 2) Markdown 语法图片还原:blob URL → 原始路径
-        const reverse = tab._blobUrlReverse!;
-        if (reverse.size > 0) {
-            reverse.forEach((raw, url) => {
-                html = html.split(url).join(raw);
-            });
-        }
-        return orig(html);
+
+    // 渲染用的 <img data-syfe-html="..."> → 对应模式的源码节点
+    // (捕获组是 DOM 序列化转义后的原标签,引号已转 &quot;,不会截断)
+    const wrap = (html: string, ir: boolean) =>
+        html.replace(/<img\b[^>]*\sdata-syfe-html="([^"]*)"[^>]*>/g, (_m, esc: string) => ir
+            ? `<span data-type="html-inline" class="vditor-ir__node"><code class="vditor-ir__marker">${esc}</code></span>`
+            : `<code data-type="html-inline">${esc}</code>`);
+
+    const patch = (name: "VditorDOM2Md" | "VditorIRDOM2Md", ir: boolean) => {
+        if (typeof lute[name] !== "function") return; // 构建/版本差异防御(思源构建已实测两者都在)
+        const orig = lute[name].bind(lute);
+        lute[name] = (html: string) => {
+            html = wrap(html, ir);
+            // Markdown 语法图片还原:blob URL → 原始路径
+            const reverse = tab._blobUrlReverse!;
+            if (reverse.size > 0) {
+                reverse.forEach((raw, url) => {
+                    html = html.split(url).join(raw);
+                });
+            }
+            return orig(html);
+        };
     };
+    patch("VditorDOM2Md", false);
+    patch("VditorIRDOM2Md", true);
     lute.__syfePatched = true;
 }
 
