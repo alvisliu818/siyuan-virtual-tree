@@ -1,15 +1,16 @@
-// 思源文档正文右键:列出当前文档引用的外部文件(排除图片)。
+// 思源文档右键:列出当前文档引用的外部文件(排除图片)。
 //
-// 监听 open-menu-content(正文/空白处右键),追加菜单项「引用的外部文件」,
-// 点击弹 Dialog:
-//   1. exportMdContent(rootID) 一次性拿整篇 markdown(比逐块 SQL 稳,
-//      折叠/未加载的块也覆盖);
-//   2. 正则抽取 markdown 链接与 HTML 嵌入(video/audio/embed/iframe/object)
-//      里的地址;
-//   3. 只保留能解析成本地文件的:assets/ 资源、file:// 链接、裸本地绝对路径
-//      (http/siyuan:// 等解析不了自然淘汰),按扩展名排除图片;
-//   4. 分组展示(本地文件 / 工作空间资源),行点击 = 插件页签打开,
-//      悬停按钮 = 在文件夹树定位 / 复制路径。
+// 两个入口,同一个弹窗:
+//   A. 正文右键(open-menu-content 官方插件事件,条目落「插件」子菜单):
+//      1. exportMdContent(rootID) 一次性拿整篇 markdown(比逐块 SQL 稳,
+//         折叠/未加载的块也覆盖);
+//      2. 正则抽取 markdown 链接与 HTML 嵌入(video/audio/embed/iframe/object)
+//         里的地址;
+//      3. 只保留能解析成本地文件的:assets/ 资源、file:// 链接、裸本地绝对路径
+//         (http/siyuan:// 等解析不了自然淘汰),按扩展名排除图片;
+//      4. 分组展示(本地文件 / 工作空间资源),行点击 = 插件页签打开,
+//         悬停按钮 = 在文件夹树定位 / 复制路径。
+//   B. 文档页签头右键(见 registerDocExternalFilesMenu 内注释,DOM 层补挂)。
 import {Dialog, showMessage} from "siyuan";
 import type {Plugin} from "siyuan";
 import {exportMdContent} from "../api/file";
@@ -161,8 +162,36 @@ function showDocExternalFilesDialog(plugin: Plugin, rootId: string): void {
     void load();
 }
 
-// 注册:思源文档正文右键 →「引用的外部文件」(落在原生菜单的「插件」子菜单下)
-export function registerDocExternalFilesMenu(plugin: Plugin): void {
+// 页签头 → 文档 rootID。
+// 页签头 li 与对应面板 div 都以 tab id 为 data-id(思源 Tab 构造器给两者写),
+// 在所属分屏内按 id 找到面板;文档页签面板里有 .protyle-title[data-node-id]
+// = 文档 rootID(Title 渲染时写入)。资产页签 / 插件自定义页签没有 → null。
+function docRootIdOfTabHeader(header: HTMLElement): string | null {
+    const tabId = header.getAttribute("data-id");
+    if (!tabId) return null;
+    const scope = header.closest('[data-type="wnd"]') || document;
+    const panel = scope.querySelector(`[data-id="${tabId.replace(/["\\]/g, "\\$&")}"]`);
+    if (!panel) return null;
+    return panel.querySelector(".protyle-title[data-node-id]")?.getAttribute("data-node-id") || null;
+}
+
+/**
+ * 注册两个右键入口,返回注销函数(window 监听必须随插件卸载摘除,
+ * eventBus 监听由思源随插件实例回收,无需处理)。
+ *   A. 正文右键:open-menu-content 官方插件事件,条目落「插件」子菜单;
+ *   B. 文档页签头右键:思源对此**没有插件事件**(menus/index.ts 的 window
+ *      冒泡委托直接 initTabMenu → 单例菜单同步 popup),只能在 DOM 层补挂:
+ *      - 挂 window **捕获**监听。不能挂冒泡蹭时序:思源的委托注册于 Menus
+ *        构造器,而 app/src/index.ts 里 loadPlugins 先于 new Menus → 双方
+ *        注册顺序不定;捕获阶段恒先于同节点冒泡阶段,必先于思源处理器执行;
+ *      - 此刻原生菜单尚未构建,setTimeout(0) 推迟到事件分发结束后再追加;
+ *      - 追加前三重校验:单例菜单存在、处于打开态(无 fn__none,shift 右键
+ *        等未弹菜单的场景由此兜住)、data-name==="tab"(initTabMenu 特有标记,
+ *        思源其它菜单不会冒充)。
+ *      菜单条目不会泄漏到后续菜单:单例菜单每次关闭都清空全部条目。
+ */
+export function registerDocExternalFilesMenu(plugin: Plugin): () => void {
+    // A. 正文右键(官方插件菜单事件)
     plugin.eventBus.on("open-menu-content", (e: any) => {
         const menu = e?.detail?.menu;
         const rootId = e?.detail?.protyle?.block?.rootID;
@@ -173,4 +202,36 @@ export function registerDocExternalFilesMenu(plugin: Plugin): void {
             click: () => showDocExternalFilesDialog(plugin, rootId),
         });
     });
+
+    // B. 页签头右键(见函数注释)
+    const onTabHeaderContextMenu = (ev: MouseEvent) => {
+        if (ev.shiftKey) return; // 思源对 shift 右键放行浏览器原生菜单,不弹菜单
+        const target = ev.target as HTMLElement | null;
+        const header = target?.closest?.('[data-type="tab-header"]') as HTMLElement | null;
+        if (!header) return;
+        const rootId = docRootIdOfTabHeader(header);
+        if (!rootId) return; // 非文档页签(资产/插件页签)不提供
+        // 原生页签菜单在本次事件的冒泡阶段才构建,捕获阶段先记下,
+        // 宏任务里(分发已结束、菜单已同步弹出)再校验并追加
+        setTimeout(() => {
+            const menu = (window as any).siyuan?.menus?.menu;
+            if (!menu?.addItem || !menu.element) return;
+            if (menu.element.classList.contains("fn__none")) return; // 菜单未打开
+            if (menu.element.getAttribute("data-name") !== "tab") return; // 非页签菜单
+            menu.addItem({type: "separator"});
+            menu.addItem({
+                icon: "iconLink",
+                label: "引用的外部文件",
+                click: () => showDocExternalFilesDialog(plugin, rootId),
+            });
+        }, 0);
+    };
+    window.addEventListener("contextmenu", onTabHeaderContextMenu, true);
+    return () => {
+        try {
+            window.removeEventListener("contextmenu", onTabHeaderContextMenu, true);
+        } catch {
+            // 窗口销毁场景忽略
+        }
+    };
 }

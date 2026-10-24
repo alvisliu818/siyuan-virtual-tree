@@ -159,6 +159,8 @@ export default class FileEditorPlugin extends Plugin {
     private docOpenTakeoverSelect?: HTMLSelectElement;
     private docOpenTakeoverExtsInput?: HTMLInputElement;
     private _unregisterDocOpenTakeover?: () => void;
+    // 文档右键「引用的外部文件」的 window 监听注销(正文入口走 eventBus 无需处理)
+    private _unregisterDocExternalFiles?: () => void;
     // 切换思源文档后刷新文件树的防抖 timer(见 switch-protyle 监听)
     private _docSwitchRefreshTimer?: number;
     // 全局阅读模式:Markdown 默认只读打开
@@ -352,8 +354,9 @@ export default class FileEditorPlugin extends Plugin {
         // 思源正文 file:// 链接右键菜单:追加「在文件夹树中定位」等
         registerLinkReveal(this);
 
-        // 思源文档正文右键:列出文档引用的外部文件(排除图片)
-        registerDocExternalFilesMenu(this);
+        // 思源文档正文右键:列出文档引用的外部文件(排除图片);
+        // 返回注销函数(页签头监听挂 window,卸载时必须摘除)
+        this._unregisterDocExternalFiles = registerDocExternalFilesMenu(this);
 
         // 思源文档树 / 正文块右键菜单:追加「挂载到虚拟文档树」
         registerMountMenu(this);
@@ -629,6 +632,7 @@ export default class FileEditorPlugin extends Plugin {
         // 注销文档内文件打开接管的事件监听
         try {
             this._unregisterDocOpenTakeover?.();
+            this._unregisterDocExternalFiles?.();
             if (this._docSwitchRefreshTimer) {
                 window.clearTimeout(this._docSwitchRefreshTimer);
                 this._docSwitchRefreshTimer = undefined;
