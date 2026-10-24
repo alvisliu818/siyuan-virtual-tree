@@ -57,8 +57,9 @@ function shouldTakeOver(cfg: DocOpenTakeoverConfig, rawPath: string): boolean {
  * 把思源的链接文本还原为系统绝对路径。
  * 支持:assets/ 相对路径(= 工作空间 data 目录下)、file:// 链接、
  * Windows 盘符/UNC 路径、POSIX 绝对路径。其余(http/https/siyuan:// 等)返回 null。
+ * 也供文档右键「引用的外部文件」复用(同一套链接解析,保证列表与点击打开一致)。
  */
-function toAbsolutePath(raw: string): string | null {
+export function toAbsolutePath(raw: string): string | null {
     const p = (raw || "").trim();
     if (!p) return null;
     let out: string | null = null;

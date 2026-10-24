@@ -56,6 +56,7 @@ import {initBaiduPanStore} from "./api/baidu-pan";
 import {openBaiduPanDialog} from "./components/baidu-pan-dialog";
 import {registerSlashCommands} from "./protyle/slash-commands";
 import {registerLinkReveal} from "./protyle/link-reveal";
+import {registerDocExternalFilesMenu} from "./protyle/doc-external-files";
 import {registerMountMenu} from "./protyle/mount-menu";
 import {registerCodeBlockRun, disposeCodeBlockRun} from "./protyle/code-block-run";
 import {loadCodeBlockRunData, flushCodeBlockRunData} from "./protyle/code-block-run-store";
@@ -350,6 +351,9 @@ export default class FileEditorPlugin extends Plugin {
 
         // 思源正文 file:// 链接右键菜单:追加「在文件夹树中定位」等
         registerLinkReveal(this);
+
+        // 思源文档正文右键:列出文档引用的外部文件(排除图片)
+        registerDocExternalFilesMenu(this);
 
         // 思源文档树 / 正文块右键菜单:追加「挂载到虚拟文档树」
         registerMountMenu(this);
