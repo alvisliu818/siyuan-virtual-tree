@@ -1372,6 +1372,18 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 return {icon: gutter, name: fallbackName, sub: "", tip: `思源块:${blockId}`, preview: ""};
             };
 
+            // 菜单/挂载标签用的行名称:缩放预览模式行上不显示文字(name=""),但
+            // 「挂载…到『』下」等菜单标签需要名称 —— 图片用标题或提示文字,表格用块命名,
+            // 都没有(或为空)就用块 id
+            const blockMenuName = (blockId: string, fallbackName: string, info: {btype?: string; bmd?: string; bname?: string}): string => {
+                if (info.btype === "p") {
+                    const img = soloImageInfo(info.bmd || "");
+                    if (img) return img.title || img.alt || blockId;
+                }
+                if (info.btype === "t") return info.bname || blockId;
+                return fallbackName || blockId;
+            };
+
             // 块行 HTML:块子行与挂载块根行共用(挂载行多 open/flash 样式与拖拽属性,由调用方拼)
             const blockRowHTML = (parts: ReturnType<typeof blockRowParts>, liClass: string, attrs: string, pad: number, arrow: string, linkBtn: string): string => {
                 const text = parts.name || parts.sub
@@ -2040,7 +2052,9 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                     // 图片/表格块:命名 + 标题/缩放预览显示切换
                     addBlockDisplayItems(menu, it.targetId!, null);
                     addPinFavEntries(menu, plugin, it.targetId!, it.name, afterDocOp);
-                    appendMountItems(menu, row.uid, `「${it.name}」下`);
+                    // 挂载标签:图片行在缩放图模式下行名为空,这里按 标题→提示文字→块 id 取
+                    const meta = self._blockMeta?.get(it.targetId || "");
+                    appendMountItems(menu, row.uid, `「${blockMenuName(it.targetId || "", it.name, meta ? {btype: meta.type, bmd: meta.markdown, bname: meta.name} : {})}」下`);
                     menu.addItem({
                         icon: "iconTrashcan",
                         label: "取消挂载",
@@ -2085,16 +2099,18 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                         label: "文档标签…",
                         click: () => openSiyuanTagDialog(row.blockId, row.name),
                     });
-                    // 图片/表格块:命名 + 标题/缩放预览显示切换
+                    // 图片/表格块:显示模式切换(标题/缩放预览)
                     addBlockDisplayItems(menu, row.blockId, row);
                     // 虚拟块行同虚拟文档行:先解析出块对应的挂载项再嵌套挂载
+                    // 存名与标签用 blockMenuName:图片行在缩放图模式下行名为空
+                    const menuName = blockMenuName(row.blockId, row.name, row);
                     appendMountItems(menu, async () => {
-                        const r = await ensureTargetMountItem(plugin, "block", row.blockId, row.name, row.ownerUid ?? null);
+                        const r = await ensureTargetMountItem(plugin, "block", row.blockId, menuName, row.ownerUid ?? null);
                         if (r?.created) {
                             self._expanded!.add(autoKeyOf(r.item));
                         }
                         return r ? r.item.uid : null;
-                    }, `「${row.name}」下`);
+                    }, `「${menuName}」下`);
                     menu.open({x: e.clientX, y: e.clientY});
                 }
             };
