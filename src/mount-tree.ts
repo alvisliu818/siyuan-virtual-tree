@@ -122,6 +122,9 @@ export async function initMountTree(plugin: Plugin, dispatch = true): Promise<vo
         roots = [];
     }
     loaded = true;
+    // 后台刷新 block 挂载项的单图快照/显示名(老数据补齐、跨会话改动同步),
+    // 不阻塞布局就绪;查询失败静默,下次打开挂载目标菜单时还会再刷
+    void refreshBlockMountImages();
     if (dispatch) dispatchChanged();
 }
 
@@ -184,10 +187,11 @@ export async function addMountItem(
     parentUid?: string | null,
 ): Promise<MountItem | null> {
     if (!loaded) await initMountTree(plugin);
-    // 单图块快照:挂载目标菜单是同步渲染的,缩略图数据必须在挂载这一刻就查好落盘,
-    // 不能等菜单打开时再异步补(那是「首次打开空白、第二次才有图」的根因)。
-    // 查询失败不阻塞挂载:无快照时菜单退回块 id 文本,下次开菜单由预取补写。
-    // 单图块名称置空:目标标签尾巴退回块 id,不把图片标题/提示文本并排写进标签。
+    // 单图块信息快照:挂载目标菜单是同步渲染的,图片文字标签必须在挂载这一刻就查好,
+    // 不能等菜单打开时再异步补(那是「首开是块 id、第二次才变标题」的根因)。
+    // 查询失败不阻塞挂载:显示名退回原取值,下次开菜单由刷新(refreshBlockMountImages)补齐。
+    // 单图块显示名 = 标题→提示文本,都没有则置空(目标标签尾巴退回块 id);
+    // 按用户要求,挂载目标菜单里图片项**不显示缩略图**,只出这行文字。
     let name = input.name || input.path || input.targetId || "";
     let img: MountItemImage | undefined;
     if (input.kind === "block" && input.targetId) {
@@ -196,10 +200,10 @@ export async function addMountItem(
             const solo = soloImageInfo(String((rs && rs[0] ? rs[0].markdown : "") || ""));
             if (solo) {
                 img = {src: solo.src, alt: solo.alt, title: solo.title};
-                name = "";
+                name = solo.title || solo.alt || "";
             }
         } catch {
-            // 查询失败:无快照,菜单退块 id;预取会在下次打开菜单时补
+            // 查询失败:无快照,显示名保持原取值;刷新会在下次打开菜单时补
         }
     }
     const key = dedupKey(input);
@@ -350,10 +354,11 @@ export function listMountTargets(): MountTarget[] {
     return out;
 }
 
-// 挂载目标菜单的预取修正:把最新查到的单图信息写回挂载项快照 ——
-// 覆盖两类场景:① 旧版本挂载项没有快照(首次打开菜单无图,补上后永久有);
-// ② 文档里图片后来改过 / 不再是整段单图(快照过期)。有变化才落盘;
-// 不派发 changed 事件:面板行预览自己现查 markdown,不依赖快照,无需整树重绘。
+// 挂载目标菜单的刷新修正:把最新查到的单图信息写回挂载项 ——
+// 覆盖两类场景:① 旧版本挂载项没有快照(首次打开菜单没有图片文字,补上后永久有);
+// ② 文档里图片后来改过 / 不再是整段单图(快照与显示名过期)。
+// 单图块的显示名同步为 标题→提示文本(都没有则置空,标签尾巴退回块 id)。
+// 有变化才落盘;不派发 changed 事件:面板行预览自己现查 markdown,无需整树重绘。
 export async function healBlockMountImages(latest: Map<string, SoloImage | null>): Promise<boolean> {
     if (!loaded || latest.size === 0) return false;
     let changed = false;
@@ -366,16 +371,14 @@ export async function healBlockMountImages(latest: Map<string, SoloImage | null>
                         it.img = {src: img.src, alt: img.alt, title: img.title};
                         changed = true;
                     }
-                    // 老数据把单图块名存成「(空块)」或图片标题/提示文字:统一清空,
-                    // 目标标签退回块 id,避免「缩略图 + 文字」并排出现
-                    if (it.name === "(空块)"
-                        || (img.title && it.name === img.title)
-                        || (img.alt && it.name === img.alt)) {
-                        it.name = "";
+                    // 显示名同步为 标题→提示文本:菜单标签直接用 item.name,不再另外拼图片文字
+                    const wantName = img.title || img.alt || "";
+                    if (it.name !== wantName) {
+                        it.name = wantName;
                         changed = true;
                     }
                 } else if (it.img) {
-                    delete it.img;   // 块不再是整段单图(改成文字/多图等)
+                    delete it.img;   // 块不再是整段单图(改成文字/多图等);显示名保留挂载时取值
                     changed = true;
                 }
             }
@@ -385,6 +388,34 @@ export async function healBlockMountImages(latest: Map<string, SoloImage | null>
     walk(roots);
     if (changed) await persist();
     return changed;
+}
+
+// 刷新全部 block 挂载项的单图快照与显示名:一次 IN 查询,差异写回(见 healBlockMountImages)。
+// 挂载树加载完成后与挂载目标菜单每次打开时各调一次 —— 前者保证菜单首开就有正确文字
+// (老数据没有快照/显示名也能在打开菜单前补齐),后者兜住会话中的文档改动。
+export async function refreshBlockMountImages(): Promise<boolean> {
+    if (!loaded) return false;
+    const ids: string[] = [];
+    const walk = (list: MountItem[]): void => {
+        for (const it of list) {
+            if (it.kind === "block" && it.targetId) ids.push(it.targetId);
+            if (it.children && it.children.length) walk(it.children);
+        }
+    };
+    walk(roots);
+    if (!ids.length) return false;
+    try {
+        const cond = ids.map(i => `'${i.replace(/'/g, "''")}'`).join(",");
+        const rs = await querySQL(`SELECT id, markdown FROM blocks WHERE id IN (${cond})`);
+        const mdById = new Map<string, string>();
+        for (const r of rs || []) mdById.set(String(r.id), String(r.markdown || ""));
+        // 没查到的 id(块已删除)也记为 null:快照清理、显示名不再按单图处理
+        const latest = new Map<string, SoloImage | null>();
+        for (const id of ids) latest.set(id, soloImageInfo(mdById.get(id) || ""));
+        return await healBlockMountImages(latest);
+    } catch {
+        return false;   // 查询失败保持现状,下次再试
+    }
 }
 
 // 面板用:某挂载项下是否已挂载了同类同目标(菜单打勾用)
