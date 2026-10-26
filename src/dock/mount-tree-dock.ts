@@ -175,6 +175,10 @@ export interface IPluginForMountTree {
 // 顶栏不再放「虚拟文档树」标题,整条都是按钮;按配置渲染,「更多」里可编辑。
 // key:配置里的唯一标识;attr:委托事件读取的 data 属性(action / rel-action);
 // value:attr 的值(与历史动作分发逻辑保持一致,rel 按钮的 key 带前缀避免撞名)。
+//
+// 按钮归属二选一(编辑工具栏里每个按钮一个开关):
+//   开关开 = 显示在顶栏(不在「更多」里);开关关 = 收进「更多」菜单(不在顶栏上)。
+// 「更多」里的**所有**按钮(含原本只存在于菜单里的动作)都能在编辑工具栏里配置归属。
 interface TreeToolbarButton {
     key: string;
     attr: "action" | "rel-action";
@@ -189,6 +193,11 @@ const TREE_TOOLBAR_BUTTONS: TreeToolbarButton[] = [
     {key: "search", attr: "action", value: "search", label: "搜索", icon: "iconSearch"},
     {key: "refresh", attr: "action", value: "refresh", label: "刷新", icon: "iconRefresh"},
     {key: "collapse", attr: "action", value: "collapse", label: "全部收起", icon: "iconRight"},
+    {key: "new-file", attr: "action", value: "new-file", label: "在当前目录新建文件", icon: "iconFile"},
+    {key: "new-folder", attr: "action", value: "new-folder", label: "在当前目录新建文件夹", icon: "iconFolder"},
+    {key: "mount", attr: "action", value: "mount-menu", label: "挂载到虚拟文档树", icon: "iconAdd"},
+    {key: "trash", attr: "action", value: "trash", label: "打开回收站", icon: "iconTrashcan"},
+    {key: "reload-tags", attr: "action", value: "reload-tags", label: "重新加载标签", icon: "iconRefresh"},
     {key: "rel-refresh", attr: "rel-action", value: "refresh", label: "刷新引用关系", icon: "iconRefresh"},
     {key: "rel-collapse-all", attr: "rel-action", value: "collapse-all", label: "折叠引用关系", icon: "iconContract"},
     {key: "rel-expand-all", attr: "rel-action", value: "expand-all", label: "展开引用关系", icon: "iconExpand"},
@@ -196,25 +205,44 @@ const TREE_TOOLBAR_BUTTONS: TreeToolbarButton[] = [
     {key: "rel-focus", attr: "rel-action", value: "focus", label: "聚焦当前文档(引用)", icon: "iconList"},
     {key: "more", attr: "action", value: "more", label: "更多", icon: "iconMore"},
 ];
+// 默认收进「更多」的按钮:纯菜单动作(顶栏默认只放高频按钮)。
+// 老用户升级/首次使用都按这个初始化;之后以用户在编辑工具栏里的开关为准。
+const MENU_ONLY_DEFAULTS = ["new-file", "new-folder", "mount", "trash", "reload-tags"];
+// 配置结构版本:v1 = hidden 是「彻底隐藏」;v2 = hidden 是「收进更多」。v1 配置升级时迁移。
+const TOOLBAR_CFG_VERSION = 2;
 const byKey = (k: string) => TREE_TOOLBAR_BUTTONS.find(b => b.key === k);
 const TOOLBAR_KEY = "tree-toolbar.json";
-const TOOLBAR_FIXED = "more";   // 「更多」是编辑入口,不可隐藏
+const TOOLBAR_FIXED = "more";   // 「更多」是编辑入口,固定在顶栏(否则没法再打开配置)
 
 interface TreeToolbarCfg {
     order: string[];
     hidden: string[];
+    ver?: number;
 }
 
 async function loadToolbarCfg(plugin: IPluginForMountTree): Promise<TreeToolbarCfg> {
+    let cfg: TreeToolbarCfg | null = null;
     try {
         const d = await plugin.loadData(TOOLBAR_KEY);
         if (d && Array.isArray(d.order) && Array.isArray(d.hidden)) {
-            return {order: d.order.filter((k: any) => typeof k === "string" && !!byKey(k)), hidden: d.hidden.filter((k: any) => typeof k === "string")};
+            cfg = {
+                order: d.order.filter((k: any) => typeof k === "string" && !!byKey(k)),
+                hidden: d.hidden.filter((k: any) => typeof k === "string" && !!byKey(k)),
+            };
         }
     } catch {
         // 存储读不到就用默认
     }
-    return {order: [], hidden: []};
+    if (!cfg) cfg = {order: [], hidden: []};
+    if (cfg.ver !== TOOLBAR_CFG_VERSION) {
+        // v1 → v2 语义迁移:老配置里的 hidden(原本=彻底隐藏)改为「收进更多」,
+        // 没有按钮会凭空消失;菜单专属新按钮补进 hidden(收进更多),顶栏保持原样。
+        for (const k of MENU_ONLY_DEFAULTS) {
+            if (!cfg.hidden.includes(k)) cfg.hidden.push(k);
+        }
+        cfg.ver = TOOLBAR_CFG_VERSION;
+    }
+    return cfg;
 }
 
 async function saveToolbarCfg(plugin: IPluginForMountTree, cfg: TreeToolbarCfg): Promise<void> {
@@ -1905,8 +1933,15 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 render();
             });
 
-            // 工具栏:标签筛选 / 搜索 / 挂载百度网盘 / 更多 / 刷新 / 全部收起 / 清空
-            // 工具栏动作统一入口:顶栏按钮与「更多」菜单共用,避免两份实现漂移
+            // 工具栏:标签筛选 / 搜索 / 新建 / 挂载 / 回收站 / 更多 / 刷新 / 全部收起 / 引用关系
+            // 菜单锚定:按注册表按钮的 data 属性找到工具栏上的对应图标,菜单弹在它下方
+            const openMenuAtButton = (attr: "action" | "rel-action", value: string, menu: Menu) => {
+                const btn = this.element.querySelector(`[data-${attr}="${value}"]`) as HTMLElement | null;
+                const r = btn ? btn.getBoundingClientRect() : null;
+                menu.open({x: r ? r.left : innerWidth / 2, y: r ? r.bottom + 4 : 80});
+            };
+            // 工具栏动作统一入口:顶栏按钮与「更多」菜单共用,避免两份实现漂移。
+            // 「更多」= 收进去的按钮(hidden)的动态菜单 + 固定的「编辑工具栏」入口。
             const runToolbarAction = (action: string) => {
                 if (action === "collapse") {
                     self._expanded = new Set<string>();
@@ -1937,62 +1972,44 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                     (plugin as any).openSearch(target);
                 } else if (action === "locate-mount") {
                     void locateActiveInMountTree();
-                } else if (action === "more") {
+                } else if (action === "new-file") {
+                    void newFileInCurrentDir();
+                } else if (action === "new-folder") {
+                    void newFolderInCurrentDir();
+                } else if (action === "mount-menu") {
+                    // 挂载入口子菜单(顶栏按钮或「更多」菜单项点开均可),锚在触发按钮下方
                     const m = new Menu();
-                    m.addItem({
-                        icon: "iconFile",
-                        label: "在当前目录新建文件",
-                        click: () => void newFileInCurrentDir(),
-                    });
-                    m.addItem({
-                        icon: "iconFolder",
-                        label: "在当前目录新建文件夹",
-                        click: () => void newFolderInCurrentDir(),
-                    });
-                    // 虚拟文档树的挂载入口(挂到顶层)。
-                    // 这些入口在面板空白处右键里也有,工具栏「更多」里再放一份:
-                    // 空树状态下没有行也没有"空白"可点,新用户根本找不到"往树里加东西"的地方。
-                    appendMountItems(m, null, "");
-                    // 回收站:删除文件默认进插件回收站,这里给恢复/清空的入口
-                    m.addSeparator();
-                    m.addItem({
-                        icon: "iconTrashcan",
-                        label: "打开回收站…",
-                        click: () => openTrashDialog(plugin as any),
-                    });
-                    // 顶栏按钮的显示与排序在此配置(顶栏整条都是按钮,不再按宽度折叠)
+                    for (const it of mountMenuItems(null, "")) m.addItem(it as any);
+                    openMenuAtButton("action", "mount-menu", m);
+                } else if (action === "trash") {
+                    openTrashDialog(plugin as any);
+                } else if (action === "reload-tags") {
+                    renderChips();
+                    render();
+                } else if (action === "more") {
+                    // 「更多」= 编辑工具栏里开关关掉的按钮(收进来的),按顶栏同序渲染;
+                    // 末尾固定「编辑工具栏…」入口(它不能被配置走,否则没法再打开配置)
+                    const m = new Menu();
+                    const hidden = new Set(toolbarCfg.hidden.filter(k => k !== TOOLBAR_FIXED));
+                    for (const k of resolvedOrder(toolbarCfg)) {
+                        if (k === TOOLBAR_FIXED || !hidden.has(k)) continue;
+                        const b = byKey(k)!;
+                        m.addItem({
+                            icon: b.icon,
+                            label: b.label,
+                            click: () => {
+                                if (b.attr === "rel-action") runRelationAction(b.value);
+                                else runToolbarAction(b.value);
+                            },
+                        });
+                    }
                     m.addSeparator();
                     m.addItem({
                         icon: "iconSettings",
                         label: "编辑工具栏…",
                         click: () => void openToolbarEditor(),
                     });
-                    // 拖拽模式的开关在工具栏上也有,这里给出当前状态,避免"拖不动却不知道要开模式"
-                    m.addItem({
-                        icon: "iconDrag",
-                        label: dragMode ? "拖拽排序模式:已开启(点击关闭)" : "拖拽排序模式:已关闭(点击开启)",
-                        click: () => {
-                            dragMode = !dragMode;
-                            const btn = this.element.querySelector('[data-action="drag-mode"]') as HTMLElement | null;
-                            btn?.classList.toggle("syfe-mtree__icon--on", dragMode);
-                            showMessage(dragMode
-                                ? "拖拽模式已开启:拖动挂载项/自动挂载项调整顺序(同层内)"
-                                : "拖拽模式已关闭", 2500, "info");
-                            render();
-                        },
-                    });
-                    m.addSeparator();
-                    m.addItem({
-                        icon: "iconRefresh",
-                        label: "重新加载标签",
-                        click: () => {
-                            renderChips();
-                            render();
-                        },
-                    });
-                    const moreBtn = this.element.querySelector('[data-action="more"]') as HTMLElement | null;
-                    const mr = moreBtn ? moreBtn.getBoundingClientRect() : null;
-                    m.open({x: mr ? mr.left : innerWidth / 2, y: mr ? mr.bottom + 4 : 80});
+                    openMenuAtButton("action", "more", m);
                 } else if (action === "refresh") {
                     self._cache = new Map<string, DirEntry[] | BlockNode[]>();
                     render();
@@ -2001,17 +2018,18 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                     // 不处理的话刷新也只刷树,编辑器里还是旧内容。
                     void syncOpenEditors(plugin);
                 }
-                // 注:原工具栏「清空」按钮已移除;清空入口保留在「更多」菜单与空白处右键菜单里
+                // 注:原工具栏「清空」按钮已移除(挂载项逐个取消挂载即可);空白处右键仍有挂载入口
             };
             const actionHandler = (e: MouseEvent) => {
                 const actionEl = (e.target as HTMLElement).closest("[data-action]") as HTMLElement | null;
                 if (!actionEl) return;
-                // 「更多」分支会同步弹出菜单;若让 click 继续冒泡到 window,
+                // 「更多」/「挂载」分支会同步弹出菜单;若让 click 继续冒泡到 window,
                 // 思源的全局点击处理器(globalClickHideMenu)会因为"点击目标不在菜单内"
-                // 把刚弹出的菜单立刻关掉 —— 表现就是「更多」图标点不开。
+                // 把刚弹出的菜单立刻关掉 —— 表现就是图标点不开。
                 // 思源原生同类按钮(如大纲的展开级别菜单)也是弹出后 stopPropagation。
-                if (actionEl.dataset.action === "more") e.stopPropagation();
-                runToolbarAction(actionEl.dataset.action || "");
+                const act = actionEl.dataset.action || "";
+                if (act === "more" || act === "mount-menu") e.stopPropagation();
+                runToolbarAction(act);
             };
             this._actionHandler = actionHandler;
             const toolbarEl = this.element.querySelector(".syfe-mtree__toolbar") as HTMLElement;
@@ -2019,7 +2037,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
 
             // ===== 顶栏按钮渲染(配置驱动)=====
             // 同步先按默认顺序画一遍(面板打开立即可用),配置异步读回来再校正
-            let toolbarCfg: TreeToolbarCfg = {order: [], hidden: []};
+            let toolbarCfg: TreeToolbarCfg = {order: [], hidden: [...MENU_ONLY_DEFAULTS], ver: TOOLBAR_CFG_VERSION};
             const renderToolbar = () => {
                 const order = resolvedOrder(toolbarCfg);
                 const hidden = new Set(toolbarCfg.hidden.filter(k => k !== TOOLBAR_FIXED));
@@ -2031,12 +2049,13 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 toolbarEl.innerHTML = visible
                     .map(k => {
                         const b = byKey(k)!;
-                        // rel 按钮默认隐藏,render() 会按引用关系开关统一设置显隐
-                        const relHidden = b.attr === "rel-action" ? ' style="display:none"' : "";
                         const edge = k === first ? " syfe-mtree__btn--edge-start" : (k === last ? " syfe-mtree__btn--edge-end" : "");
+                        // 拖拽模式的开启态要跟着画(重绘配置后不丢);引用关系按钮始终显示,
+                        // 开关关闭时点击给提示(见 runRelationAction)
+                        const on = k === "drag-mode" && dragMode ? " syfe-mtree__icon--on" : "";
                         // block__icon--show:思源 3.8.8 起顶栏图标默认 opacity:0、悬停容器才浮现,
                         // 加官方常显修饰类让按钮始终可见
-                        return `<span class="block__icon block__icon--show ariaLabel${edge}" data-${b.attr}="${b.value}" aria-label="${b.label}" data-position="north"${relHidden}><svg><use xlink:href="#${b.icon}"></use></svg></span>`;
+                        return `<span class="block__icon block__icon--show ariaLabel${edge}${on}" data-${b.attr}="${b.value}" aria-label="${b.label}" data-position="north"><svg><use xlink:href="#${b.icon}"></use></svg></span>`;
                     })
                     .join("");
             };
@@ -2058,7 +2077,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                     title: "编辑工具栏",
                     width: "460px",
                     content: `<div class="syfe-tbedit">
-                        <div class="syfe-tbedit__hint">拖动行排序(或用 ↑↓);勾选显示在顶栏的按钮;「更多」不可隐藏。改动即时生效。</div>
+                        <div class="syfe-tbedit__hint">开关开 = 显示在顶栏(不进「更多」);开关关 = 收进「更多」菜单(不占顶栏)。拖动行(或 ↑↓)调整顺序,「更多」菜单里的按钮同样按此配置;「更多」本身固定在顶栏。改动即时生效。</div>
                         <div class="syfe-tbedit__rows"></div>
                         <div class="syfe-tbedit__bar">
                             <button class="b3-button b3-button--text" data-act="reset">恢复默认</button>
@@ -2075,8 +2094,8 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                         const b = byKey(k)!;
                         const fixed = k === TOOLBAR_FIXED;
                         const check = fixed
-                            ? `<input type="checkbox" class="b3-switch" disabled checked title="编辑入口,不可隐藏">`
-                            : `<input type="checkbox" class="b3-switch" data-act="toggle" ${hidden.has(k) ? "" : "checked"}>`;
+                            ? `<input type="checkbox" class="b3-switch" disabled checked title="编辑入口,固定在顶栏">`
+                            : `<input type="checkbox" class="b3-switch" data-act="toggle" title="开 = 顶栏;关 = 收进「更多」" ${hidden.has(k) ? "" : "checked"}>`;
                         return `<div class="syfe-tbedit__row" data-key="${k}" draggable="true">
                             ${check}
                             <svg class="syfe-tbedit__icon"><use xlink:href="#${b.icon}"></use></svg>
@@ -2190,7 +2209,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                     if (!btn) return;
                     if (btn.dataset.act === "close") dlg.destroy();
                     else if (btn.dataset.act === "reset") {
-                        toolbarCfg = {order: [], hidden: []};
+                        toolbarCfg = {order: [], hidden: [...MENU_ONLY_DEFAULTS], ver: TOOLBAR_CFG_VERSION};
                         void persistToolbar();
                         draw();
                     }
