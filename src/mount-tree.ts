@@ -293,14 +293,19 @@ export async function reorderAutoChildren(
 export interface MountTarget {
     uid: string | null;   // null = 顶层
     label: string;        // "顶层" 或 "父 / 子"
+    kind?: MountKind;     // 挂载项类型(菜单渲染图片缩略图/名称升级用;顶层无)
+    targetId?: string;    // kind=doc/notebook/block 的目标块 id
 }
 
 export function listMountTargets(): MountTarget[] {
     const out: MountTarget[] = [{uid: null, label: "顶层"}];
     const walk = (list: MountItem[], trail: string[]) => {
         for (const it of list) {
-            const t = [...trail, it.name];
-            out.push({uid: it.uid, label: t.join(" / ")});
+            // 块挂载项名称可能为空(图片块 textContent 为空):目标列表尾巴用块 id 兜底,
+            // 菜单渲染时再升级为图片标题/提示文字(components/mount-menu.ts)
+            const tail = it.name || (it.kind === "block" ? (it.targetId || "") : "");
+            const t = [...trail, tail];
+            out.push({uid: it.uid, label: t.join(" / "), kind: it.kind, targetId: it.targetId});
             walk(it.children || [], t);
         }
     };

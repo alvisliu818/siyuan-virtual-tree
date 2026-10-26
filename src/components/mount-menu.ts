@@ -10,7 +10,7 @@ import {readDir, querySQL} from "../api/file";
 import {basename, dirname} from "../utils/path";
 import {showOpenDialog} from "../utils/open-dialog";
 import {getNativeRequire} from "../utils/native-require";
-import {getBlock, blockTitle} from "../utils/blocks";
+import {getBlock, blockTitle, soloImageInfo, SoloImage} from "../utils/blocks";
 
 export interface MountPayload {
     kind: MountKind;
@@ -36,14 +36,53 @@ export async function mountPayload(plugin: any, payload: MountPayload, parentUid
     }
 }
 
-// 可选挂载位置的菜单项(已挂过的打勾)
+// 菜单项 label/iconHTML 是 innerHTML 直插,文本需转义
+function escapeHTML(s: string): string {
+    return String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+// block 挂载项的图片信息缓存:目标菜单是同步构建的,markdown 查询是异步的,
+// 命中后菜单项带 14px 缩略图图标(iconHTML),名称尾巴升级为 标题→提示文字;
+// 未命中时退回 mount-tree 兜底的块 id 文本(下次打开菜单就有图)
+const blockImgCache = new Map<string, SoloImage | null>();
+
+const prefetchBlockImages = (): void => {
+    const ids = listMountTargets()
+        .filter(t => t.kind === "block" && t.targetId && !blockImgCache.has(t.targetId))
+        .map(t => t.targetId!);
+    if (!ids.length) return;
+    const cond = ids.map(i => `'${i.replace(/'/g, "''")}'`).join(",");
+    void (async () => {
+        try {
+            const rs = await querySQL(`SELECT id, markdown FROM blocks WHERE id IN (${cond})`);
+            for (const r of rs || []) {
+                blockImgCache.set(String(r.id), soloImageInfo(String(r.markdown || "")));
+            }
+        } catch {
+            // 查询失败:清掉占位让下次打开再试,菜单里退回块 id 文本
+            ids.forEach(i => blockImgCache.delete(i));
+        }
+    })();
+};
+
+// 可选挂载位置的菜单项(已挂过的打勾;图片块挂载项带缩略图)
 function targetItems(plugin: any, payload: MountPayload) {
-    return listMountTargets().map(t => ({
-        label: t.label + (hasMounted(t.uid, payload.kind, payload.path, payload.targetId) ? " ✓" : ""),
-        click: () => {
-            void mountPayload(plugin, payload, t.uid);
-        },
-    }));
+    prefetchBlockImages();
+    return listMountTargets().map(t => {
+        const img = t.kind === "block" && t.targetId ? (blockImgCache.get(t.targetId) ?? null) : null;
+        let label = t.label;
+        if (img && t.targetId) {
+            const nice = escapeHTML(img.title || img.alt || t.targetId);
+            label = label.replace(/[^/]*$/, () => nice);
+        }
+        return {
+            iconHTML: img ? `<img src="/${encodeURI(img.src)}" alt="" style="width:14px;height:14px;object-fit:cover;border-radius:3px;">` : "",
+            label: label + (hasMounted(t.uid, payload.kind, payload.path, payload.targetId) ? " ✓" : ""),
+            click: () => {
+                void mountPayload(plugin, payload, t.uid);
+            },
+        } as any;
+    });
 }
 
 // 作为一项追加到调用方的 Menu 上(文件树 / 思源右键菜单复用其 Menu 实例)
