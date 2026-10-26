@@ -8,6 +8,8 @@
 import type {Plugin} from "siyuan";
 import {parseStoredData} from "./utils/stored-data";
 import {VIRTUAL_PREFIX, NOTEBOOK_PREFIX, virtualId} from "./utils/virtual-tree";
+import {querySQL} from "./api/file";
+import {soloImageInfo, SoloImage} from "./utils/blocks";
 
 // 可挂载类型:
 //   file     真实文件/文件夹(来自插件文件树的右键菜单,isDir 已知,无需再探测)
@@ -15,6 +17,15 @@ import {VIRTUAL_PREFIX, NOTEBOOK_PREFIX, virtualId} from "./utils/virtual-tree";
 //   notebook 思源笔记本(挂载后列出其顶级文档)
 //   block    思源块(挂载后按 parent_id 递归展开子块)
 export type MountKind = "file" | "doc" | "notebook" | "block";
+
+// 单图块的图片信息快照。挂载目标菜单是同步渲染的,缩略图数据必须在挂载这一刻
+// 就可同步读取(存在挂载项上),不能等菜单打开时再异步查 —— 那是「首次打开空白、
+// 第二次才有图」的根因。文档里图片后来改动了,由菜单预取(healBlockMountImages)修正。
+export interface MountItemImage {
+    src: string;    // 资源地址,如 assets/x.png
+    alt: string;    // 提示文本
+    title: string;  // 标题(可空)
+}
 
 // 树上的一个挂载节点
 export interface MountItem {
@@ -24,6 +35,7 @@ export interface MountItem {
     path?: string;               // kind=file:真实路径
     targetId?: string;           // kind=doc:docId;kind=block:blockId
     isDir?: boolean;             // kind=file:是否文件夹(挂载时已知,避免 readDir 猜不出)
+    img?: MountItemImage;        // kind=block 且整段单图:图片信息快照(菜单缩略图用)
     children: MountItem[];       // 显式嵌套挂载(与"自动子项"不同,自动子项不落盘)
 }
 
@@ -61,6 +73,9 @@ function sanitizeItem(raw: any): MountItem | null {
         ...(typeof raw.path === "string" ? {path: raw.path} : {}),
         ...(typeof raw.targetId === "string" ? {targetId: raw.targetId} : {}),
         ...(raw.isDir !== undefined ? {isDir: !!raw.isDir} : {}),
+        ...(raw.img && typeof raw.img.src === "string" && raw.img.src
+            ? {img: {src: String(raw.img.src), alt: String(raw.img.alt || ""), title: String(raw.img.title || "")}}
+            : {}),
         children: Array.isArray(raw.children)
             ? raw.children.map(sanitizeItem).filter(Boolean) as MountItem[]
             : [],
@@ -169,14 +184,33 @@ export async function addMountItem(
     parentUid?: string | null,
 ): Promise<MountItem | null> {
     if (!loaded) await initMountTree(plugin);
+    // 单图块快照:挂载目标菜单是同步渲染的,缩略图数据必须在挂载这一刻就查好落盘,
+    // 不能等菜单打开时再异步补(那是「首次打开空白、第二次才有图」的根因)。
+    // 查询失败不阻塞挂载:无快照时菜单退回块 id 文本,下次开菜单由预取补写。
+    // 单图块名称置空:目标标签尾巴退回块 id,不把图片标题/提示文本并排写进标签。
+    let name = input.name || input.path || input.targetId || "";
+    let img: MountItemImage | undefined;
+    if (input.kind === "block" && input.targetId) {
+        try {
+            const rs = await querySQL(`SELECT markdown FROM blocks WHERE id = '${input.targetId.replace(/'/g, "''")}'`);
+            const solo = soloImageInfo(String((rs && rs[0] ? rs[0].markdown : "") || ""));
+            if (solo) {
+                img = {src: solo.src, alt: solo.alt, title: solo.title};
+                name = "";
+            }
+        } catch {
+            // 查询失败:无快照,菜单退块 id;预取会在下次打开菜单时补
+        }
+    }
     const key = dedupKey(input);
     const item: MountItem = {
         uid: newUid(),
         kind: input.kind,
-        name: input.name || input.path || input.targetId || "",
+        name,
         ...(input.path ? {path: input.path} : {}),
         ...(input.targetId ? {targetId: input.targetId} : {}),
         ...(input.isDir !== undefined ? {isDir: input.isDir} : {}),
+        ...(img ? {img} : {}),
         children: [],
     };
     if (parentUid) {
@@ -186,6 +220,7 @@ export async function addMountItem(
         if (dup) {
             dup.name = item.name;
             dup.isDir = item.isDir;
+            if (item.img) dup.img = item.img;
             await persist();
             dispatchChanged();
             return dup;
@@ -196,6 +231,7 @@ export async function addMountItem(
         if (dup) {
             dup.name = item.name;
             dup.isDir = item.isDir;
+            if (item.img) dup.img = item.img;
             await persist();
             dispatchChanged();
             return dup;
@@ -293,24 +329,62 @@ export async function reorderAutoChildren(
 export interface MountTarget {
     uid: string | null;   // null = 顶层
     label: string;        // "顶层" 或 "父 / 子"
-    kind?: MountKind;     // 挂载项类型(菜单渲染图片缩略图/名称升级用;顶层无)
+    kind?: MountKind;     // 挂载项类型(菜单渲染图片缩略图用;顶层无)
     targetId?: string;    // kind=doc/notebook/block 的目标块 id
+    img?: MountItemImage; // kind=block 且单图:挂载时的图片快照(菜单首开即显缩略图)
 }
 
 export function listMountTargets(): MountTarget[] {
     const out: MountTarget[] = [{uid: null, label: "顶层"}];
     const walk = (list: MountItem[], trail: string[]) => {
         for (const it of list) {
-            // 块挂载项名称可能为空(图片块 textContent 为空):目标列表尾巴用块 id 兜底,
-            // 菜单渲染时再升级为图片标题/提示文字(components/mount-menu.ts)
+            // 块挂载项名称可能为空(图片块挂载时有意置空):目标列表尾巴用块 id 兜底,
+            // 缩略图由菜单读挂载项快照(components/mount-menu.ts),标签里不写图片文字
             const tail = it.name || (it.kind === "block" ? (it.targetId || "") : "");
             const t = [...trail, tail];
-            out.push({uid: it.uid, label: t.join(" / "), kind: it.kind, targetId: it.targetId});
+            out.push({uid: it.uid, label: t.join(" / "), kind: it.kind, targetId: it.targetId, img: it.img});
             walk(it.children || [], t);
         }
     };
     walk(getRoots(), []);
     return out;
+}
+
+// 挂载目标菜单的预取修正:把最新查到的单图信息写回挂载项快照 ——
+// 覆盖两类场景:① 旧版本挂载项没有快照(首次打开菜单无图,补上后永久有);
+// ② 文档里图片后来改过 / 不再是整段单图(快照过期)。有变化才落盘;
+// 不派发 changed 事件:面板行预览自己现查 markdown,不依赖快照,无需整树重绘。
+export async function healBlockMountImages(latest: Map<string, SoloImage | null>): Promise<boolean> {
+    if (!loaded || latest.size === 0) return false;
+    let changed = false;
+    const walk = (list: MountItem[]): void => {
+        for (const it of list) {
+            if (it.kind === "block" && it.targetId && latest.has(it.targetId)) {
+                const img = latest.get(it.targetId)!;
+                if (img) {
+                    if (!it.img || it.img.src !== img.src || it.img.alt !== img.alt || it.img.title !== img.title) {
+                        it.img = {src: img.src, alt: img.alt, title: img.title};
+                        changed = true;
+                    }
+                    // 老数据把单图块名存成「(空块)」或图片标题/提示文字:统一清空,
+                    // 目标标签退回块 id,避免「缩略图 + 文字」并排出现
+                    if (it.name === "(空块)"
+                        || (img.title && it.name === img.title)
+                        || (img.alt && it.name === img.alt)) {
+                        it.name = "";
+                        changed = true;
+                    }
+                } else if (it.img) {
+                    delete it.img;   // 块不再是整段单图(改成文字/多图等)
+                    changed = true;
+                }
+            }
+            if (it.children && it.children.length) walk(it.children);
+        }
+    };
+    walk(roots);
+    if (changed) await persist();
+    return changed;
 }
 
 // 面板用:某挂载项下是否已挂载了同类同目标(菜单打勾用)

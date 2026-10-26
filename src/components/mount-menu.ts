@@ -5,7 +5,7 @@
 // 注意:本文件**不要 import ./file-tree**(它 import 了本文件,会成环);
 // 需要「挂载思源文档…」选择器的地方(mount-tree-dock)直接引 file-tree 的 pickMountTargetDialog。
 import {Menu, Dialog, showMessage} from "siyuan";
-import {addMountItem, listMountTargets, hasMounted, getRoots, MountItem, MountKind} from "../mount-tree";
+import {addMountItem, listMountTargets, hasMounted, getRoots, healBlockMountImages, MountItem, MountKind} from "../mount-tree";
 import {readDir, querySQL} from "../api/file";
 import {basename, dirname} from "../utils/path";
 import {showOpenDialog} from "../utils/open-dialog";
@@ -36,48 +36,50 @@ export async function mountPayload(plugin: any, payload: MountPayload, parentUid
     }
 }
 
-// 菜单项 label/iconHTML 是 innerHTML 直插,文本需转义
-function escapeHTML(s: string): string {
-    return String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-}
-
-// block 挂载项的图片信息缓存:目标菜单是同步构建的,markdown 查询是异步的,
-// 命中后菜单项带 14px 缩略图图标(iconHTML),名称尾巴升级为 标题→提示文字;
-// 未命中时退回 mount-tree 兜底的块 id 文本(下次打开菜单就有图)
+// block 挂载项的图片信息内存缓存:挂载时已把单图快照写进挂载项(mount-tree.addMountItem),
+// 菜单同步渲染时直接读快照,**首次打开就有缩略图**;这里的预取只负责保鲜:
+// 文档里图片改过 → 刷新缓存并写回快照;旧版本挂载项没有快照 → 补写。
+// 按用户要求,菜单项只出缩略图,不把图片标题/提示文本写进标签(标签尾巴用块 id)。
 const blockImgCache = new Map<string, SoloImage | null>();
 
 const prefetchBlockImages = (): void => {
     const ids = listMountTargets()
-        .filter(t => t.kind === "block" && t.targetId && !blockImgCache.has(t.targetId))
+        .filter(t => t.kind === "block" && t.targetId)
         .map(t => t.targetId!);
     if (!ids.length) return;
     const cond = ids.map(i => `'${i.replace(/'/g, "''")}'`).join(",");
     void (async () => {
         try {
             const rs = await querySQL(`SELECT id, markdown FROM blocks WHERE id IN (${cond})`);
-            for (const r of rs || []) {
-                blockImgCache.set(String(r.id), soloImageInfo(String(r.markdown || "")));
-            }
+            const mdById = new Map<string, string>();
+            for (const r of rs || []) mdById.set(String(r.id), String(r.markdown || ""));
+            // 没查到的 id(块已删除)也记为 null,避免下次重复查询
+            const latest = new Map<string, SoloImage | null>();
+            for (const id of ids) latest.set(id, soloImageInfo(mdById.get(id) || ""));
+            for (const [id, img] of latest) blockImgCache.set(id, img);
+            // 快照与最新不一致的写回挂载项并落盘(不派发事件,面板行预览自己现查)
+            await healBlockMountImages(latest);
         } catch {
-            // 查询失败:清掉占位让下次打开再试,菜单里退回块 id 文本
+            // 查询失败:清掉内存缓存下次再试;挂载项快照仍在,菜单照常有图
             ids.forEach(i => blockImgCache.delete(i));
         }
     })();
 };
 
-// 可选挂载位置的菜单项(已挂过的打勾;图片块挂载项带缩略图)
+// 可选挂载位置的菜单项(已挂过的打勾;图片块挂载项带 14px 缩略图,只出图不带文字)
 function targetItems(plugin: any, payload: MountPayload) {
     prefetchBlockImages();
     return listMountTargets().map(t => {
-        const img = t.kind === "block" && t.targetId ? (blockImgCache.get(t.targetId) ?? null) : null;
-        let label = t.label;
-        if (img && t.targetId) {
-            const nice = escapeHTML(img.title || img.alt || t.targetId);
-            label = label.replace(/[^/]*$/, () => nice);
+        // 内存缓存(最新,可能为 null = 已不是单图)优先;无缓存时用挂载项快照(首开即显)
+        let img: SoloImage | null = null;
+        if (t.kind === "block" && t.targetId) {
+            img = blockImgCache.has(t.targetId)
+                ? blockImgCache.get(t.targetId)!
+                : (t.img ?? null);
         }
         return {
             iconHTML: img ? `<img src="/${encodeURI(img.src)}" alt="" style="width:14px;height:14px;object-fit:cover;border-radius:3px;">` : "",
-            label: label + (hasMounted(t.uid, payload.kind, payload.path, payload.targetId) ? " ✓" : ""),
+            label: t.label + (hasMounted(t.uid, payload.kind, payload.path, payload.targetId) ? " ✓" : ""),
             click: () => {
                 void mountPayload(plugin, payload, t.uid);
             },
