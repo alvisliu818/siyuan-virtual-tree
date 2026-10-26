@@ -21,7 +21,6 @@ import {fileUrlToPath, getWorkspacePath} from "../utils/system-path";
 import {isImageFile, isMediaFile, isNotebookFile, isOfficeFile} from "../constants";
 // 链接里的位置(标题锚点 / 行号 / 音视频时间点):先摘出来,打开时交给对应页签定位
 import {parseFileRef, stripFileRef, setPendingRef} from "../utils/file-ref";
-import {setPendingReveal} from "../editor/model-manager";
 
 export interface DocOpenTakeoverConfig {
     mode: "off" | "exts" | "all";
@@ -111,10 +110,13 @@ export function registerDocOpenTakeover(
         const abs = toAbsolutePath(rawCore);
         if (!abs) return false; // 解析不了本地路径就别拦,交给思源
         if (ref) {
+            // 只投递 pendingRef,**不要**额外 setPendingReveal —— 那会触发
+            // markdown-tab 初始模式里「待跳转行强制源码」的既有逻辑,导致
+            // 点击链接打开 Markdown 时无视设置的默认模式。定位由各模式自己的
+            // 路径落地:源码态 enterSource 消费 ref、渲染态 after 消费 ref
+            // (行号走行号槽的块映射)、纯文本/代码页签与反向链接跳转共用
+            // consumePendingRef → reveal 行。
             setPendingRef(abs, ref);
-            // 行号额外塞一份给「纯文本/代码页签」:那条路走的是 model-manager 的
-            // pendingReveal(编辑器 Tab 与反向链接跳转都在用它),不重复造轮子。
-            if (ref.line) setPendingReveal(abs, ref.line);
         }
         try {
             // 设置项「接管打开用分栏」:开启时用右侧分栏打开(文档与文件同屏);热生效(handler 每次读 getConfig)
