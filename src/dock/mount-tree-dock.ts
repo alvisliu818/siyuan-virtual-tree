@@ -35,7 +35,7 @@ import {BacklinkItem, findBacklinks, findDirBacklinks, findSiyuanRefBacklinks} f
 import {showDocMenu, showNotebookMenu, addPinFavEntries, DocMenuItem} from "../components/doc-menu";
 import {openSiyuanTagDialog} from "../components/siyuan-tag-dialog";
 import {openFileTab, syncOpenEditors} from "../tabs/editor-tab";
-import {mountPayload, promptMountPathDialog, showMountTargetMenu, ensureTargetMountItem} from "../components/mount-menu";
+import {mountPayload, promptMountPathDialog, pickBlockDialog, showMountTargetMenu, ensureTargetMountItem} from "../components/mount-menu";
 import {
     getRoots,
     removeMountItem,
@@ -1690,6 +1690,16 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                                 onPicked: (vPath: string, label: string) => {
                                     void uidOf().then(uid => mountPayload(plugin, {kind: "file", name: label, path: vPath, isDir: true}, uid));
                                 },
+                            });
+                        },
+                    },
+                    // 思源块:关键词搜索或粘贴块 ID;挂载后按 parent_id 递归展开子块
+                    {
+                        icon: "iconList",
+                        label: `挂载思源块…${where}`,
+                        click: () => {
+                            pickBlockDialog(where ? `挂载思源块到「${where}」` : "挂载思源块到虚拟文档树", (blockId, label) => {
+                                void uidOf().then(uid => mountPayload(plugin, {kind: "block", name: label, targetId: blockId}, uid));
                             });
                         },
                     },

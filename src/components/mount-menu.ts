@@ -6,10 +6,11 @@
 // 需要「挂载思源文档…」选择器的地方(mount-tree-dock)直接引 file-tree 的 pickMountTargetDialog。
 import {Menu, Dialog, showMessage} from "siyuan";
 import {addMountItem, listMountTargets, hasMounted, getRoots, MountItem, MountKind} from "../mount-tree";
-import {readDir} from "../api/file";
+import {readDir, querySQL} from "../api/file";
 import {basename, dirname} from "../utils/path";
 import {showOpenDialog} from "../utils/open-dialog";
 import {getNativeRequire} from "../utils/native-require";
+import {getBlock, blockTitle} from "../utils/blocks";
 
 export interface MountPayload {
     kind: MountKind;
@@ -198,4 +199,106 @@ export function promptMountPathDialog(
     dialog.element.querySelector("#syfe-mtree-browse-dir")!.addEventListener("click", () => void browse(true));
     dialog.element.querySelector("#syfe-mtree-ok")!.addEventListener("click", () => void submit());
     dialog.element.querySelector("#syfe-mtree-cancel")!.addEventListener("click", close);
+}
+
+// ===== 挂载思源块:关键词搜块 / 直接粘贴块 ID,点击结果行完成挂载 =====
+// 块 ID 形态:14 位时间戳-7 位随机(如 20240101150000-abcdefg)
+const BLOCK_ID_RE = /^\d{14}-[0-9a-z]{7}$/i;
+
+export function pickBlockDialog(title: string, onPicked: (blockId: string, label: string) => void): void {
+    const dialog = new Dialog({
+        title,
+        content: `
+            <div class="b3-dialog__content syfe-mount">
+                <input class="b3-text-field fn__block" id="syfe-block-kw"
+                    placeholder="输入关键词搜索思源块,或直接粘贴块 ID(如 20240101150000-abcdefg)" />
+                <div class="syfe-mount__list" id="syfe-block-results" style="margin-top:8px;">
+                    <div class="syfe-mount__hint">输入关键词自动搜索(回车立即搜);点击结果行完成挂载</div>
+                </div>
+            </div>`,
+        width: "560px",
+    });
+    const kwEl = dialog.element.querySelector("#syfe-block-kw") as HTMLInputElement;
+    const listEl = dialog.element.querySelector("#syfe-block-results") as HTMLElement;
+
+    // SQL 字面量转义(单引号翻倍)+ LIKE 元字符转义(反斜杠,配合 ESCAPE 子句)
+    const likeEsc = (s: string) =>
+        String(s || "").replace(/'/g, "''").replace(/[\\%_]/g, (c) => "\\" + c);
+    const escHTML = (s: string) =>
+        String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
+    // 竞态防护:慢查询返回时若已有更新请求则丢弃(连续输入时防旧结果覆盖新结果)
+    let seq = 0;
+    const search = async () => {
+        const kw = kwEl.value.trim();
+        const my = ++seq;
+        if (!kw) {
+            listEl.innerHTML = `<div class="syfe-mount__hint">输入关键词自动搜索(回车立即搜);点击结果行完成挂载</div>`;
+            return;
+        }
+        listEl.innerHTML = `<div class="syfe-mount__hint">搜索中…</div>`;
+        let rows: {id: string; content: string; type: string; hpath: string}[] = [];
+        try {
+            if (BLOCK_ID_RE.test(kw)) {
+                // 粘贴的是块 ID:精确命中一个
+                const b = await getBlock(kw);
+                if (b) rows = [{id: kw, content: b.content, type: b.type, hpath: ""}];
+            } else {
+                const res = await querySQL(
+                    `SELECT id, content, type, hpath FROM blocks
+                     WHERE content LIKE '%${likeEsc(kw)}%' ESCAPE '\\'
+                       AND type != 'd' AND content != ''
+                     LIMIT 50`);
+                if (Array.isArray(res)) {
+                    rows = res.filter((r: any) => r && r.id).map((r: any) => ({
+                        id: String(r.id),
+                        content: String(r.content == null ? "" : r.content),
+                        type: String(r.type || "p"),
+                        hpath: String(r.hpath || ""),
+                    }));
+                }
+            }
+        } catch {
+            rows = [];
+        }
+        if (my !== seq) return;   // 已有更新的搜索,丢弃本轮结果
+        if (rows.length === 0) {
+            listEl.innerHTML = `<div class="syfe-mount__hint">没有匹配的块;换个关键词,或直接粘贴块 ID</div>`;
+            return;
+        }
+        listEl.innerHTML = rows.map((r) => `
+            <div class="syfe-mount__row" data-id="${escHTML(r.id)}" data-name="${escHTML(blockTitle(r.content, r.type))}"
+                title="${escHTML(r.hpath || "")}${r.hpath ? "&#10;" : ""}块 ID: ${escHTML(r.id)}">
+                <svg class="syfe-mount__icon"><use xlink:href="#iconList"></use></svg>
+                <span class="syfe-mount__name"><span style="opacity:.55;margin-right:6px;font-size:11px;">${escHTML(r.type)}</span>${escHTML(blockTitle(r.content, r.type))}</span>
+                <span class="fn__flex-1"></span>
+                <button class="b3-button b3-button--small">挂载</button>
+            </div>`).join("")
+            + (rows.length >= 50 ? `<div class="syfe-mount__hint">仅显示前 50 条,可换更精确的关键词</div>` : "");
+    };
+
+    // 整行点击即挂载(按钮只是可见的落点提示)
+    listEl.addEventListener("click", (e) => {
+        const row = (e.target as HTMLElement).closest(".syfe-mount__row") as HTMLElement | null;
+        if (!row) return;
+        const id = row.dataset.id || "";
+        if (!id) return;
+        dialog.destroy();
+        onPicked(id, row.dataset.name || id);
+    });
+
+    // 输入防抖自动搜索;回车立即搜
+    let timer: number | undefined;
+    kwEl.addEventListener("input", () => {
+        if (timer) window.clearTimeout(timer);
+        timer = window.setTimeout(() => void search(), 400);
+    });
+    kwEl.addEventListener("keydown", (e: KeyboardEvent) => {
+        if (e.key === "Enter") {
+            e.preventDefault();
+            if (timer) window.clearTimeout(timer);
+            void search();
+        }
+    });
+    kwEl.focus();
 }
