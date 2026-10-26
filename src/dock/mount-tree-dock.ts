@@ -2022,13 +2022,18 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
             const renderToolbar = () => {
                 const order = resolvedOrder(toolbarCfg);
                 const hidden = new Set(toolbarCfg.hidden.filter(k => k !== TOOLBAR_FIXED));
-                toolbarEl.innerHTML = order
-                    .filter(k => !hidden.has(k))
+                const visible = order.filter(k => !hidden.has(k));
+                // 首尾按钮打 auto-margin 标记:按钮组在放得下时居中,
+                // 溢出时 auto margin 自动归零,横向滚动仍从左起(标准 flex 居中方案)
+                const first = visible[0];
+                const last = visible[visible.length - 1];
+                toolbarEl.innerHTML = visible
                     .map(k => {
                         const b = byKey(k)!;
                         // rel 按钮默认隐藏,render() 会按引用关系开关统一设置显隐
                         const relHidden = b.attr === "rel-action" ? ' style="display:none"' : "";
-                        return `<span class="block__icon ariaLabel" data-${b.attr}="${b.value}" aria-label="${b.label}" data-position="north"${relHidden}><svg><use xlink:href="#${b.icon}"></use></svg></span>`;
+                        const edge = k === first ? " syfe-mtree__btn--edge-start" : (k === last ? " syfe-mtree__btn--edge-end" : "");
+                        return `<span class="block__icon ariaLabel${edge}" data-${b.attr}="${b.value}" aria-label="${b.label}" data-position="north"${relHidden}><svg><use xlink:href="#${b.icon}"></use></svg></span>`;
                     })
                     .join("");
             };

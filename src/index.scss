@@ -927,6 +927,16 @@ button.syfe-editor__arrow--exp:hover {
     .block__icon {
         flex-shrink: 0;
     }
+
+    // 按钮组默认居中:首尾 auto-margin 吸收富余空间;
+    // 溢出时 auto margin 归零,横向滚动仍从左起,不会出现左侧滚不到
+    .syfe-mtree__btn--edge-start {
+        margin-left: auto;
+    }
+
+    .syfe-mtree__btn--edge-end {
+        margin-right: auto;
+    }
 }
 
 // 编辑工具栏面板
