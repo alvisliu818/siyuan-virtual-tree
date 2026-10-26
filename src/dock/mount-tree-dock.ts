@@ -2,7 +2,7 @@
 // 可挂载:真实文件/文件夹、思源文档(自动带出子文档)、思源块(按子块递归展开);
 // 支持嵌套挂载(把条目挂到另一个挂载项下),可随时取消挂载。
 // 数据层 src/mount-tree.ts(virtual-tree.json);结构变化派发 syfe:mount-tree-changed 自动重绘。
-import {Menu, confirm, showMessage} from "siyuan";
+import {Menu, Dialog, confirm, showMessage} from "siyuan";
 import {MOUNT_TREE_DOCK_TYPE} from "../constants";
 import {readDir, querySQL} from "../api/file";
 import {DirEntry} from "../types";
@@ -28,6 +28,8 @@ import {
 import {openWithExternalApp, revealInSystemExplorer} from "../utils/external-app";
 import {openSiyuanDoc, openSiyuanNotebook} from "../components/entry-menu";
 import {openTrashDialog} from "../components/trash-dialog";
+// 顶栏横向滚动(悬停滚轮转横向),复用面包屑同款
+import {enableCrumbScroll} from "../components/path-crumbs";
 import {showBacklinkDialog} from "../components/backlink-dialog";
 import {BacklinkItem, findBacklinks, findDirBacklinks, findSiyuanRefBacklinks} from "../utils/backlink";
 import {showDocMenu, showNotebookMenu, addPinFavEntries, DocMenuItem} from "../components/doc-menu";
@@ -165,6 +167,72 @@ export interface IPluginForMountTree {
     name: string;
     config: any;
     openFileSplit(path: string, position: "right" | "bottom"): void;
+    loadData(key: string): Promise<any>;
+    saveData(key: string, data: any): Promise<void>;
+}
+
+// ===== 顶栏按钮注册表(可配置显示与排序)=====
+// 顶栏不再放「虚拟文档树」标题,整条都是按钮;按配置渲染,「更多」里可编辑。
+// key:配置里的唯一标识;attr:委托事件读取的 data 属性(action / rel-action);
+// value:attr 的值(与历史动作分发逻辑保持一致,rel 按钮的 key 带前缀避免撞名)。
+interface TreeToolbarButton {
+    key: string;
+    attr: "action" | "rel-action";
+    value: string;
+    label: string;
+    icon: string;
+}
+const TREE_TOOLBAR_BUTTONS: TreeToolbarButton[] = [
+    {key: "locate-mount", attr: "action", value: "locate-mount", label: "定位当前文档", icon: "iconFocus"},
+    {key: "tag-filter", attr: "action", value: "tag-filter", label: "标签筛选", icon: "iconTags"},
+    {key: "drag-mode", attr: "action", value: "drag-mode", label: "拖拽排序模式", icon: "iconDrag"},
+    {key: "search", attr: "action", value: "search", label: "搜索", icon: "iconSearch"},
+    {key: "refresh", attr: "action", value: "refresh", label: "刷新", icon: "iconRefresh"},
+    {key: "collapse", attr: "action", value: "collapse", label: "全部收起", icon: "iconRight"},
+    {key: "rel-refresh", attr: "rel-action", value: "refresh", label: "刷新引用关系", icon: "iconRefresh"},
+    {key: "rel-collapse-all", attr: "rel-action", value: "collapse-all", label: "折叠引用关系", icon: "iconContract"},
+    {key: "rel-expand-all", attr: "rel-action", value: "expand-all", label: "展开引用关系", icon: "iconExpand"},
+    {key: "rel-locate", attr: "rel-action", value: "locate", label: "定位当前文档(引用)", icon: "iconFocus"},
+    {key: "rel-focus", attr: "rel-action", value: "focus", label: "聚焦当前文档(引用)", icon: "iconList"},
+    {key: "more", attr: "action", value: "more", label: "更多", icon: "iconMore"},
+];
+const byKey = (k: string) => TREE_TOOLBAR_BUTTONS.find(b => b.key === k);
+const TOOLBAR_KEY = "tree-toolbar.json";
+const TOOLBAR_FIXED = "more";   // 「更多」是编辑入口,不可隐藏
+
+interface TreeToolbarCfg {
+    order: string[];
+    hidden: string[];
+}
+
+async function loadToolbarCfg(plugin: IPluginForMountTree): Promise<TreeToolbarCfg> {
+    try {
+        const d = await plugin.loadData(TOOLBAR_KEY);
+        if (d && Array.isArray(d.order) && Array.isArray(d.hidden)) {
+            return {order: d.order.filter((k: any) => typeof k === "string" && !!byKey(k)), hidden: d.hidden.filter((k: any) => typeof k === "string")};
+        }
+    } catch {
+        // 存储读不到就用默认
+    }
+    return {order: [], hidden: []};
+}
+
+async function saveToolbarCfg(plugin: IPluginForMountTree, cfg: TreeToolbarCfg): Promise<void> {
+    try {
+        await plugin.saveData(TOOLBAR_KEY, cfg);
+    } catch {
+        // 保存失败只影响下次记忆,不挡使用
+    }
+}
+
+// 归一:order 补上注册表里新增的按钮(新版本加按钮自动进末尾)、去掉已下线的
+function resolvedOrder(cfg: TreeToolbarCfg): string[] {
+    const known = TREE_TOOLBAR_BUTTONS.map(b => b.key);
+    const ordered = cfg.order.filter(k => known.includes(k));
+    for (const k of known) {
+        if (!ordered.includes(k)) ordered.push(k);
+    }
+    return ordered;
 }
 
 // 渲染行(扁平化,按 data-idx 回查)
@@ -205,8 +273,7 @@ interface MountTreeDockInstance {
     // 拖拽监听统一在 _mountDragHandlers 表里(手动挂载行 + 自动挂载行)
     // 拖拽排序:挂载项(事件名 → 处理器,成对注册/反注册)
     _mountDragHandlers?: Array<[string, (e: Event) => void]>;
-    // 工具栏窄面板折叠监听
-    _toolbarRO?: ResizeObserver;
+    // 工具栏窄面板折叠监听(已随横向滚动改造移除)
     _rows?: Row[];
     _expanded?: Set<string>;                       // 展开的节点键
     _cache?: Map<string, DirEntry[] | BlockNode[]>;// 已加载的子项
@@ -262,50 +329,10 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
         data: {},
         init(this: MountTreeDockInstance) {
             this.element.classList.add("syfe-mtree-dock", "fn__flex-column");
+            // 顶栏整条都是按钮(不放标题),按钮集合与顺序由「更多 → 编辑工具栏」配置,
+            // 渲染见 renderToolbar();横向滚动 + 悬停滚轮转横向见 enableCrumbScroll
             this.element.innerHTML = `
-                <div class="block__icons syfe-mtree__toolbar">
-                    <div class="block__logo">
-                        <svg class="block__logoicon"><use xlink:href="#iconList"></use></svg>
-                        <span class="block__logotext">虚拟文档树</span>
-                    </div>
-                    <span class="fn__flex-1 fn__space"></span>
-                    <span class="block__icon ariaLabel" data-rel-action="refresh" aria-label="刷新引用关系" data-position="north" style="display:none">
-                        <svg><use xlink:href="#iconRefresh"></use></svg>
-                    </span>
-                    <span class="block__icon ariaLabel" data-rel-action="collapse-all" aria-label="折叠全部" data-position="north" style="display:none">
-                        <svg><use xlink:href="#iconContract"></use></svg>
-                    </span>
-                    <span class="block__icon ariaLabel" data-rel-action="expand-all" aria-label="展开全部" data-position="north" style="display:none">
-                        <svg><use xlink:href="#iconExpand"></use></svg>
-                    </span>
-                    <span class="block__icon ariaLabel" data-rel-action="locate" aria-label="定位当前文档" data-position="north" style="display:none">
-                        <svg><use xlink:href="#iconFocus"></use></svg>
-                    </span>
-                    <span class="block__icon ariaLabel" data-rel-action="focus" aria-label="聚焦当前文档" data-position="north" style="display:none">
-                        <svg><use xlink:href="#iconList"></use></svg>
-                    </span>
-                    <span class="block__icon ariaLabel" data-action="locate-mount" aria-label="定位当前文档(虚拟文档树)" data-position="north">
-                        <svg><use xlink:href="#iconFocus"></use></svg>
-                    </span>
-                    <span class="block__icon ariaLabel" data-action="tag-filter" aria-label="标签筛选" data-position="north">
-                        <svg><use xlink:href="#iconTags"></use></svg>
-                    </span>
-                    <span class="block__icon ariaLabel" data-action="drag-mode" aria-label="拖拽排序模式(挂载项)" data-position="north">
-                        <svg><use xlink:href="#iconDrag"></use></svg>
-                    </span>
-                    <span class="block__icon ariaLabel" data-action="search" aria-label="搜索" data-position="north">
-                        <svg><use xlink:href="#iconSearch"></use></svg>
-                    </span>
-                    <span class="block__icon ariaLabel" data-action="refresh" aria-label="刷新" data-position="north">
-                        <svg><use xlink:href="#iconRefresh"></use></svg>
-                    </span>
-                    <span class="block__icon ariaLabel" data-action="collapse" aria-label="全部收起" data-position="north">
-                        <svg><use xlink:href="#iconRight"></use></svg>
-                    </span>
-                    <span class="block__icon ariaLabel" data-action="more" aria-label="更多" data-position="north">
-                        <svg><use xlink:href="#iconMore"></use></svg>
-                    </span>
-                </div>
+                <div class="block__icons syfe-mtree__toolbar"></div>
                 <div class="fn__flex-1 syfe-mtree__scroll">
                     <div class="syfe-mtree__chips" style="display:none;"></div>
                     <ul class="syfe-mtree__list"></ul>
@@ -1932,22 +1959,13 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                         label: "打开回收站…",
                         click: () => openTrashDialog(plugin as any),
                     });
-                    // 窄面板:被折叠进来的功能在这里补齐(工具栏图标已按 CSS 隐藏)
-                    if (toolbarNarrow) {
-                        m.addSeparator();
-                        m.addItem({icon: "iconTags", label: (filterOn ? "✓ " : "") + "标签筛选", click: () => runToolbarAction("tag-filter")});
-                        m.addItem({icon: "iconRefresh", label: "刷新", click: () => runToolbarAction("refresh")});
-                        m.addItem({icon: "iconRight", label: "全部收起", click: () => runToolbarAction("collapse")});
-                        m.addItem({icon: "iconFocus", label: "定位当前文档", click: () => runToolbarAction("locate-mount")});
-                        if (relationEnabled()) {
-                            m.addSeparator();
-                            m.addItem({icon: "iconRefresh", label: "刷新引用关系", click: () => runRelationAction("refresh")});
-                            m.addItem({icon: "iconContract", label: "折叠引用关系", click: () => runRelationAction("collapse-all")});
-                            m.addItem({icon: "iconExpand", label: "展开引用关系", click: () => runRelationAction("expand-all")});
-                            m.addItem({icon: "iconList", label: "聚焦当前文档", click: () => runRelationAction("focus")});
-                        }
-                        m.addSeparator();
-                    }
+                    // 顶栏按钮的显示与排序在此配置(顶栏整条都是按钮,不再按宽度折叠)
+                    m.addSeparator();
+                    m.addItem({
+                        icon: "iconSettings",
+                        label: "编辑工具栏…",
+                        click: () => void openToolbarEditor(),
+                    });
                     // 拖拽模式的开关在工具栏上也有,这里给出当前状态,避免"拖不动却不知道要开模式"
                     m.addItem({
                         icon: "iconDrag",
@@ -1997,6 +2015,122 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
             this._actionHandler = actionHandler;
             const toolbarEl = this.element.querySelector(".syfe-mtree__toolbar") as HTMLElement;
             toolbarEl.addEventListener("click", actionHandler);
+
+            // ===== 顶栏按钮渲染(配置驱动)=====
+            // 同步先按默认顺序画一遍(面板打开立即可用),配置异步读回来再校正
+            let toolbarCfg: TreeToolbarCfg = {order: [], hidden: []};
+            const renderToolbar = () => {
+                const order = resolvedOrder(toolbarCfg);
+                const hidden = new Set(toolbarCfg.hidden.filter(k => k !== TOOLBAR_FIXED));
+                toolbarEl.innerHTML = order
+                    .filter(k => !hidden.has(k))
+                    .map(k => {
+                        const b = byKey(k)!;
+                        // rel 按钮默认隐藏,render() 会按引用关系开关统一设置显隐
+                        const relHidden = b.attr === "rel-action" ? ' style="display:none"' : "";
+                        return `<span class="block__icon ariaLabel" data-${b.attr}="${b.value}" aria-label="${b.label}" data-position="north"${relHidden}><svg><use xlink:href="#${b.icon}"></use></svg></span>`;
+                    })
+                    .join("");
+            };
+            renderToolbar();
+            void loadToolbarCfg(plugin as any).then((cfg) => {
+                toolbarCfg = cfg;
+                renderToolbar();
+            });
+            // 悬停滚轮转横向滚动(复用面包屑同款;工具栏从左往右看,不自动滚到最右)
+            enableCrumbScroll(toolbarEl, {toEnd: false});
+            const persistToolbar = async () => {
+                await saveToolbarCfg(plugin as any, toolbarCfg);
+                renderToolbar();
+            };
+
+            // ===== 编辑工具栏面板:勾选显示 + ↑↓ 排序,改动即时生效并持久化 =====
+            const openToolbarEditor = () => {
+                const dlg = new Dialog({
+                    title: "编辑工具栏",
+                    width: "460px",
+                    content: `<div class="syfe-tbedit">
+                        <div class="syfe-tbedit__hint">勾选显示在顶栏的按钮,↑↓ 调整顺序;「更多」不可隐藏。改动即时生效。</div>
+                        <div class="syfe-tbedit__rows"></div>
+                        <div class="syfe-tbedit__bar">
+                            <button class="b3-button b3-button--text" data-act="reset">恢复默认</button>
+                            <span class="fn__flex-1"></span>
+                            <button class="b3-button b3-button--cancel" data-act="close">完成</button>
+                        </div>
+                    </div>`,
+                });
+                const rowsEl = dlg.element.querySelector(".syfe-tbedit__rows") as HTMLElement;
+                const draw = () => {
+                    const order = resolvedOrder(toolbarCfg);
+                    const hidden = new Set(toolbarCfg.hidden);
+                    rowsEl.innerHTML = order.map((k, i) => {
+                        const b = byKey(k)!;
+                        const fixed = k === TOOLBAR_FIXED;
+                        const check = fixed
+                            ? `<input type="checkbox" class="b3-switch" disabled checked title="编辑入口,不可隐藏">`
+                            : `<input type="checkbox" class="b3-switch" data-act="toggle" ${hidden.has(k) ? "" : "checked"}>`;
+                        return `<div class="syfe-tbedit__row" data-key="${k}">
+                            ${check}
+                            <svg class="syfe-tbedit__icon"><use xlink:href="#${b.icon}"></use></svg>
+                            <span class="syfe-tbedit__label">${b.label}${b.attr === "rel-action" ? ' <span class="syfe-tbedit__tag">引用关系</span>' : ""}</span>
+                            <span class="fn__flex-1"></span>
+                            <button class="b3-button b3-button--icon" data-act="up" ${i === 0 ? "disabled" : ""} title="上移"><svg><use xlink:href="#iconUp"></use></svg></button>
+                            <button class="b3-button b3-button--icon" data-act="down" ${i === order.length - 1 ? "disabled" : ""} title="下移"><svg><use xlink:href="#iconDown"></use></svg></button>
+                        </div>`;
+                    }).join("");
+                };
+                const commit = () => {
+                    toolbarCfg.order = resolvedOrder(toolbarCfg);
+                    toolbarCfg.hidden = [...hiddenSet()];
+                    void persistToolbar();
+                    draw();
+                };
+                const hiddenSet = () => new Set(toolbarCfg.hidden.filter(k => k !== TOOLBAR_FIXED));
+                rowsEl.addEventListener("click", (e) => {
+                    const btn = (e.target as HTMLElement).closest("[data-act]") as HTMLElement | null;
+                    const row = (e.target as HTMLElement).closest(".syfe-tbedit__row") as HTMLElement | null;
+                    if (!btn || !row) return;
+                    const act = btn.dataset.act;
+                    const key = row.dataset.key || "";
+                    const order = resolvedOrder(toolbarCfg);
+                    const i = order.indexOf(key);
+                    if (act === "up" && i > 0) {
+                        order.splice(i, 1);
+                        order.splice(i - 1, 0, key);
+                        toolbarCfg.order = order;
+                    } else if (act === "down" && i >= 0 && i < order.length - 1) {
+                        order.splice(i, 1);
+                        order.splice(i + 1, 0, key);
+                        toolbarCfg.order = order;
+                    } else {
+                        return;
+                    }
+                    commit();
+                });
+                rowsEl.addEventListener("change", (e) => {
+                    const input = e.target as HTMLInputElement;
+                    if (!input || input.dataset.act !== "toggle") return;
+                    const row = input.closest(".syfe-tbedit__row") as HTMLElement | null;
+                    const key = row?.dataset.key || "";
+                    if (!key || key === TOOLBAR_FIXED) return;
+                    const hidden = hiddenSet();
+                    if (input.checked) hidden.delete(key);
+                    else hidden.add(key);
+                    toolbarCfg.hidden = [...hidden];
+                    commit();
+                });
+                dlg.element.addEventListener("click", (e) => {
+                    const btn = (e.target as HTMLElement).closest("[data-act]") as HTMLElement | null;
+                    if (!btn) return;
+                    if (btn.dataset.act === "close") dlg.destroy();
+                    else if (btn.dataset.act === "reset") {
+                        toolbarCfg = {order: [], hidden: []};
+                        void persistToolbar();
+                        draw();
+                    }
+                });
+                draw();
+            };
             // 关系树的 5 个按钮在**工具栏**里(与原虚拟树同一位置),而上面的 actionHandler
             // 绑在工具栏上、只处理 [data-action];这里补一个监听处理 [data-rel-action]。
             // 注意:不能只靠 scrollEl 的委托 —— 工具栏不在滚动容器内,事件到不了那里。
@@ -2009,20 +2143,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
             this._relActionHandler = relActionHandler;
             toolbarEl.addEventListener("click", relActionHandler);
 
-            // 窄面板折叠:宽度不足时把次要功能折叠进「更多」(CSS 隐藏对应图标),
-            // 避免工具栏换行占多行。阈值 400:默认 260 宽的面板必然折叠,拉宽后恢复
-            let toolbarNarrow = false;
-            const applyToolbarNarrow = () => {
-                const narrow = toolbarEl.clientWidth < 400;
-                if (narrow !== toolbarNarrow) {
-                    toolbarNarrow = narrow;
-                    toolbarEl.classList.toggle("syfe-mtree__toolbar--narrow", narrow);
-                }
-            };
-            const toolbarRO = new ResizeObserver(applyToolbarNarrow);
-            toolbarRO.observe(toolbarEl);
-            applyToolbarNarrow();
-            this._toolbarRO = toolbarRO;
+            // 顶栏改为横向滚动后,原「窄面板折叠进更多」逻辑已移除(不再按宽度藏按钮)
 
             // 挂载结构变化(任意入口挂载/取消)时自动重绘。
             // 关系树的根就是挂载的思源文档,所以挂载一变,根集合也变了,必须重建(不只是重绘):
@@ -2257,10 +2378,6 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 }
             }
             this._mountDragHandlers = undefined;
-            if (this._toolbarRO) {
-                this._toolbarRO.disconnect();
-                this._toolbarRO = undefined;
-            }
             this._listEl = undefined;
             this._scrollEl = undefined;
             this._clickHandler = undefined;

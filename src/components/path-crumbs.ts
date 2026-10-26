@@ -66,7 +66,7 @@ export function renderPathSegments(path: string): string {
  * 悬停时鼠标滚轮的纵向滚动映射为横向滚动(内容放得下时不拦截,外层继续滚)。
  * 打开时自动滚到最右,保证"当前文件"那段可见。
  */
-export function enableCrumbScroll(el: HTMLElement): void {
+export function enableCrumbScroll(el: HTMLElement, opts?: {toEnd?: boolean}): void {
     el.classList.add("syfe-crumbs-scroll");
     el.addEventListener("wheel", (e: WheelEvent) => {
         if (!e.deltaY) return;
@@ -76,7 +76,9 @@ export function enableCrumbScroll(el: HTMLElement): void {
         el.scrollLeft = Math.max(0, Math.min(max, before + e.deltaY));
         if (el.scrollLeft !== before) e.preventDefault();
     }, {passive: false});
-    // 初始定位到最右(当前文件段);字体加载可能改变宽度,延迟一帧再校一次
+    // 初始定位到最右(当前文件段);字体加载可能改变宽度,延迟一帧再校一次。
+    // 工具栏类场景(toEnd:false)从左往右看,保持 scrollLeft = 0
+    if (opts?.toEnd === false) return;
     requestAnimationFrame(() => { el.scrollLeft = el.scrollWidth; });
 }
 

@@ -916,20 +916,75 @@ button.syfe-editor__arrow--exp:hover {
     }
 }
 
-// 窄面板:次要功能折叠进「更多」(仅留 搜索 + 更多),避免工具栏换行占多行
-.syfe-mtree__toolbar--narrow {
-    [data-action="tag-filter"],
-    [data-action="drag-mode"],
-    [data-action="refresh"],
-    [data-action="collapse"],
-    [data-action="locate-mount"],
-    [data-rel-action="refresh"],
-    [data-rel-action="collapse-all"],
-    [data-rel-action="expand-all"],
-    [data-rel-action="locate"],
-    [data-rel-action="focus"] {
-        display: none !important;
+// 虚拟文档树顶栏:整条都是按钮,横向滚动(悬停滚轮转横向,见 enableCrumbScroll)。
+// `.syfe-crumbs-scroll` 提供 overflow-x/隐藏滚动条,这里补按钮不换行、不收缩
+.syfe-mtree__toolbar.syfe-crumbs-scroll {
+    flex: 1 1 auto;
+    align-items: center;
+
+    .block__icon {
+        flex-shrink: 0;
     }
+}
+
+// 编辑工具栏面板
+.syfe-tbedit {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 12px 16px;
+    box-sizing: border-box;
+}
+
+.syfe-tbedit__hint {
+    font-size: 12px;
+    color: var(--b3-theme-on-surface);
+    opacity: 0.75;
+}
+
+.syfe-tbedit__rows {
+    max-height: 420px;
+    overflow: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.syfe-tbedit__row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 3px 6px;
+    border-radius: 4px;
+
+    &:hover {
+        background: var(--b3-list-hover);
+    }
+}
+
+.syfe-tbedit__icon {
+    width: 14px;
+    height: 14px;
+    flex-shrink: 0;
+}
+
+.syfe-tbedit__label {
+    font-size: 13px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.syfe-tbedit__tag {
+    font-size: 11px;
+    opacity: 0.55;
+    margin-left: 4px;
+}
+
+.syfe-tbedit__bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
 }
 
 .syfe-editor__seg {
