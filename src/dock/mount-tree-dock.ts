@@ -2050,7 +2050,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                     title: "编辑工具栏",
                     width: "460px",
                     content: `<div class="syfe-tbedit">
-                        <div class="syfe-tbedit__hint">勾选显示在顶栏的按钮,↑↓ 调整顺序;「更多」不可隐藏。改动即时生效。</div>
+                        <div class="syfe-tbedit__hint">拖动行排序(或用 ↑↓);勾选显示在顶栏的按钮;「更多」不可隐藏。改动即时生效。</div>
                         <div class="syfe-tbedit__rows"></div>
                         <div class="syfe-tbedit__bar">
                             <button class="b3-button b3-button--text" data-act="reset">恢复默认</button>
@@ -2069,7 +2069,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                         const check = fixed
                             ? `<input type="checkbox" class="b3-switch" disabled checked title="编辑入口,不可隐藏">`
                             : `<input type="checkbox" class="b3-switch" data-act="toggle" ${hidden.has(k) ? "" : "checked"}>`;
-                        return `<div class="syfe-tbedit__row" data-key="${k}">
+                        return `<div class="syfe-tbedit__row" data-key="${k}" draggable="true">
                             ${check}
                             <svg class="syfe-tbedit__icon"><use xlink:href="#${b.icon}"></use></svg>
                             <span class="syfe-tbedit__label">${b.label}${b.attr === "rel-action" ? ' <span class="syfe-tbedit__tag">引用关系</span>' : ""}</span>
@@ -2086,6 +2086,64 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                     draw();
                 };
                 const hiddenSet = () => new Set(toolbarCfg.hidden.filter(k => k !== TOOLBAR_FIXED));
+
+                // 拖动排序:HTML5 DnD。dragover 只做视觉指示不重绘(重绘会掐断拖拽源),
+                // drop 时按落点前/后半行插入,commit + 重绘
+                let dragKey: string | null = null;
+                const clearDragover = () => {
+                    rowsEl.querySelectorAll(".syfe-tbedit__row").forEach(r => {
+                        r.classList.remove("syfe-tbedit__row--dragover-before", "syfe-tbedit__row--dragover-after");
+                    });
+                };
+                rowsEl.addEventListener("dragstart", (e) => {
+                    const row = (e.target as HTMLElement).closest(".syfe-tbedit__row") as HTMLElement | null;
+                    if (!row) return;
+                    dragKey = row.dataset.key || null;
+                    row.classList.add("syfe-tbedit__row--dragging");
+                    try {
+                        e.dataTransfer!.effectAllowed = "move";
+                        e.dataTransfer!.setData("text/plain", dragKey || "");
+                    } catch {
+                        // 合成事件可能没有 dataTransfer 内容,不影响本地排序
+                    }
+                });
+                rowsEl.addEventListener("dragover", (e) => {
+                    if (!dragKey) return;
+                    const row = (e.target as HTMLElement).closest(".syfe-tbedit__row") as HTMLElement | null;
+                    if (!row || row.dataset.key === dragKey) return;
+                    e.preventDefault();
+                    e.dataTransfer!.dropEffect = "move";
+                    const r = row.getBoundingClientRect();
+                    const before = e.clientY < r.top + r.height / 2;
+                    clearDragover();
+                    row.classList.add(before ? "syfe-tbedit__row--dragover-before" : "syfe-tbedit__row--dragover-after");
+                });
+                rowsEl.addEventListener("drop", (e) => {
+                    if (!dragKey) return;
+                    const row = (e.target as HTMLElement).closest(".syfe-tbedit__row") as HTMLElement | null;
+                    if (!row) return;
+                    e.preventDefault();
+                    const targetKey = row.dataset.key || "";
+                    clearDragover();
+                    if (targetKey && targetKey !== dragKey) {
+                        const r = row.getBoundingClientRect();
+                        const before = e.clientY < r.top + r.height / 2;
+                        const order = resolvedOrder(toolbarCfg);
+                        order.splice(order.indexOf(dragKey), 1);
+                        let to = order.indexOf(targetKey);
+                        if (!before) to += 1;
+                        order.splice(to, 0, dragKey);
+                        toolbarCfg.order = order;
+                        commit();
+                    }
+                    dragKey = null;
+                });
+                rowsEl.addEventListener("dragend", () => {
+                    dragKey = null;
+                    clearDragover();
+                    rowsEl.querySelectorAll(".syfe-tbedit__row--dragging").forEach(r => r.classList.remove("syfe-tbedit__row--dragging"));
+                });
+
                 rowsEl.addEventListener("click", (e) => {
                     const btn = (e.target as HTMLElement).closest("[data-act]") as HTMLElement | null;
                     const row = (e.target as HTMLElement).closest(".syfe-tbedit__row") as HTMLElement | null;

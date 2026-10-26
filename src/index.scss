@@ -917,9 +917,11 @@ button.syfe-editor__arrow--exp:hover {
 }
 
 // 虚拟文档树顶栏:整条都是按钮,横向滚动(悬停滚轮转横向,见 enableCrumbScroll)。
-// `.syfe-crumbs-scroll` 提供 overflow-x/隐藏滚动条,这里补按钮不换行、不收缩
+// `.syfe-crumbs-scroll` 提供 overflow-x/隐藏滚动条;这里压住它的同时**不可纵向撑开**
+// (面板是 flex-column,flex-grow 会把顶栏拉成半屏高、按钮悬在中间)
 .syfe-mtree__toolbar.syfe-crumbs-scroll {
-    flex: 1 1 auto;
+    flex: 0 0 auto;
+    flex-wrap: nowrap;
     align-items: center;
 
     .block__icon {
@@ -956,9 +958,23 @@ button.syfe-editor__arrow--exp:hover {
     gap: 8px;
     padding: 3px 6px;
     border-radius: 4px;
+    cursor: grab;
+    user-select: none;
 
     &:hover {
         background: var(--b3-list-hover);
+    }
+
+    &.syfe-tbedit__row--dragging {
+        opacity: 0.45;
+    }
+
+    &.syfe-tbedit__row--dragover-before {
+        box-shadow: inset 0 2px 0 var(--b3-theme-primary);
+    }
+
+    &.syfe-tbedit__row--dragover-after {
+        box-shadow: inset 0 -2px 0 var(--b3-theme-primary);
     }
 }
 
