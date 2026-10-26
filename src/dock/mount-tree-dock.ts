@@ -4,14 +4,15 @@
 // 数据层 src/mount-tree.ts(virtual-tree.json);结构变化派发 syfe:mount-tree-changed 自动重绘。
 import {Menu, Dialog, confirm, showMessage} from "siyuan";
 import {MOUNT_TREE_DOCK_TYPE} from "../constants";
-import {readDir, querySQL} from "../api/file";
+import {readDir, querySQL, updateBlock, setBlockAttrs, flushTransaction} from "../api/file";
 import {DirEntry} from "../types";
 import {basename, dirname, joinPath} from "../utils/path";
 import {fileIconHTML, folderIconHTML} from "../utils/icons";
 import {toFileLink} from "../utils/system-path";
 import {virtualListDir, virtualId, isNotebookRoot, isBoxDocEnabled} from "../utils/virtual-tree";
 import {docTreeIconHTML, cachedDocIcon, ensureDocIcons, getNotebookIcon} from "../utils/siyuan-icon";
-import {listChildBlocks, blockTitle, BlockNode} from "../utils/blocks";
+import {listChildBlocks, blockTitle, blockGutterIcon, soloImageInfo, imageMarkdownWithTitle, BlockNode} from "../utils/blocks";
+import {loadBlockNames, localBlockName, setLocalBlockName} from "../utils/block-names";
 import {copyText, revealInFileTree, pickMountTargetDialog, showFileTreeMenu, findTreeRootEl, createNewFile, createNewFolder, buildFileTreeActions} from "../components/file-tree";
 import {openBaiduPanDialog} from "../components/baidu-pan-dialog";
 import {tagIconHTML} from "../tags/tag-ui";
@@ -35,7 +36,7 @@ import {BacklinkItem, findBacklinks, findDirBacklinks, findSiyuanRefBacklinks} f
 import {showDocMenu, showNotebookMenu, addPinFavEntries, DocMenuItem} from "../components/doc-menu";
 import {openSiyuanTagDialog} from "../components/siyuan-tag-dialog";
 import {openFileTab, syncOpenEditors} from "../tabs/editor-tab";
-import {mountPayload, promptMountPathDialog, pickBlockDialog, showMountTargetMenu, ensureTargetMountItem} from "../components/mount-menu";
+import {mountPayload, promptMountPathDialog, pickBlockDialog, promptBlockName, showMountTargetMenu, ensureTargetMountItem} from "../components/mount-menu";
 import {
     getRoots,
     removeMountItem,
@@ -270,7 +271,7 @@ type Row =
     | {kind: "doc"; docId: string; name: string; depth: number; expanded: boolean; icon?: string; subFileCount?: number; ownerUid?: string}
     // 自动挂载行:引用子层级(引用的文档 + 物理子文档),与挂载行同款渲染与行为
     | {kind: "auto"; docId: string; name: string; hpath: string; depth: number; expanded: boolean; hasChildren: boolean; parentDocId: string; subFileCount?: number}
-    | {kind: "block"; blockId: string; name: string; depth: number; expanded: boolean; ownerUid?: string}
+    | {kind: "block"; blockId: string; name: string; depth: number; expanded: boolean; ownerUid?: string; btype?: string; bsubtype?: string; bmd?: string; bname?: string}
     | {kind: "empty"; depth: number}
     | {kind: "loading"; depth: number};
 
@@ -307,6 +308,10 @@ interface MountTreeDockInstance {
     _cache?: Map<string, DirEntry[] | BlockNode[]>;// 已加载的子项
     _loading?: Set<string>;                        // 正在加载的节点键
     _nbIcons?: Map<string, string>;                // 笔记本 id → 自定义图标(后台取到后重绘)
+    // 挂载块根行 → 块元数据(类型/子类型/markdown/命名):每次重绘现查比对,变了才重绘。
+    // 块在文档里被转换类型(如标题转文档)后只要块 id 没变,树上就按新类型正常展示;
+    // 块子行的数据随子块列表一起来,不缓存这里
+    _blockMeta?: Map<string, {type: string; subtype: string; markdown: string; name: string}>;
 }
 
 // 预取子项以判断箭头显隐的并发数与数量上限(超过上限不预取,避免大目录树把面板拖慢)
@@ -377,6 +382,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
             self._cache = new Map<string, DirEntry[] | BlockNode[]>();
             self._loading = new Set<string>();
             self._nbIcons = new Map<string, string>();
+            self._blockMeta = new Map<string, {type: string; subtype: string; markdown: string; name: string}>();
 
             // 标签筛选状态(与文件面板一致:多选标签 = 或关系;"全部"= 只要打过任意标签)
             let tagSel: string[] = [];
@@ -1133,7 +1139,11 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                         continue;
                     }
                     const ex = self._expanded!.has("b:" + b.id);
-                    out.push({kind: "block", blockId: b.id, name: blockTitle(b.content, b.type), depth, expanded: ex, ownerUid: owner?.uid});
+                    out.push({
+                        kind: "block", blockId: b.id, name: blockTitle(b.content, b.type),
+                        depth, expanded: ex, ownerUid: owner?.uid,
+                        btype: b.type, bsubtype: b.subtype, bmd: b.markdown, bname: b.name,
+                    });
                     if (ex) emitBlocks(b.id, depth + 1, out, owner, renderMount);
                 }
             };
@@ -1308,6 +1318,81 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 ? `<span class="syfe-mtree__linkbtn" data-linkbtn="1" title="查看引用"><svg><use xlink:href="#iconLink"></use></svg></span>`
                 : "";
 
+            // 表格块行内预览:Lute 把 markdown 渲染成块 DOM(截掉尾部 protyle-attr 标记),
+            // 等比缩放由 fitBlockPreviews 统一处理。渲染失败返回空串(退回普通文本行)。
+            const tablePreviewHTML = (md: string): string => {
+                if (!md) return "";
+                try {
+                    const html = (window as any).Lute?.Md2BlockDOM?.(md);
+                    if (!html) return "";
+                    return `<span class="syfe-mtree__preview syfe-mtree__preview--fit">${String(html).replace(/<div class="protyle-attr"[\s\S]*$/, "")}</span>`;
+                } catch {
+                    return "";
+                }
+            };
+
+            // 块行的图标/名称/预览/悬浮提示,统一由这里决定(块子行与挂载块根行共用):
+            // - 单图段落(思源没有独立图片块,整段仅一图):图标用虚拟文档树的图片文件图标
+            //   (与文件树里图片文件一致),行内等比缩略图,名称显示图片标题(次行显示提示文本 alt);
+            // - 表格:块标图标(iconTable),行内等比缩放预览,名称显示块命名(没有就不显示文字);
+            // - 其余块:块标(gutter)图标 —— 标题按层级 iconH1-H6、列表按有序/无序/任务细分,
+            //   挂载标题块与下面的子标题都各用对应层级的图标;名称显示文本标题。
+            // 命名显示优先取本地命名(设置关闭「块命名写入文档」时的落点),再取文档里的标题/命名。
+            const blockRowParts = (blockId: string, fallbackName: string, info: {btype?: string; bsubtype?: string; bmd?: string; bname?: string}) => {
+                const gutter = blockGutterIcon(info.btype || "p", info.bsubtype || "");
+                const img = info.btype === "p" && info.bmd ? soloImageInfo(info.bmd) : null;
+                if (img) {
+                    const local = localBlockName(blockId);
+                    const name = local || img.title || img.alt || "";
+                    const sub = !local && img.title && img.alt ? img.alt : "";
+                    const tip = `思源块:${blockId}`
+                        + (img.title ? ` · 标题:${img.title}` : "")
+                        + (img.alt ? ` · 提示文本:${img.alt}` : "");
+                    return {
+                        icon: fileIconHTML(basename(img.src)),
+                        name, sub, tip,
+                        preview: `<span class="syfe-mtree__preview"><img loading="lazy" src="/${encodeURI(img.src)}" alt="${escapeHTML(name)}"></span>`,
+                    };
+                }
+                if (info.btype === "t") {
+                    const preview = tablePreviewHTML(info.bmd || "");
+                    // 「表格显示标题,没有就没有」:无命名且预览可用时不显示文字
+                    const name = localBlockName(blockId) || info.bname || (preview ? "" : fallbackName);
+                    const tip = `思源块:${blockId}` + (name ? ` · 命名:${name}` : "");
+                    return {icon: gutter, name, sub: "", tip, preview};
+                }
+                return {icon: gutter, name: fallbackName, sub: "", tip: `思源块:${blockId}`, preview: ""};
+            };
+
+            // 块行 HTML:块子行与挂载块根行共用(挂载行多 open/flash 样式与拖拽属性,由调用方拼)
+            const blockRowHTML = (parts: ReturnType<typeof blockRowParts>, liClass: string, attrs: string, pad: number, arrow: string, linkBtn: string): string => {
+                const text = parts.name || parts.sub
+                    ? `<span class="syfe-mtree__text">${parts.name ? `<span class="syfe-mtree__name">${escapeHTML(parts.name)}</span>` : ""}${parts.sub ? `<span class="syfe-mtree__sub">${escapeHTML(parts.sub)}</span>` : ""}</span>`
+                    : "";
+                return `
+                <li class="syfe-mtree__row ${liClass}" ${attrs} style="padding-left:${pad}px"
+                    title="${escapeHTML(parts.tip)}">
+                    ${arrow}
+                    <span class="syfe-mtree__icon">${parts.icon}</span>
+                    ${parts.preview}
+                    ${text}
+                    ${linkBtn}
+                </li>`;
+            };
+
+            // 表格预览的等比缩放:单元格 nowrap 保持文档内列宽比例,量自然宽度后整体 zoom。
+            // 每次重绘都是新 DOM(无残留 zoom),测量值即自然宽度;面板宽度为 0(隐藏中)时跳过。
+            const fitBlockPreviews = (): void => {
+                listEl.querySelectorAll<HTMLElement>(".syfe-mtree__preview--fit").forEach(box => {
+                    const inner = box.firstElementChild as HTMLElement | null;
+                    if (!inner) return;
+                    const cw = box.clientWidth;
+                    if (cw <= 0) return;
+                    const sw = inner.scrollWidth;
+                    if (sw > cw) inner.style.zoom = String(cw / sw);
+                });
+            };
+
             const render = () => {
                 const LINK_BTN = linkBtnHTML();
                 if (!self._listEl) return; // 已销毁
@@ -1360,6 +1445,20 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                     // 空节点(空文件夹 / 无子文档 / 无子块)不显示折叠箭头
                     const hasKids = rowHasKids(r);
                     const arrow = toggleArrow(r.expanded, hasKids);
+                    // 挂载的思源块根行:块元数据(类型/markdown/命名)后台补齐后,与块子行同款渲染
+                    // (块标图标/预览/命名标题);未取到前先落到下面的通用挂载行(iconEdit),到位后重绘替换
+                    if (r.kind === "mount" && r.item.kind === "block") {
+                        const meta = self._blockMeta?.get(r.item.targetId || "");
+                        if (meta) {
+                            return blockRowHTML(
+                                blockRowParts(r.item.targetId || "", r.item.name || "", {
+                                    btype: meta.type, bsubtype: meta.subtype, bmd: meta.markdown, bname: meta.name,
+                                }),
+                                `syfe-mtree__row--mount${r.expanded ? " syfe-mtree__row--open" : ""}${mountLocateFlashUid === r.uid ? " syfe-mtree__row--flash" : ""}`,
+                                `data-idx="${i}" data-mount-uid="${escapeHTML(r.uid)}" draggable="${dragMode ? "true" : "false"}"`,
+                                pad, arrow, LINK_BTN);
+                        }
+                    }
                     if (r.kind === "mount") {
                         const it = r.item;
                         const name = it.name || (it.path ? basename(it.path) : it.targetId || "");
@@ -1415,15 +1514,10 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                             ${LINK_BTN}
                         </li>`;
                     }
-                    return `
-                    <li class="syfe-mtree__row syfe-mtree__row--block" data-idx="${i}" style="padding-left:${pad}px"
-                        title="思源块:${escapeHTML(r.blockId)}">
-                        ${arrow}
-                        <span class="syfe-mtree__icon"><svg><use xlink:href="#iconEdit"></use></svg></span>
-                        <span class="syfe-mtree__name">${escapeHTML(r.name)}</span>
-                        ${LINK_BTN}
-                    </li>`;
+                    // 思源块行:图标/名称/预览统一走 blockRowParts(单图/表格有行内预览)
+                    return blockRowHTML(blockRowParts(r.blockId, r.name, r), "syfe-mtree__row--block", `data-idx="${i}"`, pad, arrow, LINK_BTN);
                 }).join("");
+                fitBlockPreviews();
 
                 // 后台预取当前可见行的子项,用于把空节点的折叠箭头去掉(取完统一重绘一次)
                 const pending: {key: string; loader: () => Promise<DirEntry[] | BlockNode[]>}[] = [];
@@ -1452,6 +1546,55 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                             if (!self._nbIcons!.has(id)) self._nbIcons!.set(id, await getNotebookIcon(id));
                         }
                         render();
+                    })();
+                }
+
+                // 挂载的思源块根行:每次重绘都现查块元数据(类型/子类型/markdown/命名)并与缓存比对,
+                // 块在文档里被转换类型(如标题转文档)/改名后,树上跟着按新类型展示 —— 只要块 id 没变。
+                // 比对无变化不重绘(避免渲染循环);查询失败保留旧缓存;查不到视为块已删除(占位,
+                // 行回退到挂载时的名称与通用图标)。
+                const blkIds = Array.from(new Set(shown
+                    .filter((r): r is Extract<Row, {kind: "mount"}> => r.kind === "mount" && r.item.kind === "block")
+                    .map(r => r.item.targetId || "")
+                    .filter(id => id)));
+                if (blkIds.length > 0) {
+                    void (async () => {
+                        let changed = false;
+                        for (let i = 0; i < blkIds.length; i += 50) {
+                            const chunkIds = blkIds.slice(i, i + 50);
+                            const chunk = chunkIds.map(id => `'${id.replace(/'/g, "''")}'`).join(",");
+                            const fresh = new Map<string, {type: string; subtype: string; markdown: string; name: string}>();
+                            try {
+                                const rs = await querySQL(`SELECT id, type, subtype, markdown, name FROM blocks WHERE id IN (${chunk})`);
+                                for (const b of (Array.isArray(rs) ? rs : [])) {
+                                    if (b && b.id) {
+                                        fresh.set(String(b.id), {
+                                            type: String(b.type || "p"),
+                                            subtype: String(b.subtype || ""),
+                                            markdown: String(b.markdown == null ? "" : b.markdown),
+                                            name: String(b.name == null ? "" : b.name),
+                                        });
+                                    }
+                                }
+                                for (const id of chunkIds) {
+                                    const next = fresh.get(id) || {type: "", subtype: "", markdown: "", name: ""};
+                                    const prev = self._blockMeta!.get(id);
+                                    if (prev && prev.type === next.type && prev.subtype === next.subtype
+                                        && prev.markdown === next.markdown && prev.name === next.name) {
+                                        continue;
+                                    }
+                                    if (prev && prev.type !== next.type) {
+                                        // 类型变了(如标题转文档):该块的子块列表按新结构重取
+                                        self._cache!.delete("b:" + id);
+                                    }
+                                    self._blockMeta!.set(id, next);
+                                    changed = true;
+                                }
+                            } catch {
+                                // 查询失败:保留旧缓存,下次重绘再试
+                            }
+                        }
+                        if (changed) render();
                     })();
                 }
             };
@@ -1660,7 +1803,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 return [
                     {
                         icon: "iconFile",
-                        label: `挂载思源文档/笔记本…${where}`,
+                        label: `挂载思源文档/笔记本${where}`,
                         click: () => {
                             pickMountTargetDialog(where ? `挂载到「${where}」` : "挂载思源文档/笔记本到虚拟文档树", (vPath, label) => {
                                 // 「启用顶层笔记本文档」时笔记本自己就是一篇文档(id 相同)→
@@ -1673,7 +1816,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                     },
                     {
                         icon: "iconFolder",
-                        label: `挂载文件/文件夹…${where}`,
+                        label: `挂载文件/文件夹${where}`,
                         click: () => {
                             promptMountPathDialog(where ? `挂载到「${where}」` : "挂载文件/文件夹到虚拟文档树", (p, isDir, name) => {
                                 void uidOf().then(uid => mountPayload(plugin, {kind: "file", name, path: p, isDir}, uid));
@@ -1683,7 +1826,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                     // 百度网盘目录(readDir 原生支持 bdpan:// 路径,挂完可直接逐级列目录)
                     {
                         icon: "iconCloud",
-                        label: `挂载百度网盘…${where}`,
+                        label: `挂载百度网盘${where}`,
                         click: () => {
                             openBaiduPanDialog({
                                 title: where ? `挂载百度网盘到「${where}」` : "挂载百度网盘到虚拟文档树",
@@ -1696,7 +1839,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                     // 思源块:关键词搜索或粘贴块 ID;挂载后按 parent_id 递归展开子块
                     {
                         icon: "iconList",
-                        label: `挂载思源块…${where}`,
+                        label: `挂载思源块${where}`,
                         click: () => {
                             pickBlockDialog(where ? `挂载思源块到「${where}」` : "挂载思源块到虚拟文档树", (blockId, label) => {
                                 void uidOf().then(uid => mountPayload(plugin, {kind: "block", name: label, targetId: blockId}, uid));
@@ -1706,7 +1849,8 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 ];
             };
 
-            // 把挂载入口项追加到自建菜单(空白处右键用,前面补一条分隔线)
+            // 把挂载入口项追加到**已有内容**的自建菜单(前置分隔线与上方菜单项隔开);
+            // 空菜单(如空白处右键)直接 add,否则分隔线会顶在菜单最上面变成一条横线
             const appendMountItems = (menu: Menu, parentUid: string | null | (() => Promise<string | null>), where: string) => {
                 menu.addSeparator();
                 for (const it of mountMenuItems(parentUid, where)) menu.addItem(it as any);
@@ -1725,6 +1869,74 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 ensureRelationTree(true);
             };
 
+            // 挂载块的「命名」能力:仅单图段落(写入图片标题)与表格块(写入块命名)支持
+            const blockRenameCapable = (blockId: string, rowInfo: {btype?: string; bmd?: string} | null): boolean => {
+                const meta = self._blockMeta?.get(blockId);
+                const btype = rowInfo?.btype ?? meta?.type;
+                if (btype === "t") return true;
+                if (btype === "p") {
+                    const md = rowInfo?.bmd ?? meta?.markdown ?? "";
+                    return !!soloImageInfo(md);
+                }
+                return false;
+            };
+
+            // 挂载块命名:单图段落 → 改 markdown 里的图片标题;表格 → 写块命名(name 属性)。
+            // 设置「块命名写入文档」关闭时仅存本地(block-names.json),只在虚拟树上显示。
+            // rowInfo 传块子行的行上数据;挂载根行行上没有,传 null 由这里现查。
+            const renameMountedBlock = (blockId: string, rowInfo: {btype?: string; bmd?: string; bname?: string} | null) => {
+                void (async () => {
+                    let info = rowInfo && rowInfo.btype ? rowInfo : null;
+                    if (!info) {
+                        const meta = self._blockMeta?.get(blockId);
+                        if (meta) {
+                            info = {btype: meta.type, bmd: meta.markdown, bname: meta.name};
+                        } else {
+                            try {
+                                const rs = await querySQL(`SELECT type, markdown, name FROM blocks WHERE id = '${blockId.replace(/'/g, "''")}' LIMIT 1`);
+                                info = rs && rs[0]
+                                    ? {btype: String(rs[0].type || "p"), bmd: String(rs[0].markdown || ""), bname: String(rs[0].name || "")}
+                                    : null;
+                            } catch {
+                                info = null;
+                            }
+                        }
+                    }
+                    const img = info && info.btype === "p" ? soloImageInfo(info.bmd || "") : null;
+                    const isTable = info?.btype === "t";
+                    if (!img && !isTable) {
+                        showMessage("只有图片块和表格块支持命名", 3000, "info");
+                        return;
+                    }
+                    const current = localBlockName(blockId)
+                        || (img ? (img.title || img.alt || "") : (info?.bname || ""));
+                    promptBlockName(img ? "命名图片" : "命名表格", current, (name) => {
+                        void (async () => {
+                            try {
+                                if (plugin.config?.mountTreeBlockNameWrite !== false) {
+                                    if (img) {
+                                        const md = imageMarkdownWithTitle(info!.bmd || "", name);
+                                        if (md == null) throw new Error("图片内容已变化,请刷新后重试");
+                                        await updateBlock(blockId, md);
+                                    } else {
+                                        await setBlockAttrs(blockId, {name});
+                                    }
+                                    await flushTransaction();
+                                    // 文档已更新:块元数据与子块缓存作废,重绘时重新查询
+                                    self._blockMeta?.delete(blockId);
+                                    self._cache = new Map<string, DirEntry[] | BlockNode[]>();
+                                } else {
+                                    setLocalBlockName(blockId, name);
+                                }
+                                render();
+                            } catch (err) {
+                                showMessage(`命名失败:${err instanceof Error ? err.message : String(err)}`, 3500, "error");
+                            }
+                        })();
+                    });
+                })();
+            };
+
             // 右键:文件/文件夹复用文件树完整菜单;思源文档/笔记本给「原生」文档菜单
             // (打开/新建子文档/复制/导出/重命名/删除/固定/收藏,对齐思源文档树),再追加面板特有项
             const contextHandler = (e: MouseEvent) => {
@@ -1734,8 +1946,9 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 e.stopPropagation();
                 if (!row) {
                     // 点在空白处:只给"添加挂载"入口(逐个取消挂载即可,按用户要求不提供"一键清空")
+                    // 空菜单不加分隔线(顶部会悬一条横线),直接追加挂载项
                     const menu = new Menu();
-                    appendMountItems(menu, null, "");
+                    for (const it of mountMenuItems(null, "")) menu.addItem(it as any);
                     menu.open({x: e.clientX, y: e.clientY});
                     return;
                 }
@@ -1865,6 +2078,27 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                     menu.open({x: e.clientX, y: e.clientY});
                     return;
                 }
+                // 挂载的思源块根行:与块子行同款菜单,外加取消挂载
+                if (row.kind === "mount" && row.item.kind === "block") {
+                    const menu = new Menu();
+                    menu.addItem({icon: "iconOpen", label: "定位到块", click: () => openSiyuanDoc(row.item.targetId!, plugin.app)});
+                    menu.addItem({
+                        icon: "iconTags",
+                        label: "文档标签…",
+                        click: () => openSiyuanTagDialog(row.item.targetId!, row.item.name),
+                    });
+                    if (blockRenameCapable(row.item.targetId!, null)) {
+                        menu.addItem({icon: "iconEdit", label: "命名", click: () => renameMountedBlock(row.item.targetId!, null)});
+                    }
+                    appendMountItems(menu, row.uid, `「${row.item.name}」下`);
+                    menu.addItem({
+                        icon: "iconTrashcan",
+                        label: "取消挂载",
+                        click: () => unmountMountRow(row as Extract<Row, {kind: "mount"}>),
+                    });
+                    menu.open({x: e.clientX, y: e.clientY});
+                    return;
+                }
                 // 思源文档/块的子项行
                 if (row.kind === "doc") {
                     showDocMenu({
@@ -1901,6 +2135,10 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                         label: "文档标签…",
                         click: () => openSiyuanTagDialog(row.blockId, row.name),
                     });
+                    // 单图段落/表格块支持命名(图片写入图片标题,表格写入块命名)
+                    if (blockRenameCapable(row.blockId, row)) {
+                        menu.addItem({icon: "iconEdit", label: "命名", click: () => renameMountedBlock(row.blockId, row)});
+                    }
                     // 虚拟块行同虚拟文档行:先解析出块对应的挂载项再嵌套挂载
                     appendMountItems(menu, async () => {
                         const r = await ensureTargetMountItem(plugin, "block", row.blockId, row.name, row.ownerUid ?? null);
@@ -2070,6 +2308,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                     .join("");
             };
             renderToolbar();
+            void loadBlockNames(plugin as any);
             void loadToolbarCfg(plugin as any).then((cfg) => {
                 toolbarCfg = cfg;
                 renderToolbar();
@@ -2493,6 +2732,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
             this._cache = undefined;
             this._loading = undefined;
             this._nbIcons = undefined;
+            this._blockMeta = undefined;
         },
     };
 }

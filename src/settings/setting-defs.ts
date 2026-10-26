@@ -1036,6 +1036,16 @@ export const PLUGIN_DEFS: SettingDef[] = [
         set: (c, v) => { c.treeBacklinkIcon = v !== false; },
     },
     {
+        key: "virtualTree.blockNameWrite",
+        kind: "boolean",
+        group: G_TREE,
+        title: "块命名写入文档",
+        description: "在「虚拟文档树」里给挂载的图片/表格命名时,同步写入思源文档(图片写入图片标题,表格写入块命名);关闭后仅保存在虚拟文档树本地,只在树上显示",
+        default: true,
+        get: (c) => c.mountTreeBlockNameWrite !== false,
+        set: (c, v) => { c.mountTreeBlockNameWrite = v !== false; },
+    },
+    {
         key: "virtualTree.relation.enabled",
         kind: "boolean",
         group: G_TREE,

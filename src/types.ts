@@ -51,6 +51,8 @@ export interface EditorConfig {
     takeoverSplitOpen: boolean;
     // 「虚拟文档树」行末是否显示「查看引用」链接图标(hover 出反链弹窗)
     treeBacklinkIcon: boolean;
+    // 「虚拟文档树」里给挂载的图片/表格命名时是否回写文档(图片标题/表格块命名);false = 只存虚拟树本地
+    mountTreeBlockNameWrite: boolean;
     newTabShowFavorites: boolean;    // 新标签页显示「收藏」区
     // 导入 Markdown 到思源时,是否把源文件作为资源插入到文档顶部的引述块(保留出处,便于回溯原文件)
     importMdSourceAsset: boolean;
@@ -254,6 +256,7 @@ export const DEFAULT_CONFIG: EditorConfig = {
     closeUnsavedAction: "ask",      // 关闭未保存页签:默认每次询问
     takeoverSplitOpen: false,       // 接管打开默认在当前页签区打开
     treeBacklinkIcon: true,         // 虚拟文档树行末默认显示「查看引用」图标
+    mountTreeBlockNameWrite: true,  // 挂载块命名默认同步写入文档(图片标题/表格块命名)
     newTabShowFavorites: true,
     importMdSourceAsset: false,      // 默认不插入源文件资源引述块
     showFileTreeDock: false,         // 默认不显示「文件」面板(功能已由虚拟文档树承接)

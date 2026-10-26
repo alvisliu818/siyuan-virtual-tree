@@ -3617,6 +3617,45 @@ button.syfe-editor__arrow--exp:hover {
     white-space: nowrap;
 }
 
+// 挂载块的行内预览:单图段落 → 等比缩略图(高度封顶,宽度随比例);表格 → Lute 渲染后
+// 由 JS 量自然宽度整体 zoom 缩到行宽,列宽比例与文档里一致
+.syfe-mtree__preview {
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: 60%;
+    display: flex;
+    align-items: center;
+    overflow: hidden;
+
+    img {
+        display: block;
+        width: auto;
+        height: auto;
+        max-width: 100%;
+        max-height: 64px; // 等比缩到约 4 行文字的高度
+        border-radius: var(--b3-border-radius);
+    }
+}
+
+.syfe-mtree__preview--fit {
+    flex: 1 1 auto;
+    max-width: none;
+    max-height: 180px;
+
+    table {
+        width: auto !important;
+        border-collapse: collapse;
+
+        td,
+        th {
+            border: 0.5px solid var(--b3-border-color);
+            padding: 2px 6px;
+            font-size: 12px;
+            white-space: nowrap; // 单元格不换行:保持文档内列宽比例的关键
+        }
+    }
+}
+
 /* === 引用关系树(只读派生视图,移植自 siyuan-virtual-tree)=== */
 // 关系树不单独加标题栏,行样式与手动挂载保持一致
 
