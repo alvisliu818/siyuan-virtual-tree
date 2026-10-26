@@ -1283,10 +1283,6 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
             const render = () => {
                 const LINK_BTN = linkBtnHTML();
                 if (!self._listEl) return; // 已销毁
-                // 关系树的 5 个工具按钮:仅在开关开启时显示(作用于自动挂载行)
-                this.element.querySelectorAll("[data-rel-action]").forEach((el) => {
-                    (el as HTMLElement).style.display = relationEnabled() ? "" : "none";
-                });
                 const roots = getRoots();
                 if (roots.length === 0) {
                     self._rows = [];
@@ -1486,6 +1482,11 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
             // 点击:行首箭头 → 只展开/收起;名称区 → 文件夹展开,文件/文档/笔记本/块打开
             // 关系树的工具动作(工具栏按钮与行内按钮共用)
             const runRelationAction = (action: string) => {
+                // 顶栏按钮始终显示;引用关系树关闭时给提示而不是静默无反应
+                if (!relationEnabled()) {
+                    showMessage("引用关系树未开启,可在设置 → 引用关系中打开", 3500, "info");
+                    return;
+                }
                 if (action === "refresh") {
                     ensureRelationTree(true);
                 } else if (action === "collapse-all") {
@@ -2033,7 +2034,9 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                         // rel 按钮默认隐藏,render() 会按引用关系开关统一设置显隐
                         const relHidden = b.attr === "rel-action" ? ' style="display:none"' : "";
                         const edge = k === first ? " syfe-mtree__btn--edge-start" : (k === last ? " syfe-mtree__btn--edge-end" : "");
-                        return `<span class="block__icon ariaLabel${edge}" data-${b.attr}="${b.value}" aria-label="${b.label}" data-position="north"${relHidden}><svg><use xlink:href="#${b.icon}"></use></svg></span>`;
+                        // block__icon--show:思源 3.8.8 起顶栏图标默认 opacity:0、悬停容器才浮现,
+                        // 加官方常显修饰类让按钮始终可见
+                        return `<span class="block__icon block__icon--show ariaLabel${edge}" data-${b.attr}="${b.value}" aria-label="${b.label}" data-position="north"${relHidden}><svg><use xlink:href="#${b.icon}"></use></svg></span>`;
                     })
                     .join("");
             };
