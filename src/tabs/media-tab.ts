@@ -17,6 +17,8 @@ import {buildFileRefMd, consumePendingRef, peekPendingRef, type FileRef} from ".
 import {loadMarks, upsertMark, removeMark, saveMarks, type MediaMark} from "../utils/media-marks";
 import {openTreeFileWithExternalApp} from "../utils/external-app";
 import {wantsSplitOpen, pickTabOutsideActiveWnd} from "./split-open";
+// 分屏记笔记:把当前时间戳链接插进可见的 Markdown 页签光标处(Shift+K)
+import {insertMarkdownIntoVisibleTab} from "./markdown-tab";
 
 // 音视频播放器 Tab 所需的插件接口(结构化类型,避免循环依赖)
 export interface IPluginForMediaTab {
@@ -209,6 +211,7 @@ function buildPlayerDOM(container: HTMLElement): PlayerDOM {
                 <span class="syfe-media__sep"></span>
                 <button class="b3-button b3-button--text" data-action="copy" title="复制文件链接 (file://)">复制链接</button>
                 <button class="b3-button b3-button--text syfe-media__mark-add" data-action="mark" title="在当前时间打点 (K)">+ 时间戳</button>
+                <button class="b3-button b3-button--text" data-action="note" title="把当前时间戳的 Markdown 链接插入可见笔记页签的光标处 (Shift+K);没有笔记页签时复制链接">插入笔记</button>
                 <button class="b3-button b3-button--text" data-action="save" title="另存为">另存为</button>
                 <span class="syfe-media__info"></span>
             </div>
@@ -659,6 +662,29 @@ function createPlayer(dom: PlayerDOM, plugin: IPluginForMediaTab, tab: MediaTabI
         );
     }
 
+    // 把当前时间戳的 Markdown 链接插入可见笔记页签的光标处(分屏记笔记主力流程)。
+    // 不抢焦点:插入后继续看视频,可连续 Shift+K 采集。没有可编辑的笔记页签
+    // (没开 / 只读模式)时退化为复制到剪贴板。
+    async function insertTimestampToNote(): Promise<void> {
+        const media = currentMedia();
+        if (!media) {
+            showMessage("媒体尚未加载", 2000, "info");
+            return;
+        }
+        const t = media.currentTime || 0;
+        const label = `${basename(path)} ${formatDuration(t)}`;
+        const md = buildFileRefMd({path, t, label});
+        if (insertMarkdownIntoVisibleTab(plugin, md)) {
+            showMessage(`已插入时间戳 ${formatDuration(t)}`, 2000, "info");
+            return;
+        }
+        const ok = await copyText(md);
+        showMessage(
+            ok ? "当前没有可编辑的笔记页签,时间戳链接已复制" : "复制失败",
+            3000, ok ? "info" : "error",
+        );
+    }
+
     const onMarksClick = (e: MouseEvent) => {
         const el = (e.target as HTMLElement).closest("[data-act]") as HTMLElement | null;
         if (!el || el.dataset.act === "edit") return;   // 标签靠双击编辑
@@ -719,6 +745,9 @@ function createPlayer(dom: PlayerDOM, plugin: IPluginForMediaTab, tab: MediaTabI
             case "mark":
                 void addMarkAt(currentMedia()?.currentTime ?? 0);
                 break;
+            case "note":
+                void insertTimestampToNote();
+                break;
             case "save":
                 saveAs();
                 break;
@@ -726,16 +755,37 @@ function createPlayer(dom: PlayerDOM, plugin: IPluginForMediaTab, tab: MediaTabI
     };
 
     // ---- 交互:键盘 ----
-    // 与图片 Tab 同款:监听挂在 document 上,多个 Tab 同时打开时只有可见的那个响应。
-    // 焦点在播放器自身时交给浏览器原生控制条处理,不重复响应。
+    // 与图片 Tab 同款:监听挂在 window capture 上,多个 Tab 同时打开时只有可见的那个响应。
+    // 用 capture 是为了抢在 Monaco / Vditor / 播放器原生快捷键之前:播放器聚焦时
+    // Chromium 原生 k=暂停,必须先拦下来改成打点。
     const isActive = () => dom.root.isConnected && dom.root.offsetParent !== null;
 
     const onKeyDown = (e: KeyboardEvent) => {
         if (!isActive()) return;
+        if (e.isComposing) return; // 中文输入法组字过程不抢键
         const active = document.activeElement as HTMLElement | null;
-        if (active && /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName)) return;
-        if (active?.closest?.(".monaco-editor")) return;
-        if (active?.closest?.(".syfe-media__stage")) return; // 播放器自带快捷键
+        // Monaco 聚焦时 activeElement 是它的隐藏 textarea,算编辑器不算文本框
+        const monacoEl = active?.closest?.(".monaco-editor") as HTMLElement | null;
+        const inTextField = !!(active && /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName)) && !monacoEl;
+        const inEditor = !!(active?.isContentEditable || monacoEl);
+        // K = 在当前时间打点;Shift+K = 时间戳链接插入可见笔记的光标处。
+        // 输入框(打点标签等)里完全不接管;笔记编辑器里打字时纯 K 让位,
+        // Shift+K 仍接管 —— 分屏记笔记不用点回播放器就能连续采集时间戳。
+        if ((e.key === "k" || e.key === "K") && !e.ctrlKey && !e.metaKey && !e.altKey && !inTextField) {
+            if (e.key === "K" || !inEditor) {
+                e.preventDefault();
+                e.stopPropagation();
+                if (e.key === "K") {
+                    void insertTimestampToNote();
+                } else {
+                    void addMarkAt(currentMedia()?.currentTime ?? 0);
+                }
+                return;
+            }
+        }
+        if (inTextField) return;
+        if (monacoEl) return;
+        if (active?.closest?.(".syfe-media__stage")) return; // 播放器原生控制(空格/方向键)
         switch (e.key) {
             case " ":
                 e.preventDefault();
@@ -777,11 +827,6 @@ function createPlayer(dom: PlayerDOM, plugin: IPluginForMediaTab, tab: MediaTabI
             case ">":
                 if (siblingIndex >= 0 && siblingIndex < siblings.length - 1) goto(siblingIndex + 1);
                 break;
-            case "k":
-            case "K":
-                // 打点当前时间(与工具栏「+ 时间戳」同义)
-                void addMarkAt(currentMedia()?.currentTime ?? 0);
-                break;
             default:
                 return;
         }
@@ -790,14 +835,14 @@ function createPlayer(dom: PlayerDOM, plugin: IPluginForMediaTab, tab: MediaTabI
     dom.toolbar.addEventListener("click", onToolbarClick);
     dom.marksEl.addEventListener("click", onMarksClick);
     dom.marksEl.addEventListener("dblclick", onMarksDblClick);
-    document.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keydown", onKeyDown, true);
     // 供外部(思源正文里点时间戳链接)让已开的页签跳到指定时间
     tab._applyFileRef = (ref: FileRef) => applyRefT(ref);
 
     return {
         load,
         dispose() {
-            document.removeEventListener("keydown", onKeyDown);
+            window.removeEventListener("keydown", onKeyDown, true);
             dom.toolbar.removeEventListener("click", onToolbarClick);
             dom.marksEl.removeEventListener("click", onMarksClick);
             dom.marksEl.removeEventListener("dblclick", onMarksDblClick);

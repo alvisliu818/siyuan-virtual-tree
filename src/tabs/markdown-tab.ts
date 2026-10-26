@@ -85,6 +85,8 @@ interface MarkdownTabInstance {
     _applyFileRef?: (ref: FileRef) => void;
     // 剪贴板增强(阅读态连图复制 / 粘贴图片落盘)
     _clipboard?: MdClipboardHandle;
+    // 外部(媒体页签 Shift+K 打时间戳)把 Markdown 片段插入光标处
+    _insertMarkdown?: (md: string) => boolean;
 }
 
 // Vditor 静态资源目录(webpack 已复制 vditor/dist 到插件目录)
@@ -520,6 +522,26 @@ export function openMarkdownTab(plugin: IPluginForMarkdownTab, rawPath: string, 
         position: opts?.position,
         openNewTab: wantsSplitOpen(opts) || undefined,
     } as any);
+}
+
+// 把 Markdown 片段插入「当前可见」的 Markdown 页签光标处,不抢焦点。
+// 分屏看视频按 Shift+K 打时间戳的主力入口;live/source 可插,reading 只读跳过,
+// 全部失败(没有可见的可编辑笔记页签)返回 false,由调用方兜底(如复制到剪贴板)。
+export function insertMarkdownIntoVisibleTab(
+    plugin: {getOpenedTab(): { [key: string]: any[] }},
+    md: string,
+): boolean {
+    const opened = plugin.getOpenedTab()[MARKDOWN_TAB_TYPE] || [];
+    for (const inst of opened as MarkdownTabInstance[]) {
+        const el = inst?.element;
+        if (!el || !el.isConnected || el.offsetParent === null) continue;
+        try {
+            if (inst._insertMarkdown?.(md)) return true;
+        } catch {
+            // 单个页签插入失败,继续尝试下一个可见页签
+        }
+    }
+    return false;
 }
 
 // 创建 addTab 配置(捕获 plugin 闭包)
@@ -1126,35 +1148,45 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
             // ===== 剪贴板增强 =====
             // 阅读 / 实时预览态:Vditor 自带的 copy 只写 Markdown、text/html 置空,
             // 图片跟不过去 —— md-clipboard 在 capture 阶段接管,补写内联了 data URI 的富文本。
+            // 光标处插入 Markdown(live → vditor,source → Monaco);reading 只读返回 false
+            const insertMd = (md: string): boolean => {
+                if (self._mode === "live" && self._vditor) {
+                    try {
+                        self._vditor.insertValue(md);
+                        return true;
+                    } catch {
+                        return false;
+                    }
+                }
+                if (self._mode === "source" && self._editor && self._model) {
+                    try {
+                        const sel = self._editor.getSelection();
+                        if (!sel) return false;
+                        self._editor.executeEdits("syfe-paste-image", [
+                            {range: sel, text: md, forceMoveMarkers: true},
+                        ]);
+                        self._editor.pushUndoStop();
+                        return true;
+                    } catch {
+                        return false;
+                    }
+                }
+                return false;
+            };
+            // 供外部(媒体页签 Shift+K 打时间戳)调用:插入 + 打脏标记 + 刷新面包屑
+            self._insertMarkdown = (md: string) => {
+                if (!insertMd(md)) return false;
+                markDirty(path, true);
+                updateDirtyUI(true);
+                self._hcrumbsHandle?.refresh();
+                return true;
+            };
             this._clipboard = installMarkdownClipboard({
                 contentEl: () => self._contentEl,
                 mdPath: () => self._path,
                 mode: () => self._mode ?? "live",
                 vditor: () => self._vditor,
-                insertMarkdown: (md: string) => {
-                    if (self._mode === "live" && self._vditor) {
-                        try {
-                            self._vditor.insertValue(md);
-                            return true;
-                        } catch {
-                            return false;
-                        }
-                    }
-                    if (self._mode === "source" && self._editor && self._model) {
-                        try {
-                            const sel = self._editor.getSelection();
-                            if (!sel) return false;
-                            self._editor.executeEdits("syfe-paste-image", [
-                                {range: sel, text: md, forceMoveMarkers: true},
-                            ]);
-                            self._editor.pushUndoStop();
-                            return true;
-                        } catch {
-                            return false;
-                        }
-                    }
-                    return false;
-                },
+                insertMarkdown: (md: string) => insertMd(md),
                 didEdit: () => {
                     markDirty(path, true);
                     updateDirtyUI(true);
