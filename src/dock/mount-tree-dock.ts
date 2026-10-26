@@ -215,6 +215,24 @@ const byKey = (k: string) => TREE_TOOLBAR_BUTTONS.find(b => b.key === k);
 const TOOLBAR_KEY = "tree-toolbar.json";
 const TOOLBAR_FIXED = "more";   // 「更多」是编辑入口,固定在顶栏(否则没法再打开配置)
 
+// Lute 实例(模块级单例):window.Lute 只是 emscripten 模块对象(只有 New/NewNodeID 等
+// 静态方法),Md2BlockDOM 等渲染方法在 Lute.New() 创建的实例上。实例是无状态的纯转换器,
+// 全局缓存一份即可;不挂 window(避免与思源/其他插件冲突),模块作用域本身就是单例。
+let luteInstance: any;
+let luteTried = false;
+const getLute = (): any => {
+    if (!luteTried) {
+        luteTried = true;
+        try {
+            const L = (window as any).Lute;
+            luteInstance = L?.New ? L.New() : L;
+        } catch {
+            luteInstance = null;    // 创建失败就退回文本行,不再反复重试
+        }
+    }
+    return luteInstance;
+};
+
 interface TreeToolbarCfg {
     order: string[];
     hidden: string[];
@@ -1323,7 +1341,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
             const tablePreviewHTML = (md: string): string => {
                 if (!md) return "";
                 try {
-                    const html = String((window as any).Lute?.Md2BlockDOM?.(md) || "");
+                    const html = String(getLute()?.Md2BlockDOM?.(md) || "");
                     if (!html.includes("<table")) return "";
                     return `<span class="syfe-mtree__preview syfe-mtree__preview--fit">${html.replace(/<div class="protyle-attr"[\s\S]*$/, "")}</span>`;
                 } catch {
@@ -1357,7 +1375,9 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                     }
                     return {
                         icon: fileIconHTML(basename(img.src)),
-                        name: "", sub: "", tip,
+                        // 缩放图模式:缩略图 + 标题或提示文字,都没有就块 id(避免行看起来是空的)
+                        name: img.title || img.alt || blockId,
+                        sub: "", tip,
                         preview: `<span class="syfe-mtree__preview"><img loading="lazy" src="/${encodeURI(img.src)}" alt="${escapeHTML(img.title || img.alt || "")}"></span>`,
                     };
                 }
