@@ -3455,6 +3455,9 @@ button.syfe-editor__arrow--exp:hover {
     list-style: none;
     margin: 0;
     padding: 0;
+    // 容器查询上下文:行内预览(缩略图/缩放表格)的上限尺寸用 cqw 表达,
+    // 面板拉宽时预览跟着放大;容器查询不可用时退回固定上限(见 syfe-mtree__preview)
+    container-type: inline-size;
 }
 
 .syfe-mtree__empty {
@@ -3632,8 +3635,16 @@ button.syfe-editor__arrow--exp:hover {
         width: auto;
         height: auto;
         max-width: 100%;
-        max-height: 64px; // 等比缩到约 4 行文字的高度
+        max-height: 64px; // 兜底(约 4 行文字的高度);容器查询可用时按下条随面板放大
         border-radius: var(--b3-border-radius);
+    }
+}
+
+// 面板列表内:缩略图高度上限随面板宽度走(约 1/8 列宽,240px 封顶),
+// 面板拉宽图片跟着变大 —— 否则图片永远停在 64px,宽面板右侧全是空白
+@supports (width: 1cqw) {
+    .syfe-mtree__list .syfe-mtree__preview img {
+        max-height: clamp(64px, 12cqw, 240px);
     }
 }
 
@@ -3653,6 +3664,14 @@ button.syfe-editor__arrow--exp:hover {
             font-size: 12px;
             white-space: nowrap; // 单元格不换行:保持文档内列宽比例的关键
         }
+    }
+}
+
+// 面板列表内:缩放表格的高度上限同样随面板放宽(重算缩放由 ResizeObserver 负责),
+// 否则面板拉宽、zoom 变大后表格反而被 180px 裁掉底部
+@supports (width: 1cqw) {
+    .syfe-mtree__list .syfe-mtree__preview--fit {
+        max-height: clamp(180px, 40cqw, 520px);
     }
 }
 

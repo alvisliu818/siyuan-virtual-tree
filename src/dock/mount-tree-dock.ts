@@ -330,6 +330,8 @@ interface MountTreeDockInstance {
     // 块在文档里被转换类型(如标题转文档)后只要块 id 没变,树上就按新类型正常展示;
     // 块子行的数据随子块列表一起来,不缓存这里
     _blockMeta?: Map<string, {type: string; subtype: string; markdown: string; name: string}>;
+    // 面板宽度变化时重算表格预览缩放(图片缩略图由 CSS 容器查询自动跟随,不经这里)
+    _previewRO?: ResizeObserver;
 }
 
 // 预取子项以判断箭头显隐的并发数与数量上限(超过上限不预取,避免大目录树把面板拖慢)
@@ -1421,17 +1423,28 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
             };
 
             // 表格预览的等比缩放:单元格 nowrap 保持文档内列宽比例,量自然宽度后整体 zoom。
-            // 每次重绘都是新 DOM(无残留 zoom),测量值即自然宽度;面板宽度为 0(隐藏中)时跳过。
+            // 渲染后调一次;面板宽度变化(拖 dock 分隔线)时由 ResizeObserver 重跑 ——
+            // 重跑必须先清掉上一轮的 zoom 再量,否则量到的是缩放后的宽度,
+            // 表格永远停在窄面板时代的缩放比上(不会跟着面板变大)。宽度为 0(隐藏中)跳过。
             const fitBlockPreviews = (): void => {
                 listEl.querySelectorAll<HTMLElement>(".syfe-mtree__preview--fit").forEach(box => {
                     const inner = box.firstElementChild as HTMLElement | null;
                     if (!inner) return;
                     const cw = box.clientWidth;
                     if (cw <= 0) return;
+                    inner.style.zoom = "";
                     const sw = inner.scrollWidth;
                     if (sw > cw) inner.style.zoom = String(cw / sw);
                 });
             };
+
+            // 面板宽度变化(拖 dock 分隔线、折叠侧栏等)时重算表格缩放:rAF 合帧防拖动时狂算。
+            // 图片缩略图的跟随放大由 CSS 容器查询(cqw,见 index.scss)自动完成,无需 JS。
+            this._previewRO = new ResizeObserver(() => {
+                if (!self._listEl) return; // 已销毁
+                requestAnimationFrame(fitBlockPreviews);
+            });
+            this._previewRO.observe(listEl);
 
             const render = () => {
                 const LINK_BTN = linkBtnHTML();
@@ -2696,6 +2709,10 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 }
             }
             this._mountDragHandlers = undefined;
+            if (this._previewRO) {
+                this._previewRO.disconnect();
+                this._previewRO = undefined;
+            }
             this._listEl = undefined;
             this._scrollEl = undefined;
             this._clickHandler = undefined;
