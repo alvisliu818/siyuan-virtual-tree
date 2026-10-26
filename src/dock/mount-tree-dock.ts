@@ -1339,7 +1339,8 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
             //   挂载标题块与下面的子标题都各用对应层级的图标;名称显示文本标题。
             // 命名显示优先取本地命名(设置关闭「块命名写入文档」时的落点),再取文档里的标题/命名。
             const blockRowParts = (blockId: string, fallbackName: string, info: {btype?: string; bsubtype?: string; bmd?: string; bname?: string}) => {
-                const gutter = blockGutterIcon(info.btype || "p", info.bsubtype || "");
+                // blockGutterIcon 返回的是图标名(如 iconH4),这里包成 svg 才能当行图标渲染
+                const gutter = `<svg><use xlink:href="#${blockGutterIcon(info.btype || "p", info.bsubtype || "")}"></use></svg>`;
                 const img = info.btype === "p" && info.bmd ? soloImageInfo(info.bmd) : null;
                 if (img) {
                     const local = localBlockName(blockId);
