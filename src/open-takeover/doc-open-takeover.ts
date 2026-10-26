@@ -18,6 +18,10 @@
 import {openFileTab} from "../tabs/editor-tab";
 import {currentWndId, hasTabIn, hasTabOutsideWnd, tabsInWnd} from "../tabs/split-open";
 import {fileUrlToPath, getWorkspacePath} from "../utils/system-path";
+import {isImageFile, isMediaFile, isNotebookFile, isOfficeFile} from "../constants";
+// 链接里的位置(标题锚点 / 行号 / 音视频时间点):先摘出来,打开时交给对应页签定位
+import {parseFileRef, stripFileRef, setPendingRef} from "../utils/file-ref";
+import {setPendingReveal} from "../editor/model-manager";
 
 export interface DocOpenTakeoverConfig {
     mode: "off" | "exts" | "all";
@@ -50,6 +54,10 @@ function extname(p: string): string {
 function shouldTakeOver(cfg: DocOpenTakeoverConfig, rawPath: string): boolean {
     if (!rawPath || cfg.mode === "off") return false;
     if (cfg.mode === "all") return true;
+    // 插件有专属页签的类型(音视频/图片/Office/Notebook)始终接管:
+    // 思源点开这类链接本来也没有有意义的原生行为,而且时间戳链接(?t=)必须落到
+    // 播放器页签里才能跳转播放 —— 不受「接管扩展名」白名单限制
+    if (isMediaFile(rawPath) || isImageFile(rawPath) || isOfficeFile(rawPath) || isNotebookFile(rawPath)) return true;
     return parseExts(cfg.exts).has(extname(rawPath));
 }
 
@@ -91,9 +99,23 @@ export function registerDocOpenTakeover(
     // 返回 true = 已接管(取消思源默认);false = 放行
     const takeOver = (rawPath: string, ev: Event | undefined): boolean => {
         const cfg = getConfig();
-        if (!shouldTakeOver(cfg, rawPath)) return false; // 放行,走思源默认
-        const abs = toAbsolutePath(rawPath);
+        if (!rawPath || cfg.mode === "off") return false;
+        // 链接可能带位置:file:///a.md#某标题、?line=42、?t=12.5。
+        // 位置必须**最先**剥掉 —— 扩展名判断(constants 的 isMediaFile 等不吃 ?query,
+        // "x.wav?t=8" 的扩展名会被算成 ".wav?t=8")和路径解析(fileUrlToPath 会把 #/?
+        // 一起算进路径)都得用干净路径。剥下来的位置塞进待消费队列,
+        // 由对应页签(文本/Markdown/音视频)落地定位。
+        const ref = parseFileRef(rawPath);
+        const rawCore = ref ? stripFileRef(rawPath) : rawPath;
+        if (!shouldTakeOver(cfg, rawCore)) return false; // 放行,走思源默认
+        const abs = toAbsolutePath(rawCore);
         if (!abs) return false; // 解析不了本地路径就别拦,交给思源
+        if (ref) {
+            setPendingRef(abs, ref);
+            // 行号额外塞一份给「纯文本/代码页签」:那条路走的是 model-manager 的
+            // pendingReveal(编辑器 Tab 与反向链接跳转都在用它),不重复造轮子。
+            if (ref.line) setPendingReveal(abs, ref.line);
+        }
         try {
             // 设置项「接管打开用分栏」:开启时用右侧分栏打开(文档与文件同屏);热生效(handler 每次读 getConfig)
             const position = cfg.takeoverSplitOpen ? ({position: "right"} as const) : undefined;
@@ -105,7 +127,10 @@ export function registerDocOpenTakeover(
             const activeWndId = position ? currentWndId() : "";
             const cols0 = position ? document.querySelectorAll(".layout__center .layout-tab-container").length : 0;
             openFileTab(plugin as any, abs, position);
-            if (position && activeWndId) {
+            // 带位置的链接**跳过自愈**:自愈会「补一次打开 + 关掉首次的页签」,
+            // 而位置(pending ref)可能已被首次页签消费 —— 关掉它位置就丢了。
+            // 代价是退化态下这次打开可能没有分栏,可接受(定位正确 > 一定分栏)。
+            if (position && activeWndId && !ref) {
                 // 自愈:思源 Wnd.split 在退化态(活动分屏模型首个页签无 head,如整窗重载后)会返回
                 // this 不拆分,新页签落回当前分屏。页签模型注册是异步的 —— 轮询等注册,
                 // 确认「分栏未发生且页签都还在原分屏」后补一次打开(openNewTab+position 必然分栏),

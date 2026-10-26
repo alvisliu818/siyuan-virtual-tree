@@ -215,6 +215,12 @@ export interface HeadingCrumbsHost {
     jump: (crumb: HeadingCrumb) => void;
     /** 点文档图标:回到文档顶部(可选;不给则图标点了没反应) */
     jumpDocStart?: () => void;
+    /**
+     * 右键「复制链接」:crumb 为 null 表示复制整个文件的链接(右键文档图标)。
+     * 由调用方按当前模式决定链接形态(Markdown 标题用锚点、源码模式用行号)。
+     * 不提供时不显示该项。
+     */
+    copyLink?: (crumb: HeadingCrumb | null) => void;
 }
 
 export interface HeadingCrumbsHandle {
@@ -342,7 +348,34 @@ export function enableHeadingCrumbs(host: HeadingCrumbsHost): HeadingCrumbsHandl
         host.jump(crumb);
     };
 
+    // 右键:复制「能定位到这里」的 Markdown 链接(详见 utils/file-ref.ts)
+    // 文档图标 → 文件本身;某一级标题 → 带锚点/行号的链接
+    const onContextMenu = (e: MouseEvent) => {
+        if (!host.copyLink) return;
+        const target = e.target as HTMLElement | null;
+        if (!target) return;
+        const docIcon = target.closest("[data-hdoc]");
+        const seg = target.closest("[data-hidx]") as HTMLElement | null;
+        if (!docIcon && !seg) return;
+        e.preventDefault();
+        e.stopPropagation();
+        let crumb: HeadingCrumb | null = null;
+        if (seg) {
+            const idx = Number(seg.dataset.hidx);
+            crumb = Number.isFinite(idx) ? (crumbsNow()[idx] || null) : null;
+            if (!crumb) return;
+        }
+        const menu = new Menu();
+        menu.addItem({
+            icon: "iconLink",
+            label: crumb ? `复制「${crumb.text}」链接` : "复制文件链接",
+            click: () => host.copyLink!(crumb),
+        });
+        menu.open({x: e.clientX, y: e.clientY});
+    };
+
     host.bar.addEventListener("click", onClick);
+    host.bar.addEventListener("contextmenu", onContextMenu);
     document.addEventListener("selectionchange", onSelection);
     refresh();
 
@@ -351,6 +384,7 @@ export function enableHeadingCrumbs(host: HeadingCrumbsHost): HeadingCrumbsHandl
         dispose() {
             if (debounce) window.clearTimeout(debounce);
             host.bar.removeEventListener("click", onClick);
+            host.bar.removeEventListener("contextmenu", onContextMenu);
             document.removeEventListener("selectionchange", onSelection);
         },
     };

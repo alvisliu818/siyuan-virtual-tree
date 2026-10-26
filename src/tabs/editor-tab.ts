@@ -31,6 +31,9 @@ import {registerPythonEditor, unregisterPythonEditor} from "../utils/python-lsp-
 import {resolvePythonInterpreter} from "../utils/python-kernel";
 import {runCommandInTerminal} from "./terminal-tab";
 import {toSystemPath} from "../utils/system-path";
+// 带位置的文件链接(纯文本/代码文件的行号链接,详见 utils/file-ref.ts)
+import {buildFileRefMd, consumePendingRef} from "../utils/file-ref";
+import {copyText} from "../components/file-tree";
 import {isDirectory} from "../utils/path-kind";
 import {revealInFileTree, showFileTreeMenu, findTreeRootEl, buildFileTreeActions} from "../components/file-tree";
 import {dispatchMountTreeEvent} from "../utils/mount-locate";
@@ -381,11 +384,38 @@ export function createEditorTabConfig(plugin: IPluginForTab) {
                         updateDirtyUI(true);
                     });
                     self._disposables!.push(() => sub.dispose());
-                    // 搜索结果跳转
-                    const revealLine = consumePendingReveal(path);
+                    // 搜索结果跳转;链接带来的行号(?line=N)同样走这条
+                    let revealLine = consumePendingReveal(path);
+                    if (revealLine === null) {
+                        const ref = consumePendingRef(path);
+                        if (ref?.line) revealLine = ref.line;
+                    }
                     if (revealLine !== null) {
                         editor.revealLineInCenter(revealLine);
                         editor.setPosition({lineNumber: revealLine, column: 1});
+                    }
+                    // 右键菜单:复制「当前行」的链接(纯文本/代码文件也支持双链定位)
+                    try {
+                        self._disposables!.push(editor.addAction({
+                            id: "syfe.copyLineLink",
+                            label: "复制当前行链接",
+                            contextMenuGroupId: "navigation",
+                            contextMenuOrder: 9,
+                            run: (ed: any) => {
+                                const line = ed?.getPosition?.()?.lineNumber || 1;
+                                const md = buildFileRefMd({path, line, label: `${basename(path)}:${line}`});
+                                if (!md) {
+                                    showMessage("无法生成链接(取不到文件的绝对路径)", 3000, "error");
+                                    return;
+                                }
+                                void copyText(md).then(ok => showMessage(
+                                    ok ? "行链接已复制,粘贴到思源文档点击可定位" : "复制失败",
+                                    2500, ok ? "info" : "error",
+                                ));
+                            },
+                        }).dispose);
+                    } catch {
+                        // 菜单注册失败不影响编辑
                     }
                 } catch (e) {
                     container.innerHTML = `<div class="syfe-editor__error">加载失败: ${escapeHTML(String(e))}</div>`;

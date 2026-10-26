@@ -824,14 +824,55 @@ button.syfe-editor__arrow--exp:hover {
     }
 }
 
+// ===== Markdown 渲染态行号槽(实时预览 / 阅读)=====
+// 槽位绝对定位在 .vditor-reset 内部,随内容一起滚动;
+// 行号与块的对应关系见 editor/md-line-gutter.ts(块首行 = 槽位数字)
+.syfe-md__content--reading,
+.syfe-md__content {
+    .vditor-reset.syfe-md__gutter-on {
+        position: relative;
+        // 给槽位让位(槽宽 44px + 原有 24px 内边距)
+        padding-left: 68px !important;
+    }
+}
+
+.syfe-md__linenums {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 48px;
+    box-sizing: border-box;
+    padding-right: 10px;
+    text-align: right;
+    font-family: var(--b3-font-family-code);
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--b3-theme-on-surface);
+    opacity: 0.5;
+    user-select: none;
+    pointer-events: none;   // 容器不挡正文;行号行单独放开
+}
+
+.syfe-md__linenum {
+    position: absolute;
+    right: 10px;
+    white-space: nowrap;
+    cursor: pointer;
+    pointer-events: auto;
+
+    &:hover {
+        color: var(--b3-theme-primary);
+        opacity: 1;
+    }
+}
+
 .syfe-md__missing {
     flex-shrink: 0;
     padding: 6px 12px;
     font-size: 12px;
     color: var(--b3-theme-on-surface);
     background: var(--b3-theme-surface);
-    border-bottom: 1px solid var(--b3-theme-warning);
-}
+    border-bottom: 1px solid var(--b3-theme-warning);}
 
 .syfe-editor {
     display: flex;
@@ -2400,6 +2441,65 @@ button.syfe-editor__arrow--exp:hover {
     font-family: var(--b3-font-family-code);
     opacity: 0.75;
     white-space: nowrap;
+}
+
+// ===== 音视频时间戳标记 =====
+// 打点列表放在工具栏与反向链接之间;没有标记时整块不占空间(display:none 由 JS 切换)
+.syfe-media__marks {
+    flex-shrink: 0;
+    max-height: 168px;
+    overflow: auto;
+    padding: 4px 8px;
+    border-bottom: 1px solid var(--b3-border-color);
+    background: var(--b3-theme-surface);
+}
+
+.syfe-media__markstitle {
+    font-size: 12px;
+    opacity: 0.6;
+    padding: 2px 4px;
+}
+
+.syfe-media__mark {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 1px 0;
+
+    &:hover {
+        background: var(--b3-theme-background);
+    }
+}
+
+// 时间点按钮:等宽字体,时间对齐好看
+.syfe-media__marktime {
+    flex-shrink: 0;
+    padding: 2px 6px;
+    font-family: var(--b3-font-family-code);
+    font-variant-numeric: tabular-nums;
+}
+
+// 标签:可双击编辑,占满剩余宽度
+.syfe-media__marklabel {
+    flex: 1;
+    min-width: 0;
+    padding: 2px 4px;
+    font-size: 13px;
+    cursor: text;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.syfe-media__marklabel--empty {
+    opacity: 0.45;
+}
+
+.syfe-media__markinput {
+    flex: 1;
+    min-width: 0;
+    padding: 2px 4px;
+    font-size: 13px;
 }
 
 .syfe-media__viewport {

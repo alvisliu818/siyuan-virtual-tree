@@ -12,12 +12,18 @@ import {createBacklinkPanel, BacklinkPanel} from "../components/backlink-panel";
 import {renderPathSegments, showPathSwitchMenu, enableCrumbScroll} from "../components/path-crumbs";
 import {applyFileTabHeadIconWhenReady} from "../utils/tab-icon";
 import {guardUnsavedClose} from "../utils/close-guard";
-import {showFileTreeMenu, findTreeRootEl, buildFileTreeActions} from "../components/file-tree";
-import {enableHeadingCrumbs, flashHeading, scrollToTopOf, scrollParentOf, type HeadingCrumbsHandle} from "../components/md-heading-crumbs";
+import {showFileTreeMenu, findTreeRootEl, buildFileTreeActions, copyText} from "../components/file-tree";
+import {enableHeadingCrumbs, flashHeading, scrollToTopOf, scrollParentOf, type HeadingCrumbsHandle, type HeadingCrumb} from "../components/md-heading-crumbs";
+// 带位置的文件链接:标题锚点 / 行号(详见 utils/file-ref.ts)
+import {buildFileRefMd, slugifyHeading, consumePendingRef, peekPendingRef, type FileRef} from "../utils/file-ref";
+// 渲染态行号槽(实时预览/阅读),行级定位的块映射也在这里
+import {installMdLineGutter, type MdLineGutterHandle} from "../editor/md-line-gutter";
 import {openFileTab} from "./editor-tab";
 import {wantsSplitOpen, pickTabOutsideActiveWnd} from "./split-open";
 import {showVersionHistory} from "../version-control/version-ui";
 import {highlightMatches, clearFindHighlights, setCurrentFindHit} from "../components/markdown-find";
+// 剪贴板增强:阅读/实时预览态可连图一起复制,实时预览/源码态可粘贴图片文件落盘
+import {installMarkdownClipboard, getVditorLute, type MdClipboardHandle} from "../editor/md-clipboard";
 // vditor 与思源共用 window.Lute,且 vditor 那份缺 SetTabs —— 详见 utils/lute-guard 的说明
 import {ensureSiyuanLute} from "../utils/lute-guard";
 
@@ -68,6 +74,12 @@ interface MarkdownTabInstance {
     _blobUrlReverse?: Map<string, string>; // blob URL → 原始 markdown 路径(还原用)
     // 标题面包屑(点某项就地滚动定位;语义同 siyuan-breadcrumb)
     _hcrumbsHandle?: HeadingCrumbsHandle;
+    // 渲染态行号槽(实时预览/阅读),行级链接定位也靠它的块映射
+    _gutterHandle?: MdLineGutterHandle;
+    // 外部(链接点击)让已打开的页签直接定位到某个位置
+    _applyFileRef?: (ref: FileRef) => void;
+    // 剪贴板增强(阅读态连图复制 / 粘贴图片落盘)
+    _clipboard?: MdClipboardHandle;
 }
 
 // Vditor 静态资源目录(webpack 已复制 vditor/dist 到插件目录)
@@ -250,7 +262,10 @@ async function loadBlobUrl(tab: MarkdownTabInstance, resolved: string, raw: stri
 //   IR:      <span data-type="html-inline" class="vditor-ir__node">
 //            <code class="vditor-ir__marker">原标签</code></span>
 function patchLuteDOM2Md(tab: MarkdownTabInstance, vditor: Vditor): void {
-    const lute = (vditor as any).lute;
+    // 注意:Vditor 4 的 lute 挂在 this.vditor.lute(实例内部的 IVditor),顶层 (.lute) 不存在。
+    // 早先直接取 (vditor as any).lute 恒为 undefined,补丁等于没打 —— 表现为复制/导出里
+    // 出现 blob URL。这里用 getVditorLute 兼容两处。
+    const lute = getVditorLute(vditor);
     if (!lute || lute.__syfePatched) return;
 
     // 渲染用的 <img data-syfe-html="..."> → 对应模式的源码节点
@@ -298,6 +313,138 @@ function getVditorValue(tab: MarkdownTabInstance): string {
     return restoreBlobRefs(tab, v);
 }
 
+// ===== 带位置的链接(文件「双链」)=====
+// 复制侧:把「文件 + 当前标题/行号」写成可直接粘进思源的 Markdown 链接;
+// 定位侧:打开时按锚点/行号落到对应位置。链接形态见 utils/file-ref.ts。
+
+// 复制一条 Markdown 链接
+function copyLinkMd(md: string, okMsg: string): void {
+    if (!md) {
+        showMessage("无法生成链接(取不到文件的绝对路径)", 3000, "error");
+        return;
+    }
+    void copyText(md).then(
+        ok => showMessage(ok ? okMsg : "复制失败", 2500, ok ? "info" : "error"),
+    );
+}
+
+// 标题元素的纯文本(Vditor ir 模式标题会带源码标记 "# 一级标题")
+function headingTextOf(el: HTMLElement): string {
+    return (el.textContent || "").replace(/^#{1,6}\s*/, "").replace(/\s+/g, " ").trim();
+}
+
+// 在渲染区里按锚点找标题:slug 精确 → 原文 → slug 包含(兼容别的工具写的锚点)
+function findHeadingByAnchor(content: HTMLElement | undefined, anchor: string): HTMLElement | null {
+    if (!content || !anchor) return null;
+    const heads = Array.from(content.querySelectorAll("h1,h2,h3,h4,h5,h6")) as HTMLElement[];
+    if (heads.length === 0) return null;
+    const want = slugifyHeading(anchor);
+    const text = anchor.trim().toLowerCase();
+    return heads.find(h => slugifyHeading(headingTextOf(h)) === want)
+        || heads.find(h => headingTextOf(h).toLowerCase() === text)
+        || heads.find(h => want.length > 0 && slugifyHeading(headingTextOf(h)).indexOf(want) >= 0)
+        || null;
+}
+
+// 源码文本里按锚点找标题行号(1-based)
+function headingLineOfAnchor(text: string, anchor: string): number | null {
+    if (!text || !anchor) return null;
+    const want = slugifyHeading(anchor);
+    const lines = text.split("\n");
+    let fence: string | null = null;
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const fm = /^\s{0,3}(```|~~~)/.exec(line);
+        if (fm) {
+            fence = fence === null ? fm[1] : (fence === fm[1] ? null : fence);
+            continue;
+        }
+        if (fence !== null) continue;
+        const m = /^(#{1,6})\s+(.*)$/.exec(line);
+        if (!m) continue;
+        if (slugifyHeading(m[2]) === want) return i + 1;
+    }
+    return null;
+}
+
+// 把位置应用到已渲染的 Vditor 内容(标题锚点 / 行号)
+function applyRefToVditor(tab: MarkdownTabInstance, ref: FileRef): void {
+    const content = tab._contentEl;
+    if (!content) return;
+    let el: HTMLElement | null = null;
+    if (ref.anchor) el = findHeadingByAnchor(content, ref.anchor);
+    if (!el && ref.line) {
+        // 行号:优先用行号槽的块映射(与槽位上显示的数字同一套规则,链接必然能落回同一处)
+        el = tab._gutterHandle?.lineToBlock(ref.line) ?? null;
+    }
+    if (!el && ref.line) {
+        // 槽位没就绪时的兜底:换算成该行所属的标题再定位(渲染态没有行概念)
+        const text = tab._model?.getValue() ?? "";
+        const lines = text.split("\n");
+        const want = slugifyHeading(lines[Math.max(0, Math.min(lines.length, ref.line) - 1)] || "");
+        el = want ? findHeadingByAnchor(content, want) : null;
+        if (!el) {
+            // 该行正好是标题行时上面能命中;否则退到该行之前最近的标题
+            let best = "";
+            let fence: string | null = null;
+            for (let i = 0; i < Math.min(lines.length, ref.line); i++) {
+                const line = lines[i];
+                const fm = /^\s{0,3}(```|~~~)/.exec(line);
+                if (fm) {
+                    fence = fence === null ? fm[1] : (fence === fm[1] ? null : fence);
+                    continue;
+                }
+                if (fence !== null) continue;
+                const m = /^(#{1,6})\s+(.*)$/.exec(line);
+                if (m) best = m[2].trim();
+            }
+            el = best ? findHeadingByAnchor(content, best) : null;
+        }
+    }
+    if (!el) return;
+    scrollToTopOf(el);
+    flashHeading(el);
+}
+
+// 按当前模式应用位置(源码态走 Monaco 的行定位)
+function applyFileRef(tab: MarkdownTabInstance, ref: FileRef): void {
+    if (tab._mode === "source") {
+        let line = ref.line ?? 0;
+        if (!line && ref.anchor) line = headingLineOfAnchor(tab._model?.getValue() ?? "", ref.anchor) ?? 0;
+        if (line > 0 && tab._editor) {
+            // 刚 createEditor 时视图还没布局完,50ms 的单次 reveal 会静默丢失(实测),
+            // 这里做两次兜底(幂等,重复 reveal 无副作用)
+            const doReveal = (focus: boolean) => {
+                const ed = tab._editor;
+                if (!ed) return;
+                ed.revealLineInCenter(line);
+                ed.setPosition({lineNumber: line, column: 1});
+                if (focus) ed.focus();
+            };
+            setTimeout(() => doReveal(true), 300);
+            setTimeout(() => doReveal(false), 1100);
+        }
+        return;
+    }
+    // 渲染态可能还没渲染完(Vditor 异步),给几拍;
+    // 纯行号链接等行号槽就绪再跳(块映射在槽里),锚点/混合则直接走标题匹配
+    const tryAt = (left: number) => {
+        if (ref.line && !ref.anchor && !tab._gutterHandle) {
+            if (left > 0) {
+                setTimeout(() => tryAt(left - 1), 150);
+                return;
+            }
+        }
+        const el = ref.anchor ? findHeadingByAnchor(tab._contentEl, ref.anchor) : null;
+        if (el || left <= 0 || (ref.line && tab._gutterHandle)) {
+            applyRefToVditor(tab, ref);
+            return;
+        }
+        setTimeout(() => tryAt(left - 1), 150);
+    };
+    tryAt(8);
+}
+
 // 打开 Markdown Tab(同文件去重,聚焦已有 Tab;mode 指定初始模式)
 export function openMarkdownTab(plugin: IPluginForMarkdownTab, rawPath: string, mode?: MarkdownMode, opts?: { position?: "right" | "bottom" }): void {
     // 统一正斜杠:入口(资源管理器/挂载配置/接管/反链)可能带反斜杠。不归一会
@@ -311,9 +458,22 @@ export function openMarkdownTab(plugin: IPluginForMarkdownTab, rawPath: string, 
         // 全在活动分屏(聚焦会盖住文档)且要求分栏 → 落到 openTab 新开分栏
         const elsewhere = wantsSplitOpen(opts) ? pickTabOutsideActiveWnd(matches) : null;
         if (!wantsSplitOpen(opts) || elsewhere) {
-            const tab = ((elsewhere || matches[0]) as any).parent;
+            const inst = (elsewhere || matches[0]) as any;
+            const tab = inst?.parent;
             if (tab?.headElement) {
                 (tab.headElement as HTMLElement).click();
+            }
+            // 链接里带了位置(标题锚点 / 行号)时,复用的页签也要跟着定位。
+            // 页签还在初始化(_mode 未定 / Vditor 未渲染)时**不能**把位置消费掉 ——
+            // 那会让位置凭空消失;留在队列里,由它自己的 after 回调消费。
+            const ref = peekPendingRef(path);
+            if (ref && typeof inst?._applyFileRef === "function" && inst._mode) {
+                consumePendingRef(path);
+                try {
+                    inst._applyFileRef(ref);
+                } catch {
+                    // 定位失败不影响聚焦
+                }
             }
             return;
         }
@@ -433,6 +593,19 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                     }
                 },
                 // 点文档根图标:回到文档顶部,光标也放回去(面包屑随之回到根)
+                // 右键面包屑:复制「能定位到这里」的 Markdown 链接
+                // 源码态用行号(?line=),渲染态用标题锚点(#slug)
+                copyLink: (crumb: HeadingCrumb | null) => {
+                    const p = self._path ?? path;
+                    if (!crumb) {
+                        copyLinkMd(buildFileRefMd({path: p}), "文件链接已复制,可粘贴到思源文档");
+                        return;
+                    }
+                    const ref: FileRef = (self._mode === "source" && crumb.line)
+                        ? {path: p, line: crumb.line, label: crumb.text}
+                        : {path: p, anchor: slugifyHeading(crumb.text), label: crumb.text};
+                    copyLinkMd(buildFileRefMd(ref), "标题链接已复制,粘贴到思源文档点击可定位");
+                },
                 jumpDocStart: () => {
                     const content = self._contentEl;
                     if (!content) return;
@@ -698,13 +871,26 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                 editor.onDidChangeCursorPosition(() => self._hcrumbsHandle?.refresh());
                 // 初次进入源码态也补一次(此时面包屑可能还停留在 Vditor 的旧路径上)
                 self._hcrumbsHandle?.refresh();
-                // 搜索结果跳转
-                const revealLine = reveal !== undefined ? reveal : consumePendingReveal(path);
+                // 搜索结果跳转;没有显式行号时看链接带来的位置(标题锚点在此换算成行)
+                let revealLine = reveal !== undefined ? reveal : consumePendingReveal(path);
+                if (reveal === undefined) {
+                    const ref = consumePendingRef(path);
+                    if (ref) {
+                        revealLine = ref.line
+                            ?? (ref.anchor ? (headingLineOfAnchor(self._model?.getValue() ?? "", ref.anchor) ?? null) : null);
+                    }
+                }
                 if (revealLine !== null) {
-                    setTimeout(() => {
+                    // 刚 createEditor 时视图还没布局完,单次 50ms 的 reveal 会静默丢失(实测),
+                    // 双发兜底(幂等);反向链接跳转与 ?line= 链接都走这里
+                    const doReveal = (focus: boolean) => {
+                        if (self._editor !== editor) return;   // 已切走,别对旧编辑器操作
                         editor.revealLineInCenter(revealLine);
                         editor.setPosition({lineNumber: revealLine, column: 1});
-                    }, 50);
+                        if (focus) editor.focus();
+                    };
+                    setTimeout(() => doReveal(true), 300);
+                    setTimeout(() => doReveal(false), 1100);
                 }
             };
 
@@ -789,6 +975,27 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                         // Vditor 是异步渲染的:面包屑的首次 refresh 跑在它前面时拿不到任何标题,
                         // 渲染完成这里必须补一次,否则刚打开的文档面包屑一直是空的
                         self._hcrumbsHandle?.refresh();
+                        // 链接带来的位置(标题锚点 / 行号):渲染完成才能查得到标题元素。
+                        // 先消费再装槽位,且槽位安装失败不能吞掉定位
+                        const ref = consumePendingRef(path);
+                        try {
+                            self._gutterHandle?.dispose();
+                        } catch {
+                            // 忽略
+                        }
+                        try {
+                            self._gutterHandle = installMdLineGutter({
+                                contentEl: () => self._contentEl ?? null,
+                                source: () => self._model?.getValue() ?? "",
+                                copyLineLink: (line: number) => copyLinkMd(
+                                    buildFileRefMd({path, line, label: `${basename(path)}:${line}`}),
+                                    "行链接已复制,粘贴到思源文档点击可定位",
+                                ),
+                            });
+                        } catch (e) {
+                            console.warn("[syfe-ref] 行号槽安装失败:", e);
+                        }
+                        if (ref) applyFileRef(self, ref);
                     },
                 });
                 self._vditor = vditor;
@@ -867,6 +1074,56 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                 attributeFilter: ["data-theme"],
             });
 
+            // ===== 剪贴板增强 =====
+            // 阅读 / 实时预览态:Vditor 自带的 copy 只写 Markdown、text/html 置空,
+            // 图片跟不过去 —— md-clipboard 在 capture 阶段接管,补写内联了 data URI 的富文本。
+            this._clipboard = installMarkdownClipboard({
+                contentEl: () => self._contentEl,
+                mdPath: () => self._path,
+                mode: () => self._mode ?? "live",
+                vditor: () => self._vditor,
+                insertMarkdown: (md: string) => {
+                    if (self._mode === "live" && self._vditor) {
+                        try {
+                            self._vditor.insertValue(md);
+                            return true;
+                        } catch {
+                            return false;
+                        }
+                    }
+                    if (self._mode === "source" && self._editor && self._model) {
+                        try {
+                            const sel = self._editor.getSelection();
+                            if (!sel) return false;
+                            self._editor.executeEdits("syfe-paste-image", [
+                                {range: sel, text: md, forceMoveMarkers: true},
+                            ]);
+                            self._editor.pushUndoStop();
+                            return true;
+                        } catch {
+                            return false;
+                        }
+                    }
+                    return false;
+                },
+                didEdit: () => {
+                    markDirty(path, true);
+                    updateDirtyUI(true);
+                    self._hcrumbsHandle?.refresh();
+                },
+                refreshImages: () => processImages(self),
+                // 渲染用的 img.src 可能是 blob URL,反查回 md 里写的原始路径
+                rawSrcFor: (img: HTMLImageElement) => {
+                    const src = img.getAttribute("src") || "";
+                    if (!src) return null;
+                    const raw = self._blobUrlReverse?.get(src);
+                    if (raw) return raw;
+                    return /^(https?:|data:|file:)/i.test(src) ? src : null;
+                },
+            });
+            // 供 openMarkdownTab 复用已开页签时直接定位(思源正文点带位置的链接走这里)
+            self._applyFileRef = (ref: FileRef) => applyFileRef(self, ref);
+
             (async () => {
                 try {
                     self._model = await getModel(path);
@@ -942,6 +1199,8 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
         destroy(this: MarkdownTabInstance) {
             destroyVditor(this);
             destroyMonaco(this);
+            this._clipboard?.destroy();
+            this._clipboard = undefined;
             this._hcrumbsHandle?.dispose();
             this._hcrumbsHandle = undefined;
             this._themeObserver?.disconnect();
@@ -981,6 +1240,13 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
 
 // 销毁 Vditor 实例并清空容器
 function destroyVditor(tab: MarkdownTabInstance): void {
+    // 行号槽跟着 Vditor 走(挂在 .vditor-reset 里,destroy 会清空内容)
+    try {
+        tab._gutterHandle?.dispose();
+    } catch {
+        // 忽略
+    }
+    tab._gutterHandle = undefined;
     if (tab._vditor) {
         try {
             tab._vditor.destroy();

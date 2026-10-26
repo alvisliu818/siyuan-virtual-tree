@@ -83,9 +83,11 @@ export function toFileLink(path: string): string | null {
 // 判断 file:// 链接是否需要在 markdown 中用 <...> 包裹
 // 原始路径含 ASCII 空格或 ) ] < > 时会破坏 markdown 链接 (url) 段,需用尖括号包裹
 // (kramdown/CommonMark 标准,<...> 内允许空格与特殊字符,渲染时去掉尖括号)
-function needsAngleBracket(url: string): boolean {
+// 导出给 utils/file-ref.ts 的带位置链接复用(同一套判定,避免两处规则漂移)
+export function urlNeedsAngleBracket(url: string): boolean {
     return /[ )\]<>]/.test(url);
 }
+const needsAngleBracket = urlNeedsAngleBracket;
 
 // 生成 markdown 格式链接:[label](url) 或 [label](<url>)
 // label 取 basename,转义 [ ] \;url 用原始 file:// 链接(思源可点击打开)

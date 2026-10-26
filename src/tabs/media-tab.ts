@@ -13,6 +13,8 @@ import {readBinaryFile, readDir} from "../api/file";
 import {createBacklinkPanel, BacklinkPanel} from "../components/backlink-panel";
 import {copyText} from "../components/file-tree";
 import {toFileLink} from "../utils/system-path";
+import {buildFileRefMd, consumePendingRef, peekPendingRef, type FileRef} from "../utils/file-ref";
+import {loadMarks, upsertMark, removeMark, saveMarks, type MediaMark} from "../utils/media-marks";
 import {openTreeFileWithExternalApp} from "../utils/external-app";
 import {wantsSplitOpen, pickTabOutsideActiveWnd} from "./split-open";
 
@@ -21,6 +23,9 @@ export interface IPluginForMediaTab {
     app: any;
     name: string;
     getOpenedTab(): { [key: string]: any[] };
+    // 时间戳标记持久化(插件存储)
+    loadData(key: string): Promise<any>;
+    saveData(key: string, data: any): Promise<void>;
 }
 
 // 播放器 Tab 实例上附加的字段
@@ -32,6 +37,7 @@ interface MediaTabInstance {
     _objectUrl?: string; // 当前媒体的 blob URL(destroy / 切换时需释放)
     _disposables?: Array<() => void>;
     _backlink?: BacklinkPanel; // 反向链接面板(同目录切换时更新目标)
+    _applyFileRef?: (ref: FileRef) => void; // 外部(链接点击)让已开的页签跳到某个时间点
 }
 
 // 可选倍速(循环切换)
@@ -64,9 +70,20 @@ export function openMediaTab(plugin: IPluginForMediaTab, path: string, opts?: { 
         // 全在活动分屏(聚焦会盖住文档)且要求分栏 → 落到 openTab 新开分栏
         const elsewhere = wantsSplitOpen(opts) ? pickTabOutsideActiveWnd(matches) : null;
         if (!wantsSplitOpen(opts) || elsewhere) {
-            const tab = ((elsewhere || matches[0]) as any).parent;
+            const inst = (elsewhere || matches[0]) as any;
+            const tab = inst?.parent;
             if (tab?.headElement) {
                 (tab.headElement as HTMLElement).click();
+            }
+            // 链接里带了时间点:复用的页签也要跳过去并播放
+            const ref = peekPendingRef(path);
+            if (ref) {
+                consumePendingRef(path);
+                try {
+                    inst?._applyFileRef?.(ref);
+                } catch {
+                    // 定位失败不影响聚焦
+                }
             }
             return;
         }
@@ -166,6 +183,8 @@ interface PlayerDOM {
     stage: HTMLElement;
     prevBtn: HTMLButtonElement;
     nextBtn: HTMLButtonElement;
+    marksEl: HTMLElement;
+    markAddBtn: HTMLButtonElement;
 }
 
 // 构建播放器 DOM,返回关键节点引用
@@ -189,9 +208,11 @@ function buildPlayerDOM(container: HTMLElement): PlayerDOM {
                 <button class="b3-button b3-button--text" data-action="fullscreen" title="全屏 (F)">全屏</button>
                 <span class="syfe-media__sep"></span>
                 <button class="b3-button b3-button--text" data-action="copy" title="复制文件链接 (file://)">复制链接</button>
+                <button class="b3-button b3-button--text syfe-media__mark-add" data-action="mark" title="在当前时间打点 (K)">+ 时间戳</button>
                 <button class="b3-button b3-button--text" data-action="save" title="另存为">另存为</button>
                 <span class="syfe-media__info"></span>
             </div>
+            <div class="syfe-media__marks"></div>
             <div class="syfe-media__backlink"></div>
             <div class="syfe-media__viewport">
                 <div class="syfe-media__stage"><div class="syfe-media__hint">加载中...</div></div>
@@ -211,6 +232,8 @@ function buildPlayerDOM(container: HTMLElement): PlayerDOM {
         stage: container.querySelector(".syfe-media__stage") as HTMLElement,
         prevBtn: container.querySelector('[data-action="prev"]') as HTMLButtonElement,
         nextBtn: container.querySelector('[data-action="next"]') as HTMLButtonElement,
+        marksEl: container.querySelector(".syfe-media__marks") as HTMLElement,
+        markAddBtn: container.querySelector('[data-action="mark"]') as HTMLButtonElement,
     };
 }
 
@@ -321,6 +344,14 @@ function createPlayer(dom: PlayerDOM, plugin: IPluginForMediaTab, tab: MediaTabI
         byteLength = 0;
         updateInfo();
         void loadSiblings(target);
+        // 时间戳标记随文件切换(异步读存储,不挡加载)
+        marks = [];
+        renderMarks();
+        void loadMarks(plugin, target).then(list => {
+            if (loadSeq !== loadEpoch) return;
+            marks = list;
+            renderMarks();
+        });
 
         // 先释放上一个文件,避免多个大文件同时驻留内存
         releaseObjectUrl(tab);
@@ -375,6 +406,18 @@ function createPlayer(dom: PlayerDOM, plugin: IPluginForMediaTab, tab: MediaTabI
                 void openExternal(target);
             });
         });
+
+        // 链接带来的时间点(思源文档里点 ?t= 的链接):元数据就绪后跳过去并播放
+        const pendingRef = peekPendingRef(target);
+        if (pendingRef?.t !== undefined) {
+            consumePendingRef(target);
+            const t0 = pendingRef.t as number;
+            media.addEventListener("loadedmetadata", () => {
+                if (loadSeq !== loadEpoch) return;
+                seekTo(t0, true);
+                showMessage(`已跳转到 ${formatDuration(t0)}`, 2500, "info");
+            }, {once: true});
+        }
 
         media.src = url;
         dom.stage.innerHTML = "";
@@ -496,6 +539,157 @@ function createPlayer(dom: PlayerDOM, plugin: IPluginForMediaTab, tab: MediaTabI
         showMessage(ok ? "已复制文件链接" : "复制失败", 2000, ok ? "info" : "error");
     }
 
+    // ---- 时间戳标记 ----
+    // 给当前时间点打点、写标签;点击跳回去播放;复制成 Markdown 链接粘进思源,
+    // 在思源里点链接会打开本文件并从这个时间点开始播(见 utils/file-ref.ts 的 ?t=)
+    let marks: MediaMark[] = [];
+
+    function marksRow(m: MediaMark): HTMLElement {
+        const row = document.createElement("div");
+        row.className = "syfe-media__mark";
+        row.dataset.t = String(m.t);
+        row.innerHTML =
+            `<button class="b3-button b3-button--text syfe-media__marktime" data-act="goto" title="跳到这里并播放">${formatDuration(m.t)}</button>` +
+            `<span class="syfe-media__marklabel${m.label ? "" : " syfe-media__marklabel--empty"}" data-act="edit" ` +
+            `title="双击改标签">${m.label ? escapeHTML(m.label) : "(未命名)"}</span>` +
+            `<button class="b3-button b3-button--text" data-act="copy" title="复制这个时间点的 Markdown 链接">⧉</button>` +
+            `<button class="b3-button b3-button--text" data-act="del" title="删除这个时间戳">×</button>`;
+        return row;
+    }
+
+    function renderMarks(): void {
+        if (marks.length === 0) {
+            dom.marksEl.innerHTML = "";
+            dom.marksEl.style.display = "none";
+            return;
+        }
+        dom.marksEl.style.display = "";
+        dom.marksEl.innerHTML = `<div class="syfe-media__markstitle">时间戳 (${marks.length})</div>`;
+        for (const m of marks) dom.marksEl.appendChild(marksRow(m));
+    }
+
+    const findMark = (t: number): MediaMark | undefined =>
+        marks.find(m => Math.abs(m.t - t) < 0.05);
+
+    async function addMarkAt(t: number): Promise<void> {
+        const media = currentMedia();
+        if (!media) return;
+        const at = isFinite(media.duration) ? Math.min(t, media.duration) : t;
+        marks = await upsertMark(plugin, path, {t: at, label: ""});
+        renderMarks();
+        // 打完点直接进入标签编辑,省一步
+        const row = Array.from(dom.marksEl.querySelectorAll<HTMLElement>(".syfe-media__mark"))
+            .find(el => Math.abs(Number(el.dataset.t) - at) < 0.05);
+        if (row) startEditLabel(row, at);
+    }
+
+    function startEditLabel(row: HTMLElement, t: number): void {
+        const span = row.querySelector(".syfe-media__marklabel") as HTMLElement | null;
+        if (!span) return;
+        const input = document.createElement("input");
+        input.className = "b3-text-field syfe-media__markinput";
+        input.value = findMark(t)?.label || "";
+        input.placeholder = "标签(可留空)";
+        span.replaceWith(input);
+        input.focus();
+        input.select();
+        let done = false;
+        const commit = () => {
+            if (done) return;
+            done = true;
+            const v = input.value.trim();
+            void saveMarks(plugin, path, marks.map(m => Math.abs(m.t - t) < 0.05 ? {t: m.t, label: v} : m))
+                .then(list => {
+                    marks = list;
+                    renderMarks();
+                });
+        };
+        input.addEventListener("keydown", (e: KeyboardEvent) => {
+            e.stopPropagation();   // 别让播放器快捷键(空格/K 等)吃掉输入
+            if (e.key === "Enter") {
+                e.preventDefault();
+                commit();
+            } else if (e.key === "Escape") {
+                e.preventDefault();
+                done = true;
+                renderMarks();
+            }
+        });
+        input.addEventListener("blur", commit);
+    }
+
+    /** 跳到时间点;play=true 时顺带开始播放 */
+    function seekTo(t: number, play: boolean): void {
+        const media = currentMedia();
+        if (!media) return;
+        const target = Math.max(0, isFinite(media.duration) ? Math.min(t, media.duration) : t);
+        try {
+            media.currentTime = target;
+        } catch {
+            // 元数据没加载完时赋值会抛,交给调用方等 loadedmetadata
+            return;
+        }
+        if (play) {
+            void media.play().catch(() => showMessage("播放失败", 3000, "error"));
+        }
+    }
+
+    /** 应用链接带来的时间点(可能元数据还没加载完) */
+    function applyRefT(ref: FileRef): void {
+        if (!ref || ref.t === undefined) return;
+        const media = currentMedia();
+        if (!media) return;
+        const t = ref.t as number;
+        const go = () => {
+            seekTo(t, true);
+            showMessage(`已跳转到 ${formatDuration(t)}`, 2500, "info");
+        };
+        if (media.readyState >= 1) go();
+        else media.addEventListener("loadedmetadata", go, {once: true});
+    }
+
+    async function copyMarkLink(m: MediaMark): Promise<void> {
+        const base = basename(path);
+        const label = m.label ? `${base} ${formatDuration(m.t)} ${m.label}` : `${base} ${formatDuration(m.t)}`;
+        const md = buildFileRefMd({path, t: m.t, label});
+        const ok = await copyText(md);
+        showMessage(
+            ok ? "时间戳链接已复制,粘贴到思源文档点击可跳转播放" : "复制失败",
+            3000, ok ? "info" : "error",
+        );
+    }
+
+    const onMarksClick = (e: MouseEvent) => {
+        const el = (e.target as HTMLElement).closest("[data-act]") as HTMLElement | null;
+        if (!el || el.dataset.act === "edit") return;   // 标签靠双击编辑
+        const row = el.closest(".syfe-media__mark") as HTMLElement | null;
+        const t = Number(row?.dataset.t);
+        if (!isFinite(t)) return;
+        switch (el.dataset.act) {
+            case "goto":
+                seekTo(t, true);
+                break;
+            case "copy":
+                void copyMarkLink(findMark(t) || {t, label: ""});
+                break;
+            case "del":
+                void removeMark(plugin, path, t).then(list => {
+                    marks = list;
+                    renderMarks();
+                });
+                break;
+        }
+    };
+
+    const onMarksDblClick = (e: MouseEvent) => {
+        const span = (e.target as HTMLElement).closest("[data-act='edit']") as HTMLElement | null;
+        if (!span) return;
+        const row = span.closest(".syfe-media__mark") as HTMLElement | null;
+        const t = Number(row?.dataset.t);
+        if (!isFinite(t) || !row) return;
+        startEditLabel(row, t);
+    };
+
     // ---- 交互:工具栏 ----
     const onToolbarClick = (e: MouseEvent) => {
         const el = (e.target as HTMLElement).closest("[data-action]") as HTMLElement | null;
@@ -521,6 +715,9 @@ function createPlayer(dom: PlayerDOM, plugin: IPluginForMediaTab, tab: MediaTabI
                 break;
             case "copy":
                 void copyLink();
+                break;
+            case "mark":
+                void addMarkAt(currentMedia()?.currentTime ?? 0);
                 break;
             case "save":
                 saveAs();
@@ -580,19 +777,30 @@ function createPlayer(dom: PlayerDOM, plugin: IPluginForMediaTab, tab: MediaTabI
             case ">":
                 if (siblingIndex >= 0 && siblingIndex < siblings.length - 1) goto(siblingIndex + 1);
                 break;
+            case "k":
+            case "K":
+                // 打点当前时间(与工具栏「+ 时间戳」同义)
+                void addMarkAt(currentMedia()?.currentTime ?? 0);
+                break;
             default:
                 return;
         }
     };
 
     dom.toolbar.addEventListener("click", onToolbarClick);
+    dom.marksEl.addEventListener("click", onMarksClick);
+    dom.marksEl.addEventListener("dblclick", onMarksDblClick);
     document.addEventListener("keydown", onKeyDown);
+    // 供外部(思源正文里点时间戳链接)让已开的页签跳到指定时间
+    tab._applyFileRef = (ref: FileRef) => applyRefT(ref);
 
     return {
         load,
         dispose() {
             document.removeEventListener("keydown", onKeyDown);
             dom.toolbar.removeEventListener("click", onToolbarClick);
+            dom.marksEl.removeEventListener("click", onMarksClick);
+            dom.marksEl.removeEventListener("dblclick", onMarksDblClick);
         },
     };
 }

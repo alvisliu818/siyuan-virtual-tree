@@ -1,8 +1,11 @@
 import * as monaco from "monaco-editor";
-import {extname} from "../utils/path";
+import {Menu, showMessage} from "siyuan";
+import {extname, basename} from "../utils/path";
 import {EditorConfig} from "../types";
 import {getActiveThemeName} from "../extensions/theme-loader";
 import {buildEditorOptions} from "../settings/user-settings";
+// 带行号的文件链接(Markdown 源码态与代码文件的「复制当前行链接」共用)
+import {buildFileRefMd} from "../utils/file-ref";
 
 let initialized = false;
 
@@ -271,12 +274,96 @@ export function createEditor(
     };
     window.addEventListener('keydown', keydownHandler, true);
 
+    // ===== 行号右键:复制「当前行」的 Markdown 链接 =====
+    // Markdown 源码态与代码文件共用 createEditor,这里做一次两边都生效。
+    // 行号取值优先级:右键按下时 Monaco 报告的 gutter 行(精确,任何行号显示模式都对)
+    // > 行号 DOM 里的数字(on/interval 模式可解析)> 光标所在行。
+    let lastGutterLine: number | null = null;
+    const GUTTER_TYPES = [
+        monaco.editor.MouseTargetType.GUTTER_LINE_NUMBERS,
+        monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN,
+        monaco.editor.MouseTargetType.GUTTER_LINE_DECORATIONS,
+    ];
+    editor.onMouseDown((e) => {
+        if (!(e.event as any).rightButton) return;
+        if (GUTTER_TYPES.indexOf(e.target.type) >= 0) {
+            lastGutterLine = e.target.position?.lineNumber ?? null;
+        }
+    });
+    const gutterEl = editor.getDomNode()?.querySelector(".margin-view-overlays") as HTMLElement | null;
+    if (gutterEl) {
+        // 必须在 capture 阶段拦:Monaco 自己的 contextmenu 处理器会把编辑器右键菜单弹出来。
+        // 行号取值:右键按下时 Monaco 报告的 gutter 行(精确)> 命中的 .line-numbers 数字
+        // (relative/interval 模式下数字不是绝对行号,仅作兜底)> 光标所在行
+        gutterEl.addEventListener("contextmenu", (e: MouseEvent) => {
+            e.preventDefault();
+            e.stopPropagation();
+            let line = lastGutterLine ?? 0;
+            if (!line) {
+                // 按纵坐标命中行号元素(不依赖行号的文本内容,任何显示模式都准)
+                for (const el of Array.from(gutterEl.querySelectorAll(".line-numbers")) as HTMLElement[]) {
+                    const r = el.getBoundingClientRect();
+                    if (e.clientY >= r.top && e.clientY <= r.bottom) {
+                        const parsed = parseInt(el.textContent || "", 10);
+                        if (isFinite(parsed) && parsed > 0) line = parsed;
+                        break;
+                    }
+                }
+            }
+            if (!line) line = editor.getPosition()?.lineNumber ?? 1;
+            const menu = new Menu();
+            menu.addItem({
+                icon: "iconLink",
+                label: `复制第 ${line} 行链接`,
+                click: () => {
+                    const md = buildFileRefMd({path, line, label: `${basename(path)}:${line}`});
+                    if (!md) {
+                        showMessage("无法生成链接(取不到文件的绝对路径)", 3000, "error");
+                        return;
+                    }
+                    void copyToClipboard(md).then(ok => showMessage(
+                        ok ? "行链接已复制,粘贴到思源文档点击可定位" : "复制失败",
+                        2500, ok ? "info" : "error",
+                    ));
+                },
+            });
+            menu.open({x: e.clientX, y: e.clientY});
+        }, true);
+    }
+
     // 编辑器销毁时移除监听器,避免内存泄漏
     editor.onDidDispose(() => {
         window.removeEventListener('keydown', keydownHandler, true);
     });
 
     return editor;
+}
+
+// 本模块专用的剪贴板写入(带 execCommand 降级)。
+// 刻意不引 components/file-tree 的 copyText:那会形成 monaco → file-tree → editor-tab → monaco 的环,
+// 环本身能跑,但没必要为 10 行工具代码背上初始化顺序风险。
+async function copyToClipboard(text: string): Promise<boolean> {
+    try {
+        if (navigator.clipboard?.writeText) {
+            await navigator.clipboard.writeText(text);
+            return true;
+        }
+    } catch {
+        // 继续走降级
+    }
+    try {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        const ok = document.execCommand("copy");
+        ta.remove();
+        return ok;
+    } catch {
+        return false;
+    }
 }
 
 // 全局清理(onunload 时调用)
