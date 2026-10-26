@@ -1353,7 +1353,8 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
 
             // 块行的图标/名称/预览/悬浮提示,统一由这里决定(块子行与挂载块根行共用):
             // - 单图段落(思源没有独立图片块,整段仅一图):图标用虚拟文档树的图片文件图标
-            //   (与文件树里图片文件一致),行内等比缩略图,名称显示图片标题(次行显示提示文本 alt);
+            //   (与文件树里图片文件一致);右键可切「显示标题 / 显示缩放图」,只出一者:
+            //   标题模式显示 标题→提示文本(都没有退块 id),缩放图模式只出等比缩略图,不图文并排;
             // - 表格:块标图标(iconTable),行内等比缩放预览,名称显示块命名(没有就不显示文字);
             // - 其余块:块标(gutter)图标 —— 标题按层级 iconH1-H6、列表按有序/无序/任务细分,
             //   挂载标题块与下面的子标题都各用对应层级的图标;名称显示文本标题。
@@ -1375,10 +1376,11 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                             sub: "", tip, preview: "",
                         };
                     }
+                    // 缩放图模式:只出缩略图,行名留空(用户要求不图文并排)。
+                    // 标题/提示文本/块 id 都在悬浮 tip 里;菜单标签走 blockMenuName,不受影响
                     return {
                         icon: fileIconHTML(basename(img.src)),
-                        // 缩放图模式:缩略图 + 标题或提示文字,都没有就块 id(避免行看起来是空的)
-                        name: img.title || img.alt || blockId,
+                        name: "",
                         sub: "", tip,
                         preview: `<span class="syfe-mtree__preview"><img loading="lazy" src="/${encodeURI(img.src)}" alt="${escapeHTML(img.title || img.alt || "")}"></span>`,
                     };
