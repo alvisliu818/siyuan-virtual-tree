@@ -8,16 +8,18 @@ import {getModel, saveModel, markDirty, isDirty, consumePendingReveal} from "../
 import {readBinaryFile} from "../api/file";
 import {nativeStat} from "../api/native-fs";
 import {isBaiduPath} from "../utils/baidu-path";
-import {createBacklinkPanel, BacklinkPanel} from "../components/backlink-panel";
+import {createBacklinkPanel, navigateBacklink, BacklinkPanel} from "../components/backlink-panel";
 import {renderPathSegments, showPathSwitchMenu, enableCrumbScroll} from "../components/path-crumbs";
 import {applyFileTabHeadIconWhenReady} from "../utils/tab-icon";
 import {guardUnsavedClose} from "../utils/close-guard";
 import {showFileTreeMenu, findTreeRootEl, buildFileTreeActions, copyText} from "../components/file-tree";
 import {enableHeadingCrumbs, flashHeading, scrollToTopOf, scrollParentOf, type HeadingCrumbsHandle, type HeadingCrumb} from "../components/md-heading-crumbs";
 // 带位置的文件链接:标题锚点 / 行号(详见 utils/file-ref.ts)
-import {buildFileRefMd, slugifyHeading, consumePendingRef, peekPendingRef, type FileRef} from "../utils/file-ref";
+import {buildFileRefMd, slugifyHeading, headingLineOfAnchor, consumePendingRef, peekPendingRef, type FileRef} from "../utils/file-ref";
 // 渲染态行号槽(实时预览/阅读),行级定位的块映射也在这里
-import {installMdLineGutter, type MdLineGutterHandle} from "../editor/md-line-gutter";
+import {installMdLineGutter, mdBlockStarts, type MdLineGutterHandle} from "../editor/md-line-gutter";
+// 反链:面板展示 + 行号槽标记共用同一份扫描结果(带缓存)
+import {BacklinkItem, findBacklinksCached} from "../utils/backlink";
 import {openFileTab} from "./editor-tab";
 import {wantsSplitOpen, pickTabOutsideActiveWnd} from "./split-open";
 import {showVersionHistory} from "../version-control/version-ui";
@@ -62,6 +64,7 @@ interface MarkdownTabInstance {
     _themeObserver?: MutationObserver;
     _keydownHandler?: (e: KeyboardEvent) => void;
     _backlink?: BacklinkPanel;
+    _backlinkRefreshHandler?: (e: Event) => void;
     // ===== 文档内查找(渲染态)状态 =====
     _findHits?: HTMLElement[];   // 当前所有命中元素(按文档顺序)
     _findIndex?: number;         // 当前项下标,-1 = 无命中
@@ -76,6 +79,8 @@ interface MarkdownTabInstance {
     _hcrumbsHandle?: HeadingCrumbsHandle;
     // 渲染态行号槽(实时预览/阅读),行级链接定位也靠它的块映射
     _gutterHandle?: MdLineGutterHandle;
+    // 本文件的反链条目(行号槽标记数据源;引用面板独立自扫但共用缓存)
+    _backlinkItems?: BacklinkItem[];
     // 外部(链接点击)让已打开的页签直接定位到某个位置
     _applyFileRef?: (ref: FileRef) => void;
     // 剪贴板增强(阅读态连图复制 / 粘贴图片落盘)
@@ -346,25 +351,49 @@ function findHeadingByAnchor(content: HTMLElement | undefined, anchor: string): 
         || null;
 }
 
-// 源码文本里按锚点找标题行号(1-based)
-function headingLineOfAnchor(text: string, anchor: string): number | null {
-    if (!text || !anchor) return null;
-    const want = slugifyHeading(anchor);
-    const lines = text.split("\n");
-    let fence: string | null = null;
-    for (let i = 0; i < lines.length; i++) {
-        const line = lines[i];
-        const fm = /^\s{0,3}(```|~~~)/.exec(line);
-        if (fm) {
-            fence = fence === null ? fm[1] : (fence === fm[1] ? null : fence);
-            continue;
+// ===== 行号槽上的反链标记 =====
+// 把反链条目按「指向本文件的位置」分组推给行号槽:
+// ?line=N(蓝)/ #锚点(紫,数据层已解析成标题行)落在同一行时紫优先显示,
+// 条目本身不带行(纯文件级链接)不上标记,但引用面板的计数里包含它们。
+function pushBacklinkMarkers(tab: MarkdownTabInstance, path: string): void {
+    const items = tab._backlinkItems;
+    const handle = tab._gutterHandle;
+    if (!items || !handle) return;
+    const source = tab._model?.getValue() ?? "";
+    const starts = mdBlockStarts(source);
+    // 行号 → 所属渲染块的首行(槽位行号是块首行,指向块中间的行要归到块首)
+    const blockStartOf = (line: number): number => {
+        let hit = 0;
+        for (let i = 0; i < starts.length; i++) {
+            if (starts[i] + 1 <= line) hit = starts[i] + 1;
+            else break;
         }
-        if (fence !== null) continue;
-        const m = /^(#{1,6})\s+(.*)$/.exec(line);
-        if (!m) continue;
-        if (slugifyHeading(m[2]) === want) return i + 1;
+        return hit;
+    };
+    const lineLinks = new Map<number, BacklinkItem[]>();
+    const anchorLinks = new Map<number, BacklinkItem[]>();
+    for (const it of items) {
+        if (!it.targetLine) continue; // 没有行号可落(纯文件链接 / 锚点未解析)不上标记
+        const start = blockStartOf(it.targetLine);
+        if (!start) continue;
+        const map = it.targetAnchor ? anchorLinks : lineLinks;
+        const arr = map.get(start);
+        if (arr) arr.push(it);
+        else map.set(start, [it]);
     }
-    return null;
+    handle.setBacklinkMarkers({lineLinks, anchorLinks});
+}
+
+// 加载反链(带缓存)并推到行号槽;数据晚于内容就绪也没关系,handle.set 会自己重画
+function applyBacklinkMarkers(tab: MarkdownTabInstance, path: string): void {
+    void (async () => {
+        try {
+            tab._backlinkItems = await findBacklinksCached(path);
+        } catch {
+            return;
+        }
+        pushBacklinkMarkers(tab, path);
+    })();
 }
 
 // 把位置应用到已渲染的 Vditor 内容(标题锚点 / 行号)
@@ -991,10 +1020,13 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                                     buildFileRefMd({path, line, label: `${basename(path)}:${line}`}),
                                     "行链接已复制,粘贴到思源文档点击可定位",
                                 ),
+                                openBacklinkItem: (item: BacklinkItem) => navigateBacklink(plugin as any, item),
                             });
                         } catch (e) {
                             console.warn("[syfe-ref] 行号槽安装失败:", e);
                         }
+                        // 行号槽上铺反链标记(缓存扫描,数据到位后 handle 自行重画)
+                        applyBacklinkMarkers(self, path);
                         if (ref) applyFileRef(self, ref);
                     },
                 });
@@ -1073,6 +1105,23 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                 attributes: true,
                 attributeFilter: ["data-theme"],
             });
+
+            // ===== 反链刷新联动 =====
+            // 斜杆命令插入指向本文件的链接后,面板会广播 syfe:backlink-refresh;
+            // 这里同步更新行号槽上的反链标记(强制绕缓存重扫)。
+            this._backlinkRefreshHandler = (e: Event) => {
+                const p = (e as CustomEvent)?.detail?.path;
+                if (p !== self._path) return;
+                void (async () => {
+                    try {
+                        self._backlinkItems = await findBacklinksCached(self._path!, {force: true});
+                    } catch {
+                        return;
+                    }
+                    pushBacklinkMarkers(self, self._path!);
+                })();
+            };
+            window.addEventListener("syfe:backlink-refresh", this._backlinkRefreshHandler);
 
             // ===== 剪贴板增强 =====
             // 阅读 / 实时预览态:Vditor 自带的 copy 只写 Markdown、text/html 置空,
@@ -1207,6 +1256,10 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
             this._themeObserver = undefined;
             this._backlink?.dispose();
             this._backlink = undefined;
+            if (this._backlinkRefreshHandler) {
+                window.removeEventListener("syfe:backlink-refresh", this._backlinkRefreshHandler);
+                this._backlinkRefreshHandler = undefined;
+            }
             // 图片本地化渲染清理:断开观察器并释放所有 blob URL
             if (this._imgDebounce) {
                 window.clearTimeout(this._imgDebounce);

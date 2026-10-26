@@ -2,9 +2,12 @@
 // 给定任意文件,查找引用它的位置,两类来源:
 // 1. 思源笔记文档(内核 SQL 查询 blocks 表,匹配 assets/ 等文件引用)
 // 2. 文件树挂载根下的 Markdown 文件(相对链接 ![..](../img.png)、<img src=..> 等)
+// 链接可以带位置(?line=N 行号 / #锚点 标题 / ?t= 音视频时间),位置不参与匹配,
+// 但会记进条目(targetLine/targetAnchor/targetTime),面板与行号槽据此上色定位。
 import {readDir, readTextFile, querySQL} from "../api/file";
 import {basename, dirname, joinPath, sepFor, isSiyuanPath} from "./path";
 import {isBaiduPath} from "./baidu-path";
+import {headingLineOfAnchor, parseFileRef} from "./file-ref";
 
 // 反向链接条目
 export interface BacklinkItem {
@@ -12,9 +15,13 @@ export interface BacklinkItem {
     sourcePath: string;             // md-file: 引用文件绝对路径;siyuan-doc: 文档 root_id
     title: string;                  // 显示名:md 文件名 / 思源文档标题
     docPath?: string;               // siyuan-doc: 文档 hpath(如 /课程/Linux/day02)
-    lineNo?: number;                // md-file: 引用所在行号
+    lineNo?: number;                // md-file: 引用所在行号(引用来源文件里的行)
     snippet?: string;               // 引用上下文(单行截断)
     blockId?: string;               // siyuan-doc: 块 ID(siyuan://blocks/ 跳转定位)
+    // ===== 链接指向目标文件的位置(可选)=====
+    targetLine?: number;            // 链接指向的行号(?line=N;锚点会先解析成标题行)
+    targetAnchor?: string;          // 链接指向的标题锚点(#slug 原文)
+    targetTime?: number;            // 音视频时间点(?t= / #t=,秒)
 }
 
 // ===== 通用工具 =====
@@ -22,6 +29,15 @@ export interface BacklinkItem {
 // 路径归一化:统一分隔符/去尾斜杠/忽略大小写,用于比较
 function normPath(p: string): string {
     return p.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+}
+
+// 剥掉引用末尾的位置后缀(?line= ?t= #锚点 / #t=),只留路径本体参与匹配。
+// 带位置的链接此前整串进匹配,`demo.mp4?t=12.5` 对不上 `demo.mp4`,
+// 这正是视频/行号/锚点反链全部查不到的根因。
+function splitPosSuffix(raw: string): string {
+    const s = String(raw || "");
+    const cut = s.search(/[?#]/);
+    return cut >= 0 ? s.slice(0, cut) : s;
 }
 
 // 将引用地址解析为绝对路径;返回 null 表示不是文件引用(网络/内联等)
@@ -77,7 +93,7 @@ function resolveRef(baseDir: string, rawRef: string): string | null {
 //    (Obsidian/思源 wikilink 的 ../ 基准在文件被移动或跨库后会失效,后缀匹配兜底)
 function refMatches(ref: ExtractedRef, target: string): boolean {
     if (normPath(ref.target) === target) return true;
-    const raw = ref.raw || "";
+    const raw = ref.rawPath || "";
     // 绝对路径引用只走精确匹配(后缀匹配过于宽松)
     if (!raw || /^[A-Za-z]:[\\/]/.test(raw) || raw.startsWith("\\\\") || raw.startsWith("/")) return false;
     let dec = raw;
@@ -96,15 +112,20 @@ function refMatches(ref: ExtractedRef, target: string): boolean {
 
 // 引用提取结果
 interface ExtractedRef {
-    target: string; // 解析后的绝对路径(未归一化)
-    raw: string;    // 原始引用路径(后缀匹配用)
+    target: string;   // 解析后的绝对路径(未归一化;已剥位置后缀)
+    rawPath: string;  // 原始引用路径(剥 ?query/#锚点 后,后缀匹配用)
     lineNo: number;
-    line: string;   // 引用所在行文本
+    line: string;     // 引用所在行文本
+    posLine?: number;   // 链接指向的行号(?line=N)
+    posAnchor?: string; // 链接指向的标题锚点(#slug / [[x#锚点]])
+    posTime?: number;   // 音视频时间点(?t= / #t=,秒)
 }
 
-// Markdown 链接 ![](x) / [](x)
-const MD_LINK_RE = /(!?)\[[^\]\n]*\]\(\s*<?([^)<>\s]+)(?:\s+"[^"]*")?\s*\)/g;
-// Obsidian/思源 wikilink [[path|alias]] / ![[path]]
+// Markdown 链接 ![](x) / [](x)。url 支持两种形态:
+//   (url) —— url 不含空白/尖括号;(url 里可以带 ?line= ?t= 等位置参数)
+//   (<url>) —— url 含空格时用尖括号包裹(内含空白也整段捕获)
+const MD_LINK_RE = /(!?)\[[^\]\n]*\]\(\s*(?:<([^()<>\n]*)>|([^()<>\s]+))(?:\s+"[^"]*")?\s*\)/g;
+// Obsidian/思源 wikilink [[path|alias]] / ![[path]] / [[path#锚点]]
 const WIKILINK_RE = /!?\[\[([^\]|]+)(?:\|[^\]]*)?\]\]/g;
 // HTML 标签属性 src= / href=
 const ATTR_RE = /\b(?:src|href)\s*=\s*["']([^"']+)["']/g;
@@ -113,20 +134,31 @@ const ATTR_RE = /\b(?:src|href)\s*=\s*["']([^"']+)["']/g;
 function extractRefs(baseDir: string, content: string): ExtractedRef[] {
     const refs: ExtractedRef[] = [];
     const take = (matchIndex: number, raw: string) => {
-        const target = resolveRef(baseDir, raw);
+        const core = splitPosSuffix(raw);
+        const target = resolveRef(baseDir, core);
         if (!target) return;
+        // 链接里的位置参数(?line= / #锚点 / ?t=):不影响匹配,记下来给 UI 定位
+        const pos = parseFileRef(raw);
         // 行号与所在行文本
         const before = content.slice(0, matchIndex);
         const lineNo = before.split("\n").length;
         const lineStart = before.lastIndexOf("\n") + 1;
         const lineEnd = content.indexOf("\n", matchIndex);
         const lineText = content.slice(lineStart, lineEnd === -1 ? content.length : lineEnd).trim();
-        refs.push({target, raw, lineNo, line: lineText.length > 160 ? lineText.slice(0, 160) + "…" : lineText});
+        refs.push({
+            target,
+            rawPath: core,
+            lineNo,
+            line: lineText.length > 160 ? lineText.slice(0, 160) + "…" : lineText,
+            posLine: pos?.line,
+            posAnchor: pos?.anchor,
+            posTime: pos?.t,
+        });
     };
     let m: RegExpExecArray | null;
     MD_LINK_RE.lastIndex = 0;
     while ((m = MD_LINK_RE.exec(content)) !== null) {
-        take(m.index, m[2]);
+        take(m.index, m[2] !== undefined ? m[2] : m[3]);
     }
     WIKILINK_RE.lastIndex = 0;
     while ((m = WIKILINK_RE.exec(content)) !== null) {
@@ -142,16 +174,16 @@ function extractRefs(baseDir: string, content: string): ExtractedRef[] {
 // ===== 来源 1:思源笔记文档引用 =====
 
 // 按谓词查询思源文档中的引用位置(A. 块内容 markdown 列 + B. 块属性 attributes 表):
-// likeName 用于 SQL LIKE 粗筛(名字的转义文本),match 决定提取出的引用是否命中目标;
+// likeNames 为 LIKE 粗筛候选(明文 + 编码变体,已转义),match 决定提取出的引用是否命中目标;
 // 同一块出现在多个来源时按块 ID 去重。
 async function findSiyuanDocRefsWhere(
-    likeName: string,
+    likeNames: string[],
     match: (refs: ExtractedRef[]) => boolean,
 ): Promise<BacklinkItem[]> {
     const items: BacklinkItem[] = [];
     const seen = new Set<string>(); // 同一块出现在多个来源时去重
 
-    const pushItem = (blockId: string, rootId: string, hpath: string, snippet: string) => {
+    const pushItem = (blockId: string, rootId: string, hpath: string, snippet: string, ref?: ExtractedRef) => {
         if (!blockId || seen.has(blockId)) return;
         seen.add(blockId);
         const title = hpath ? hpath.split("/").filter(Boolean).pop() || hpath : rootId;
@@ -162,6 +194,9 @@ async function findSiyuanDocRefsWhere(
             docPath: hpath,
             snippet: snippet.length > 160 ? snippet.slice(0, 160) + "…" : snippet,
             blockId,
+            targetLine: ref?.posLine,
+            targetAnchor: ref?.posAnchor,
+            targetTime: ref?.posTime,
         });
     };
 
@@ -169,15 +204,16 @@ async function findSiyuanDocRefsWhere(
     try {
         const rows = await querySQL(
             `SELECT id, root_id, hpath, markdown FROM blocks ` +
-            `WHERE markdown LIKE '%${likeName}%' ESCAPE '\\' LIMIT 512`);
+            `WHERE (${siyuanLikeClause("markdown", likeNames)}) LIMIT 512`);
         if (Array.isArray(rows)) {
             for (const row of rows) {
                 const md: string = row.markdown || "";
                 // 块内引用以 assets/ 等形式存储,相对工作空间 data 根解析
                 const refs = extractRefs("/data", md);
-                if (match(refs)) {
+                const hit = refs.find(r => match([r]));
+                if (hit) {
                     const firstLine = md.split("\n").find((l: string) => l.trim()) || "";
-                    pushItem(row.id, row.root_id, row.hpath || "", firstLine);
+                    pushItem(row.id, row.root_id, row.hpath || "", firstLine, hit);
                 }
             }
         }
@@ -190,13 +226,14 @@ async function findSiyuanDocRefsWhere(
         const rows = await querySQL(
             `SELECT a.block_id, a.name AS attr_name, a.value, b.root_id, b.hpath ` +
             `FROM attributes a JOIN blocks b ON b.id = a.block_id ` +
-            `WHERE a.value LIKE '%${likeName}%' ESCAPE '\\' LIMIT 256`);
+            `WHERE (${siyuanLikeClause("a.value", likeNames)}) LIMIT 256`);
         if (Array.isArray(rows)) {
             for (const row of rows) {
                 const value: string = row.value || "";
                 const refs = extractRefs("/data", value);
-                if (match(refs)) {
-                    pushItem(row.block_id, row.root_id, row.hpath || "", `${row.attr_name || "属性"}: ${value}`);
+                const hit = refs.find(r => match([r]));
+                if (hit) {
+                    pushItem(row.block_id, row.root_id, row.hpath || "", `${row.attr_name || "属性"}: ${value}`, hit);
                 }
             }
         }
@@ -207,14 +244,28 @@ async function findSiyuanDocRefsWhere(
     return items;
 }
 
+// LIKE 粗筛候选串:明文 + 百分号编码变体。
+// 插件自产链接是明文路径,但外部来源(Obsidian/浏览器复制)粘贴进思源后
+// 存的是 %E8%AF%BE... 编码形式 —— 只按明文筛会把中文文件名的引用整个漏掉。
+function siyuanLikeNames(name: string): string[] {
+    const esc = (s: string) => s.replace(/[\\%_]/g, ch => "\\" + ch).replace(/'/g, "''");
+    const out = [esc(name)];
+    const enc = encodeURIComponent(name);
+    if (enc !== name) out.push(esc(enc));
+    return Array.from(new Set(out));
+}
+
+// LIKE 粗筛子句(多候选 OR)
+function siyuanLikeClause(col: string, names: string[]): string {
+    return names.map(n => `${col} LIKE '%${n}%' ESCAPE '\\'`).join(" OR ");
+}
+
 // 查询思源文档中引用该文件的位置(按文件名 LIKE 粗筛,再解析验证:
 // 精确匹配 + ../ 失效时的路径尾部匹配)
 async function findSiyuanDocRefs(path: string): Promise<BacklinkItem[]> {
     const name = basename(path);
-    // SQL 转义:LIKE 通配符与单引号
-    const esc = name.replace(/[\\%_]/g, ch => "\\" + ch).replace(/'/g, "''");
     const target = normPath(path);
-    return findSiyuanDocRefsWhere(esc, refs => refs.some(r => refMatches(r, target)));
+    return findSiyuanDocRefsWhere(siyuanLikeNames(name), refs => refs.some(r => refMatches(r, target)));
 }
 
 // ===== 来源 2:Markdown 文件引用 =====
@@ -305,6 +356,9 @@ async function scanMdRefs(
                         title: basename(f.path),
                         lineNo: ref.lineNo,
                         snippet: ref.line,
+                        targetLine: ref.posLine,
+                        targetAnchor: ref.posAnchor,
+                        targetTime: ref.posTime,
                     });
                 }
             }
@@ -323,6 +377,24 @@ async function findMdFileRefs(path: string): Promise<BacklinkItem[]> {
 
 // ===== 总入口 =====
 
+// 锚点 → 行号:目标文件是 Markdown 时读一次内容,把所有 targetAnchor 解析成标题行。
+// 只对文本目标做(视频等二进制不读);解析不到的保持只有锚点(面板仍显示,行号槽不上标记)。
+async function resolveAnchorLines(path: string, items: BacklinkItem[]): Promise<void> {
+    if (!/\.(md|markdown)$/i.test(path)) return;
+    if (!items.some(it => it.targetAnchor && !it.targetLine)) return;
+    let content: string;
+    try {
+        content = await readTextFile(path);
+    } catch {
+        return;
+    }
+    for (const it of items) {
+        if (!it.targetAnchor || it.targetLine) continue;
+        const line = headingLineOfAnchor(content, it.targetAnchor);
+        if (line) it.targetLine = line;
+    }
+}
+
 // 查找引用指定文件的所有位置(思源文档 + Markdown 文件)
 export async function findBacklinks(path: string): Promise<BacklinkItem[]> {
     const [docRefs, fileRefs] = await Promise.all([
@@ -330,7 +402,33 @@ export async function findBacklinks(path: string): Promise<BacklinkItem[]> {
         findMdFileRefs(path),
     ]);
     // 思源文档引用在前
-    return [...docRefs, ...fileRefs];
+    const items = [...docRefs, ...fileRefs];
+    await resolveAnchorLines(path, items);
+    return items;
+}
+
+// ===== 结果缓存 =====
+// 全量扫描(读全部挂载根的 md + 两次 SQL)开销大,而行号槽标记与引用面板需要同一份数据,
+// 这里按「目标路径 + 挂载根集合」缓存最终结果;引用面板的刷新按钮 / syfe:backlink-refresh
+// 事件强制绕过(refCache 本身按 size:mtime 失效,单文件改动后重扫也不至于全冷)。
+const backlinkCache = new Map<string, {key: string; items: BacklinkItem[]}>();
+
+export function clearBacklinkCache(): void {
+    backlinkCache.clear();
+}
+
+export async function findBacklinksCached(path: string, opts?: {force?: boolean}): Promise<BacklinkItem[]> {
+    const norm = normPath(path);
+    const key = collectScanRoots().join("|");
+    const hit = backlinkCache.get(norm);
+    if (!opts?.force && hit && hit.key === key) return hit.items;
+    const items = await findBacklinks(path);
+    backlinkCache.set(norm, {key, items});
+    if (backlinkCache.size > 40) {
+        const first = backlinkCache.keys().next();
+        if (!first.done) backlinkCache.delete(first.value);
+    }
+    return items;
 }
 
 // ===== 文件夹反链 =====
@@ -344,8 +442,7 @@ function refInDir(ref: ExtractedRef, dirPath: string): boolean {
 async function findSiyuanDocRefsForDir(dirPath: string): Promise<BacklinkItem[]> {
     const name = basename(dirPath);
     if (!name) return [];
-    const esc = name.replace(/[\\%_]/g, ch => "\\" + ch).replace(/'/g, "''");
-    return findSiyuanDocRefsWhere(esc, refs => refs.some(r => refInDir(r, dirPath)));
+    return findSiyuanDocRefsWhere(siyuanLikeNames(name), refs => refs.some(r => refInDir(r, dirPath)));
 }
 
 // 查找引用指定文件夹内文件的所有位置(思源文档 + Markdown 文件)。
@@ -403,4 +500,39 @@ export async function findSiyuanRefBacklinks(targetId: string, box?: string): Pr
         }
     }
     return items;
+}
+
+// ===== 位置徽章(面板 / 弹窗 / 行号悬浮窗共用的小 UI 工具)=====
+// 放数据层是因为三个 UI 都要用,而它们互相引用会绕出循环依赖。
+// 颜色约定:行号链接(--line,蓝)= 主色;锚点链接(--anchor,紫)= 固定紫,与行号区分。
+
+function blEscapeHTML(s: string): string {
+    return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+// 秒 → h:mm:ss / mm:ss(时间点徽章显示用)
+export function formatBacklinkTime(sec: number): string {
+    const total = Math.floor(Math.max(0, Number(sec) || 0));
+    const h = Math.floor(total / 3600);
+    const m = Math.floor((total % 3600) / 60);
+    const s = total % 60;
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
+}
+
+// 生成链接位置徽章 HTML:行号(蓝)/ 锚点(紫,解析到行时附行号)/ 时间点(蓝)
+export function backlinkPosBadgeHTML(item: BacklinkItem): string {
+    if (item.targetLine && item.targetAnchor) {
+        return `<span class="syfe-blpos syfe-blpos--anchor" title="锚点 #${blEscapeHTML(item.targetAnchor)} → 第 ${item.targetLine} 行">#${blEscapeHTML(item.targetAnchor)} · L${item.targetLine}</span>`;
+    }
+    if (item.targetLine) {
+        return `<span class="syfe-blpos syfe-blpos--line" title="链接指向第 ${item.targetLine} 行">→ L${item.targetLine}</span>`;
+    }
+    if (item.targetAnchor) {
+        return `<span class="syfe-blpos syfe-blpos--anchor" title="锚点 #${blEscapeHTML(item.targetAnchor)}(标题未解析到行)">#${blEscapeHTML(item.targetAnchor)}</span>`;
+    }
+    if (item.targetTime !== undefined) {
+        return `<span class="syfe-blpos syfe-blpos--line" title="链接指向时间点 ${formatBacklinkTime(item.targetTime)}">→ ${formatBacklinkTime(item.targetTime)}</span>`;
+    }
+    return "";
 }

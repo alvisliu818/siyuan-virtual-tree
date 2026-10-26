@@ -16,6 +16,8 @@
 // 需要精确行号的场景(贴链接引用具体一行)建议在源码态复制。
 
 import {Menu} from "siyuan";
+import type {BacklinkItem} from "../utils/backlink";
+import {backlinkPosBadgeHTML} from "../utils/backlink";
 
 export interface MdLineGutterHost {
     /** 内容容器(.syfe-md__content,模块自己在里面找 .vditor-reset) */
@@ -24,6 +26,14 @@ export interface MdLineGutterHost {
     source(): string;
     /** 复制某行的链接(由调用方按文件生成 Markdown 格式) */
     copyLineLink(line: number): void;
+    /** 打开一条反向链接(跳到引用来源;可选) */
+    openBacklinkItem?(item: BacklinkItem): void;
+}
+
+// 反链标记:按目标行分组的反向链接(行号链接 / 锚点链接分开上色)
+export interface BacklinkMarkers {
+    lineLinks: Map<number, BacklinkItem[]>;
+    anchorLinks: Map<number, BacklinkItem[]>;
 }
 
 export interface MdLineGutterHandle {
@@ -31,11 +41,60 @@ export interface MdLineGutterHandle {
     refresh(): void;
     /** 第 line 行(1-based)所在的渲染块;找不到返回 null */
     lineToBlock(line: number): HTMLElement | null;
+    /** 设置行上的反链标记(数据到位/变化时由调用方推入;传 null 清除) */
+    setBacklinkMarkers(markers: BacklinkMarkers | null): void;
     dispose(): void;
 }
 
 const GUTTER_CLASS = "syfe-md__linenums";
 const GUTTER_ON = "syfe-md__gutter-on";
+
+// ===== 行号反链标记与悬浮窗 =====
+// 反链指向本文件某行(?line=N)或某标题锚点时,该行行号着色:
+// 行号链接 = 主色(--refline),锚点链接 = 紫(--refanchor);悬浮行号 500ms 弹出反链列表,
+// 点列表项跳到引用来源。
+
+function gutterEscapeHTML(s: string): string {
+    return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+// 安装在行号行上的反链悬浮行为(悬浮延时弹出,移开延时收回)
+function attachRefHover(
+    row: HTMLElement,
+    items: BacklinkItem[],
+    showPop: (row: HTMLElement, items: BacklinkItem[]) => void,
+    hidePop: () => void,
+): void {
+    let showTimer: number | undefined;
+    let hideTimer: number | undefined;
+    const cancelShow = () => {
+        if (showTimer) {
+            window.clearTimeout(showTimer);
+            showTimer = undefined;
+        }
+    };
+    const cancelHide = () => {
+        if (hideTimer) {
+            window.clearTimeout(hideTimer);
+            hideTimer = undefined;
+        }
+    };
+    row.addEventListener("mouseenter", () => {
+        cancelHide();
+        cancelShow();
+        // 悬浮一定时间才显示,避免扫过行号时弹出窗乱闪
+        showTimer = window.setTimeout(() => {
+            showTimer = undefined;
+            showPop(row, items);
+        }, 500);
+    });
+    row.addEventListener("mouseleave", () => {
+        cancelShow();
+        // 悬浮窗已开且指针未移入悬浮窗时延时收回(移入悬浮窗由其自身 mouseenter 取消)
+        if (hideTimer) window.clearTimeout(hideTimer);
+        hideTimer = window.setTimeout(hidePop, 400);
+    });
+}
 
 // ===== Markdown 顶层块切分 =====
 // 返回每个顶层块的起始行下标(0-based)。规则与 Lute 的块生成对齐:
@@ -116,6 +175,73 @@ export function installMdLineGutter(host: MdLineGutterHost): MdLineGutterHandle 
     let resetEl: HTMLElement | null = null;
     let disposed = false;
     let refreshTimer: number | undefined;
+    // 反链标记(目标行 → 条目)与悬浮窗状态
+    let markers: BacklinkMarkers | null = null;
+    let popEl: HTMLElement | null = null;
+    let popHideTimer: number | undefined;
+
+    const hideRefPop = () => {
+        if (popHideTimer) {
+            window.clearTimeout(popHideTimer);
+            popHideTimer = undefined;
+        }
+        if (popEl) {
+            try {
+                popEl.remove();
+            } catch {
+                // 忽略
+            }
+            popEl = null;
+        }
+    };
+
+    // 在行号旁弹出反链列表;点条目跳到引用来源
+    const showRefPop = (row: HTMLElement, items: BacklinkItem[]) => {
+        hideRefPop();
+        if (disposed || !resetEl || items.length === 0) return;
+        const pop = document.createElement("div");
+        pop.className = "syfe-md__refpop";
+        pop.innerHTML =
+            `<div class="syfe-md__refpop__head">反向链接 (${items.length})</div>` +
+            items.map(item => {
+                const icon = item.kind === "siyuan-doc" ? "iconFile" : "iconMarkdown";
+                const loc = item.kind === "siyuan-doc"
+                    ? gutterEscapeHTML(item.docPath || "")
+                    : `${gutterEscapeHTML(item.sourcePath)}${item.lineNo ? ` : ${item.lineNo}` : ""}`;
+                return `
+                    <div class="syfe-md__refpop__item" data-idx="${items.indexOf(item)}">
+                        <div class="syfe-md__refpop__itemhead">
+                            <svg><use xlink:href="#${icon}"></use></svg>
+                            <span class="syfe-md__refpop__title">${gutterEscapeHTML(item.title)}</span>
+                            ${backlinkPosBadgeHTML(item)}
+                            <span class="syfe-md__refpop__loc">${loc}</span>
+                        </div>
+                        ${item.snippet ? `<div class="syfe-md__refpop__snippet">${gutterEscapeHTML(item.snippet)}</div>` : ""}
+                    </div>`;
+            }).join("");
+        // 定位:行号行的纵向位置,横向贴着行号槽右侧(坐标系同 .vditor-reset)
+        pop.style.top = row.style.top;
+        pop.style.left = "56px";
+        pop.addEventListener("mouseenter", () => {
+            if (popHideTimer) {
+                window.clearTimeout(popHideTimer);
+                popHideTimer = undefined;
+            }
+        });
+        pop.addEventListener("mouseleave", () => {
+            if (popHideTimer) window.clearTimeout(popHideTimer);
+            popHideTimer = window.setTimeout(hideRefPop, 300);
+        });
+        pop.addEventListener("click", (e) => {
+            const node = (e.target as HTMLElement).closest(".syfe-md__refpop__item") as HTMLElement | null;
+            if (!node) return;
+            const item = items[Number(node.dataset.idx)];
+            hideRefPop();
+            if (item) host.openBacklinkItem?.(item);
+        });
+        resetEl.appendChild(pop);
+        popEl = pop;
+    };
 
     // 找真正装着块的 .vditor-reset:同容器常有 pre/div 两个同名元素(见 markdown-tab 的注释),
     // 带块子元素(data-block)的那个才是渲染体
@@ -175,6 +301,7 @@ export function installMdLineGutter(host: MdLineGutterHost): MdLineGutterHandle 
         }
         // 行号内容整体重画(块数不多,代价可控);重建期间掐掉观察器避免自触发
         stopObserving();
+        hideRefPop();
         try {
             gutter.textContent = "";
             const n = Math.min(blocks.length, starts.length);
@@ -186,6 +313,14 @@ export function installMdLineGutter(host: MdLineGutterHost): MdLineGutterHandle 
                 row.dataset.line = String(line);
                 row.style.top = Math.max(0, Math.round(topOf(reset, blocks[i]))) + "px";
                 row.title = `第 ${line} 行 · 右键复制链接`;
+                // 反链标记:锚点链接紫色优先于行号链接蓝色;有标记的行悬浮可看反链
+                const anchorItems = markers?.anchorLinks.get(line) || [];
+                const lineItems = markers?.lineLinks.get(line) || [];
+                if (anchorItems.length > 0) row.classList.add("syfe-md__linenum--refanchor");
+                if (lineItems.length > 0) row.classList.add("syfe-md__linenum--refline");
+                if (anchorItems.length + lineItems.length > 0) {
+                    attachRefHover(row, [...anchorItems, ...lineItems], showRefPop, hideRefPop);
+                }
                 gutter.appendChild(row);
             }
             gutter.style.height = Math.max(reset.scrollHeight, reset.clientHeight) + "px";
@@ -299,9 +434,17 @@ export function installMdLineGutter(host: MdLineGutterHost): MdLineGutterHandle 
             if (hit < 0) return null;
             return blocks[Math.min(hit, blocks.length - 1)] || null;
         },
+        setBacklinkMarkers(next: BacklinkMarkers | null) {
+            markers = next;
+            // 数据到位/变化后重画行号上色;顺带收掉旧悬浮窗
+            if (!disposed) schedule();
+        },
         dispose() {
             disposed = true;
+            markers = null;
+            hideRefPop();
             if (refreshTimer) window.clearTimeout(refreshTimer);
+            if (popHideTimer) window.clearTimeout(popHideTimer);
             stopObserving();
             if (gutter) gutter.removeEventListener("contextmenu", onContext);
             disposeGutter();

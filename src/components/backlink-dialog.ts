@@ -4,7 +4,7 @@
 // - Markdown 文件 → Markdown Tab 源码模式打开并定位到引用行
 // 数据来源见 utils/backlink.ts:文件引用 / 文件夹引用 / 思源原生反链(refs 表)。
 import {Dialog} from "siyuan";
-import {BacklinkItem} from "../utils/backlink";
+import {BacklinkItem, backlinkPosBadgeHTML} from "../utils/backlink";
 import {IPluginForBacklink, navigateBacklink} from "./backlink-panel";
 
 export interface BacklinkDialogOptions {
@@ -60,6 +60,7 @@ export function showBacklinkDialog(plugin: IPluginForBacklink, opts: BacklinkDia
                     <div class="syfe-bldlg__itemhead">
                         <svg><use xlink:href="#${icon}"></use></svg>
                         <span class="syfe-bldlg__itemtitle">${escapeHTML(item.title)}</span>
+                        ${backlinkPosBadgeHTML(item)}
                         <span class="syfe-bldlg__itemloc">${escapeHTML(loc)}</span>
                     </div>
                     ${item.snippet ? `<div class="syfe-bldlg__snippet">${escapeHTML(item.snippet)}</div>` : ""}

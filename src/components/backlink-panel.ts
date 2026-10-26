@@ -2,7 +2,7 @@
 // 默认收起;首次展开时懒扫描。跳转:
 // - 思源文档块 → siyuan://blocks/<id> 协议(思源打开文档并定位块)
 // - Markdown 文件 → Markdown Tab 源码模式打开并定位到引用行
-import {BacklinkItem, findBacklinks} from "../utils/backlink";
+import {BacklinkItem, backlinkPosBadgeHTML, findBacklinksCached} from "../utils/backlink";
 import {openMarkdownTab} from "../tabs/markdown-tab";
 import {setPendingReveal} from "../editor/model-manager";
 
@@ -81,6 +81,7 @@ export function createBacklinkPanel(plugin: IPluginForBacklink, targetPath: stri
                     <div class="syfe-backlink__itemhead">
                         <svg><use xlink:href="#${icon}"></use></svg>
                         <span class="syfe-backlink__itemtitle">${escapeHTML(item.title)}</span>
+                        ${backlinkPosBadgeHTML(item)}
                         <span class="syfe-backlink__itemloc">${escapeHTML(loc)}</span>
                     </div>
                     ${item.snippet ? `<div class="syfe-backlink__snippet">${escapeHTML(item.snippet)}</div>` : ""}
@@ -95,13 +96,14 @@ export function createBacklinkPanel(plugin: IPluginForBacklink, targetPath: stri
         });
     };
 
-    const load = async () => {
+    // load(force):常规展开走缓存(与行号槽标记共用);刷新按钮/外部事件强制重扫
+    const load = async (force = false) => {
         if (loading) return;
         loading = true;
         const t = ++token;
         body.innerHTML = `<div class="syfe-backlink__hint">扫描引用中…</div>`;
         try {
-            const items = await findBacklinks(targetPath);
+            const items = await findBacklinksCached(targetPath, {force});
             if (t !== token) return;
             render(items);
         } catch (e) {
@@ -122,7 +124,7 @@ export function createBacklinkPanel(plugin: IPluginForBacklink, targetPath: stri
     el.querySelector("[data-act='refresh']")!.addEventListener("click", () => {
         collapsed = false;
         el.classList.remove("syfe-backlink--collapsed");
-        void load();
+        void load(true);
     });
 
     // 外部请求刷新(如斜杆命令插入了指向本文件的链接):目标匹配则重扫
@@ -133,7 +135,7 @@ export function createBacklinkPanel(plugin: IPluginForBacklink, targetPath: stri
         countEl.textContent = "";
         collapsed = false;
         el.classList.remove("syfe-backlink--collapsed");
-        void load();
+        void load(true);
     };
     window.addEventListener("syfe:backlink-refresh", onRefreshRequest);
 
@@ -149,7 +151,7 @@ export function createBacklinkPanel(plugin: IPluginForBacklink, targetPath: stri
         refresh() {
             collapsed = false;
             el.classList.remove("syfe-backlink--collapsed");
-            void load();
+            void load(true);
         },
         dispose() {
             token++; // 使未完成的渲染失效

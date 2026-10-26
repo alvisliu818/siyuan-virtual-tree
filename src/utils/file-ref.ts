@@ -46,6 +46,31 @@ export function slugifyHeading(text: string): string {
     return s;
 }
 
+/**
+ * 在 Markdown 源码里反查标题锚点对应的行号(1-based)。
+ * 锚点是 slugifyHeading 生成的 slug,这里按同一规则对每条标题重新计算后比对;
+ * 跳过围栏代码块里的伪标题。找不到返回 null。
+ */
+export function headingLineOfAnchor(text: string, anchor: string): number | null {
+    if (!text || !anchor) return null;
+    const want = slugifyHeading(anchor);
+    const lines = text.split("\n");
+    let fence: string | null = null;
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const fm = /^\s{0,3}(```|~~~)/.exec(line);
+        if (fm) {
+            fence = fence === null ? fm[1] : (fence === fm[1] ? null : fence);
+            continue;
+        }
+        if (fence !== null) continue;
+        const m = /^(#{1,6})\s+(.*)$/.exec(line);
+        if (!m) continue;
+        if (slugifyHeading(m[2]) === want) return i + 1;
+    }
+    return null;
+}
+
 /** 秒 → 链接里的紧凑写法(12.5 → "12.5") */
 function fmtTime(sec: number): string {
     const v = Math.max(0, Number(sec) || 0);

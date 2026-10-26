@@ -866,6 +866,107 @@ button.syfe-editor__arrow--exp:hover {
     }
 }
 
+// 行号上的反链标记:行号链接(?line=N)= 主色(蓝);锚点链接(#标题)= 固定紫。
+// 同一行两类都有时两个类都挂,紫色声明在后、悬浮时也要保住各自的色。
+.syfe-md__linenum--refline {
+    color: var(--b3-theme-primary);
+    opacity: 1;
+    font-weight: 600;
+
+    &:hover {
+        color: var(--b3-theme-primary);
+        opacity: 1;
+    }
+}
+
+.syfe-md__linenum--refanchor {
+    color: #a371f7;
+    opacity: 1;
+    font-weight: 600;
+    text-decoration: underline dotted;
+
+    &:hover {
+        color: #a371f7;
+        opacity: 1;
+    }
+}
+
+// 行号反链悬浮窗(悬浮行号 500ms 后弹出,列出引用来源,点击跳转)
+.syfe-md__refpop {
+    position: absolute;
+    z-index: 30;
+    left: 56px;
+    min-width: 280px;
+    max-width: 480px;
+    max-height: 300px;
+    overflow: auto;
+    padding: 6px 0;
+    background: var(--b3-theme-surface);
+    border: 1px solid var(--b3-border-color);
+    border-radius: 4px;
+    box-shadow: var(--b3-point-shadow);
+    font-size: 12px;
+}
+
+.syfe-md__refpop__head {
+    padding: 2px 10px 6px;
+    color: var(--b3-theme-on-surface-light);
+    border-bottom: 1px solid var(--b3-border-color);
+}
+
+.syfe-md__refpop__item {
+    padding: 4px 10px;
+    cursor: pointer;
+
+    &:hover {
+        background: var(--b3-list-hover);
+    }
+}
+
+.syfe-md__refpop__itemhead {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+
+    svg {
+        width: 14px;
+        height: 14px;
+        flex-shrink: 0;
+        color: var(--b3-theme-on-surface-light);
+    }
+}
+
+.syfe-md__refpop__title {
+    flex-shrink: 0;
+    max-width: 40%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--b3-theme-on-surface);
+}
+
+.syfe-md__refpop__loc {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--b3-theme-on-surface-light);
+    font-family: var(--b3-font-family-code);
+    font-size: 11px;
+}
+
+.syfe-md__refpop__snippet {
+    margin-top: 2px;
+    font-family: var(--b3-font-family-code);
+    font-size: 11px;
+    color: var(--b3-theme-on-surface-light);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 .syfe-md__missing {
     flex-shrink: 0;
     padding: 6px 12px;
@@ -1181,6 +1282,29 @@ button.syfe-editor__arrow--exp:hover {
     font-family: var(--b3-font-family-code);
     font-size: 11px;
     color: var(--b3-theme-on-surface-light);
+}
+
+// 反链条目上的「链接位置」徽章:行号链接蓝 / 锚点链接紫,与行号槽标记同一套颜色
+.syfe-blpos {
+    flex-shrink: 0;
+    max-width: 140px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    padding: 0 4px;
+    border-radius: 3px;
+    font-family: var(--b3-font-family-code);
+    font-size: 10px;
+    line-height: 16px;
+    background: var(--b3-theme-surface);
+}
+
+.syfe-blpos--line {
+    color: var(--b3-theme-primary);
+}
+
+.syfe-blpos--anchor {
+    color: #a371f7;
 }
 
 .syfe-backlink__snippet {
