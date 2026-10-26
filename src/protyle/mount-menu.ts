@@ -1,7 +1,8 @@
-// 思源侧(文档树 / 正文块)右键挂载到虚拟文档树。
+// 思源侧(文档树 / 正文块 / 块标)右键挂载到虚拟文档树。
 // 利用思源插件菜单扩展机制,新增项落在原生右键菜单的「插件」子菜单下,不破坏原生行为:
 //   open-menu-doctree  → 挂载思源文档/笔记本(文档自动带出子文档;笔记本列出顶级文档)
-//   open-menu-content   → 挂载思源块(挂载后按 parent_id 递归展开子块)
+//   open-menu-content  → 挂载思源块(挂载后按 parent_id 递归展开子块)
+//   click-blockicon    → 块标(悬浮块图标)点击/右键菜单,与正文右键同款挂块入口
 import type {Plugin} from "siyuan";
 import {addMountMenuItem} from "../components/mount-menu";
 import {blockTitle} from "../utils/blocks";
@@ -11,6 +12,18 @@ function blockIdOf(el: HTMLElement | null): string | null {
     if (!el) return null;
     const id = el.getAttribute("data-id") || el.getAttribute("data-node-id");
     return id || null;
+}
+
+// 给菜单追加「挂载到虚拟文档树」(块挂载):正文右键与块标菜单共用
+function addBlockMountItem(menu: any, plugin: Plugin, el: HTMLElement | null): void {
+    const blockId = blockIdOf(el);
+    if (!blockId) return;
+    const text = (el?.textContent || "").trim();
+    addMountMenuItem(menu, plugin, {
+        kind: "block",
+        name: blockTitle(text, "p"),
+        targetId: blockId,
+    });
 }
 
 export function registerMountMenu(plugin: Plugin): void {
@@ -54,13 +67,14 @@ export function registerMountMenu(plugin: Plugin): void {
     plugin.eventBus.on("open-menu-content", (e: any) => {
         const menu = e?.detail?.menu;
         if (!menu) return;
-        const blockId = blockIdOf(e?.detail?.element as HTMLElement | null);
-        if (!blockId) return;
-        const text = ((e?.detail?.element as HTMLElement)?.textContent || "").trim();
-        addMountMenuItem(menu, plugin, {
-            kind: "block",
-            name: blockTitle(text, "p"),
-            targetId: blockId,
-        });
+        addBlockMountItem(menu, plugin, e?.detail?.element as HTMLElement | null);
+    });
+
+    // 块标(悬浮块图标)点击/右键:blockElements 是选中的块集合,多选时只处理第一个
+    plugin.eventBus.on("click-blockicon", (e: any) => {
+        const menu = e?.detail?.menu;
+        if (!menu) return;
+        const els: HTMLElement[] = Array.isArray(e?.detail?.blockElements) ? e.detail.blockElements : [];
+        addBlockMountItem(menu, plugin, els[0] || null);
     });
 }
