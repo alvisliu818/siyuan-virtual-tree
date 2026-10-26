@@ -12,7 +12,7 @@ import {toFileLink} from "../utils/system-path";
 import {virtualListDir, virtualId, isNotebookRoot, isBoxDocEnabled} from "../utils/virtual-tree";
 import {docTreeIconHTML, cachedDocIcon, ensureDocIcons, getNotebookIcon} from "../utils/siyuan-icon";
 import {listChildBlocks, blockTitle, blockGutterIcon, soloImageInfo, imageMarkdownWithTitle, BlockNode} from "../utils/blocks";
-import {loadBlockNames, localBlockName, setLocalBlockName} from "../utils/block-names";
+import {loadBlockNames, localBlockName, setLocalBlockName, blockDisplayMode, setBlockDisplayMode} from "../utils/block-names";
 import {copyText, revealInFileTree, pickMountTargetDialog, showFileTreeMenu, findTreeRootEl, createNewFile, createNewFolder, buildFileTreeActions} from "../components/file-tree";
 import {openBaiduPanDialog} from "../components/baidu-pan-dialog";
 import {tagIconHTML} from "../tags/tag-ui";
@@ -1344,11 +1344,19 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 const img = info.btype === "p" && info.bmd ? soloImageInfo(info.bmd) : null;
                 if (img) {
                     const local = localBlockName(blockId);
-                    const name = local || img.title || img.alt || "";
-                    const sub = !local && img.title && img.alt ? img.alt : "";
                     const tip = `思源块:${blockId}`
                         + (img.title ? ` · 标题:${img.title}` : "")
                         + (img.alt ? ` · 提示文本:${img.alt}` : "");
+                    // 右键可切「显示标题 / 显示缩放图」:text 模式只出文字,找不到标题时回退文本标题
+                    if (blockDisplayMode(blockId) === "text") {
+                        return {
+                            icon: fileIconHTML(basename(img.src)),
+                            name: local || img.title || img.alt || fallbackName,
+                            sub: "", tip, preview: "",
+                        };
+                    }
+                    const name = local || img.title || img.alt || "";
+                    const sub = !local && img.title && img.alt ? img.alt : "";
                     return {
                         icon: fileIconHTML(basename(img.src)),
                         name, sub, tip,
@@ -1356,8 +1364,8 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                     };
                 }
                 if (info.btype === "t") {
-                    const preview = tablePreviewHTML(info.bmd || "");
-                    // 「表格显示标题,没有就没有」:无命名且预览可用时不显示文字
+                    // 右键可切「显示标题 / 显示缩放表格」:preview 模式且无命名时不显示文字
+                    const preview = blockDisplayMode(blockId) === "preview" ? tablePreviewHTML(info.bmd || "") : "";
                     const name = localBlockName(blockId) || info.bname || (preview ? "" : fallbackName);
                     const tip = `思源块:${blockId}` + (name ? ` · 命名:${name}` : "");
                     return {icon: gutter, name, sub: "", tip, preview};
@@ -1870,16 +1878,33 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 ensureRelationTree(true);
             };
 
-            // 挂载块的「命名」能力:仅单图段落(写入图片标题)与表格块(写入块命名)支持
-            const blockRenameCapable = (blockId: string, rowInfo: {btype?: string; bmd?: string} | null): boolean => {
+            // 图片/表格块的右键显示项:命名 + 行内显示模式二选一(打勾为当前模式,按块记忆)。
+            // rowInfo 传块子行的行上数据;挂载根行传 null(从 _blockMeta 取)。
+            const addBlockDisplayItems = (menu: Menu, blockId: string, rowInfo: {btype?: string; bmd?: string} | null) => {
                 const meta = self._blockMeta?.get(blockId);
                 const btype = rowInfo?.btype ?? meta?.type;
-                if (btype === "t") return true;
-                if (btype === "p") {
-                    const md = rowInfo?.bmd ?? meta?.markdown ?? "";
-                    return !!soloImageInfo(md);
-                }
-                return false;
+                const isImage = btype === "p" && soloImageInfo(rowInfo?.bmd ?? meta?.markdown ?? "");
+                const isTable = btype === "t";
+                if (!isImage && !isTable) return;
+                menu.addItem({icon: "iconEdit", label: "命名", click: () => renameMountedBlock(blockId, rowInfo)});
+                const mode = blockDisplayMode(blockId);
+                menu.addItem({
+                    label: "显示标题",
+                    current: mode === "text",
+                    click: () => {
+                        setBlockDisplayMode(blockId, "text");
+                        render();
+                    },
+                } as any);
+                menu.addItem({
+                    icon: isImage ? "iconImage" : "iconTable",
+                    label: isImage ? "显示缩放图" : "显示缩放表格",
+                    current: mode === "preview",
+                    click: () => {
+                        setBlockDisplayMode(blockId, "preview");
+                        render();
+                    },
+                } as any);
             };
 
             // 挂载块命名:单图段落 → 改 markdown 里的图片标题;表格 → 写块命名(name 属性)。
@@ -2088,9 +2113,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                         label: "文档标签…",
                         click: () => openSiyuanTagDialog(row.item.targetId!, row.item.name),
                     });
-                    if (blockRenameCapable(row.item.targetId!, null)) {
-                        menu.addItem({icon: "iconEdit", label: "命名", click: () => renameMountedBlock(row.item.targetId!, null)});
-                    }
+                    addBlockDisplayItems(menu, row.item.targetId!, null);
                     appendMountItems(menu, row.uid, `「${row.item.name}」下`);
                     menu.addItem({
                         icon: "iconTrashcan",
@@ -2136,10 +2159,8 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                         label: "文档标签…",
                         click: () => openSiyuanTagDialog(row.blockId, row.name),
                     });
-                    // 单图段落/表格块支持命名(图片写入图片标题,表格写入块命名)
-                    if (blockRenameCapable(row.blockId, row)) {
-                        menu.addItem({icon: "iconEdit", label: "命名", click: () => renameMountedBlock(row.blockId, row)});
-                    }
+                    // 图片/表格块:命名 + 标题/缩放预览显示切换
+                    addBlockDisplayItems(menu, row.blockId, row);
                     // 虚拟块行同虚拟文档行:先解析出块对应的挂载项再嵌套挂载
                     appendMountItems(menu, async () => {
                         const r = await ensureTargetMountItem(plugin, "block", row.blockId, row.name, row.ownerUid ?? null);
