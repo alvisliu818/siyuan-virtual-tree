@@ -1347,7 +1347,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                     const tip = `思源块:${blockId}`
                         + (img.title ? ` · 标题:${img.title}` : "")
                         + (img.alt ? ` · 提示文本:${img.alt}` : "");
-                    // 右键可切「显示标题 / 显示缩放图」:text 模式只出文字,找不到标题时回退文本标题
+                    // 右键可切「显示标题 / 显示缩放图」:两种模式只出一者,不混排
                     if (blockDisplayMode(blockId) === "text") {
                         return {
                             icon: fileIconHTML(basename(img.src)),
@@ -1355,18 +1355,16 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                             sub: "", tip, preview: "",
                         };
                     }
-                    const name = local || img.title || img.alt || "";
-                    const sub = !local && img.title && img.alt ? img.alt : "";
                     return {
                         icon: fileIconHTML(basename(img.src)),
-                        name, sub, tip,
-                        preview: `<span class="syfe-mtree__preview"><img loading="lazy" src="/${encodeURI(img.src)}" alt="${escapeHTML(name)}"></span>`,
+                        name: "", sub: "", tip,
+                        preview: `<span class="syfe-mtree__preview"><img loading="lazy" src="/${encodeURI(img.src)}" alt="${escapeHTML(img.title || img.alt || "")}"></span>`,
                     };
                 }
                 if (info.btype === "t") {
-                    // 右键可切「显示标题 / 显示缩放表格」:preview 模式且无命名时不显示文字
+                    // 右键可切「显示标题 / 显示缩放表格」:两种模式只出一者;预览渲染失败回退文本标题
                     const preview = blockDisplayMode(blockId) === "preview" ? tablePreviewHTML(info.bmd || "") : "";
-                    const name = localBlockName(blockId) || info.bname || (preview ? "" : fallbackName);
+                    const name = preview ? "" : (localBlockName(blockId) || info.bname || fallbackName);
                     const tip = `思源块:${blockId}` + (name ? ` · 命名:${name}` : "");
                     return {icon: gutter, name, sub: "", tip, preview};
                 }
@@ -2079,7 +2077,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                     return;
                 }
                 if (row.kind === "mount" && row.item.kind === "block") {
-                    // 挂载的块:定位/复制块链接/文档标签 + 固定收藏 + 取消挂载/挂载入口
+                    // 挂载的块:定位/复制块链接/文档标签 + 命名与显示切换(图片/表格) + 固定收藏 + 取消挂载/挂载入口
                     const it = row.item;
                     const menu = new Menu();
                     menu.addItem({icon: "iconOpen", label: "定位到块", click: () => openSiyuanDoc(it.targetId!, plugin.app)});
@@ -2094,27 +2092,10 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                         label: "文档标签…",
                         click: () => openSiyuanTagDialog(it.targetId!, it.name),
                     });
+                    // 图片/表格块:命名 + 标题/缩放预览显示切换
+                    addBlockDisplayItems(menu, it.targetId!, null);
                     addPinFavEntries(menu, plugin, it.targetId!, it.name, afterDocOp);
                     appendMountItems(menu, row.uid, `「${it.name}」下`);
-                    menu.addItem({
-                        icon: "iconTrashcan",
-                        label: "取消挂载",
-                        click: () => unmountMountRow(row as Extract<Row, {kind: "mount"}>),
-                    });
-                    menu.open({x: e.clientX, y: e.clientY});
-                    return;
-                }
-                // 挂载的思源块根行:与块子行同款菜单,外加取消挂载
-                if (row.kind === "mount" && row.item.kind === "block") {
-                    const menu = new Menu();
-                    menu.addItem({icon: "iconOpen", label: "定位到块", click: () => openSiyuanDoc(row.item.targetId!, plugin.app)});
-                    menu.addItem({
-                        icon: "iconTags",
-                        label: "文档标签…",
-                        click: () => openSiyuanTagDialog(row.item.targetId!, row.item.name),
-                    });
-                    addBlockDisplayItems(menu, row.item.targetId!, null);
-                    appendMountItems(menu, row.uid, `「${row.item.name}」下`);
                     menu.addItem({
                         icon: "iconTrashcan",
                         label: "取消挂载",
