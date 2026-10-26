@@ -106,7 +106,6 @@ export default class FileEditorPlugin extends Plugin {
     // 「接管打开用分栏」开关
     private takeoverSplitOpenInput?: HTMLInputElement;
     private treeBacklinkIconInput?: HTMLInputElement;
-    private mountTreeBlockNameWriteInput?: HTMLInputElement;
     // VS Code 式设置面板(左分类树 + 右内容);onload 装配,openSetting 打开
     private settingsPanel?: SettingsPanel;
 
@@ -925,12 +924,6 @@ export default class FileEditorPlugin extends Plugin {
         this.treeBacklinkIconInput.className = "b3-switch";
         addRow("virtualTree", "显示引用图标", "在「虚拟文档树」行末显示「查看引用」链接图标(鼠标悬停显示),点击可查看引用当前文件/文件夹/文档的反链", this.treeBacklinkIconInput);
 
-        // 挂载块命名是否回写思源文档(图片标题/表格块命名);关闭则只存虚拟树本地
-        this.mountTreeBlockNameWriteInput = document.createElement("input");
-        this.mountTreeBlockNameWriteInput.type = "checkbox";
-        this.mountTreeBlockNameWriteInput.className = "b3-switch";
-        addRow("virtualTree", "块命名写入文档", "在「虚拟文档树」里给挂载的图片/表格命名时,同步写入思源文档(图片写入图片标题,表格写入块命名);关闭后仅保存在虚拟文档树本地,只在树上显示", this.mountTreeBlockNameWriteInput);
-
         // 引用关系树(移植自 siyuan-virtual-tree)
         this.mountTreeRelationEnabledInput = document.createElement("input");
         this.mountTreeRelationEnabledInput.type = "checkbox";
@@ -1184,7 +1177,6 @@ export default class FileEditorPlugin extends Plugin {
         if (this.closeUnsavedSelect) this.closeUnsavedSelect.value = this.config.closeUnsavedAction || "ask";
         if (this.takeoverSplitOpenInput) this.takeoverSplitOpenInput.checked = this.config.takeoverSplitOpen === true;
         if (this.treeBacklinkIconInput) this.treeBacklinkIconInput.checked = this.config.treeBacklinkIcon !== false;
-        if (this.mountTreeBlockNameWriteInput) this.mountTreeBlockNameWriteInput.checked = this.config.mountTreeBlockNameWrite !== false;
         if (this.searchMaxSizeInput) {
             this.searchMaxSizeInput.value = String(Math.round(this.config.searchMaxFileSize / 1024));
         }
@@ -1260,7 +1252,6 @@ export default class FileEditorPlugin extends Plugin {
             closeUnsavedAction: ((this.closeUnsavedSelect?.value || "ask") as "ask" | "discard" | "save"),
             takeoverSplitOpen: this.takeoverSplitOpenInput?.checked ?? false,
             treeBacklinkIcon: this.treeBacklinkIconInput?.checked ?? true,
-            mountTreeBlockNameWrite: this.mountTreeBlockNameWriteInput?.checked ?? true,
             // 「文件」面板功能已移除(虚拟文档树全面承接);保留配置键兼容旧存储
             showFileTreeDock: false,
             mountTreeRelation: {

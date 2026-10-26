@@ -122,16 +122,3 @@ export function soloImageInfo(markdown: string): SoloImage | null {
     const unesc = (s: string) => s.replace(/\\(["\\])/g, "$1");
     return {alt: unesc(m[1] || ""), src: m[2], title: m[3] ? unesc(m[3]) : ""};
 }
-
-export function soloImageSrc(markdown: string): string | null {
-    return soloImageInfo(markdown)?.src || null;
-}
-
-// 把图片 markdown 的标题(title)替换为 newTitle(空串 = 移除标题);提示文本与地址原样保留。
-// 返回 null 表示不是单图段落(内容已变化,调用方放弃写入)。
-export function imageMarkdownWithTitle(markdown: string, newTitle: string): string | null {
-    const m = SOLO_IMG_RE.exec(String(markdown || ""));
-    if (!m) return null;
-    const esc = newTitle.replace(/["\\]/g, "\\$&");
-    return `![${m[1]}](<${m[2]}>${esc ? ` "${esc}"` : ""})`;
-}

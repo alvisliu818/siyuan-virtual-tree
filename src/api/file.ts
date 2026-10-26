@@ -305,16 +305,6 @@ export async function getBlockAttrs(id: string): Promise<Record<string, string>>
     return await postJSON<Record<string, string>>("/api/attr/getBlockAttrs", {id});
 }
 
-// 设置块属性(命名/别名/备注等自定义属性)。虚拟文档树里给表格块写入「命名」用
-export async function setBlockAttrs(id: string, attrs: Record<string, string>): Promise<void> {
-    await postJSON("/api/attr/setBlockAttrs", {id, attrs});
-}
-
-// 更新块内容(markdown 源码)。虚拟文档树里给单图段落块改「图片标题」用
-export async function updateBlock(id: string, markdown: string): Promise<void> {
-    await postJSON("/api/block/updateBlock", {id, dataType: "markdown", data: markdown});
-}
-
 // 导出文档 Markdown(/api/export/exportMdContent → {hPath, content})
 export async function exportMdContent(id: string): Promise<{hPath: string; content: string}> {
     return await postJSON<{hPath: string; content: string}>("/api/export/exportMdContent", {id});

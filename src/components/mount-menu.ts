@@ -201,40 +201,6 @@ export function promptMountPathDialog(
     dialog.element.querySelector("#syfe-mtree-cancel")!.addEventListener("click", close);
 }
 
-// 给挂载的图片/表格块命名的输入对话框;确认回调收到去除首尾空白的名称(空串 = 清除命名)
-export function promptBlockName(title: string, current: string, onOk: (name: string) => void): void {
-    const esc = current.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
-    const dialog = new Dialog({
-        title,
-        content: `
-            <div class="b3-dialog__content">
-                <div style="margin-bottom:6px;">名称(留空清除命名)</div>
-                <input class="b3-text-field fn__block" id="syfe-block-name" value="${esc}" />
-            </div>
-            <div class="b3-dialog__action">
-                <button class="b3-button b3-button--cancel" id="syfe-block-name-cancel">取消</button>
-                <button class="b3-button b3-button--text" id="syfe-block-name-ok">确定</button>
-            </div>`,
-        width: "420px",
-    });
-    const inputEl = dialog.element.querySelector("#syfe-block-name") as HTMLInputElement;
-    const close = () => dialog.destroy();
-    const submit = () => {
-        close();
-        onOk(inputEl.value.trim());
-    };
-    inputEl.focus();
-    inputEl.select();
-    inputEl.addEventListener("keydown", (e: KeyboardEvent) => {
-        if (e.key === "Enter") {
-            e.preventDefault();
-            submit();
-        }
-    });
-    dialog.element.querySelector("#syfe-block-name-ok")!.addEventListener("click", submit);
-    dialog.element.querySelector("#syfe-block-name-cancel")!.addEventListener("click", close);
-}
-
 // ===== 挂载思源块:关键词搜块 / 直接粘贴块 ID,点击结果行完成挂载 =====
 // 块 ID 形态:14 位时间戳-7 位随机(如 20240101150000-abcdefg)
 const BLOCK_ID_RE = /^\d{14}-[0-9a-z]{7}$/i;
