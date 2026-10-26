@@ -764,6 +764,7 @@ const G_MD = "Markdown";
 const G_TERM = "终端";
 const G_WORKBENCH = "工作台";
 const G_TREE = "虚拟文档树";
+const G_MEDIA = "音视频";
 
 export const PLUGIN_DEFS: SettingDef[] = [
     {
@@ -1122,6 +1123,26 @@ export const PLUGIN_DEFS: SettingDef[] = [
         get: (c) => c.mountTreeRelation?.defaultExpandLevel ?? -1,
         set: (c, v) => { if (c.mountTreeRelation) c.mountTreeRelation.defaultExpandLevel = Number.isFinite(Number(v)) ? Number(v) : 0; },
     },
+    {
+        key: "media.hotkeyMark",
+        kind: "string",
+        group: G_MEDIA,
+        title: "时间戳打点快捷键",
+        description: "音视频播放器页签可见时按此键在当前时间打点。格式如 K、Shift+K、Ctrl+Alt+K;留空 = 禁用。设置面板「音视频播放器」页可直接按键录入",
+        default: "K",
+        get: (c) => c.mediaHotkeyMark,
+        set: (c, v) => { c.mediaHotkeyMark = String(v ?? ""); },
+    },
+    {
+        key: "media.hotkeyInsert",
+        kind: "string",
+        group: G_MEDIA,
+        title: "时间戳插入笔记快捷键",
+        description: "按此键把当前时间戳的 Markdown 链接插入旁边可见笔记页签的光标处(分屏记笔记);没有可编辑笔记页签时复制到剪贴板。默认 Shift+K;留空 = 禁用",
+        default: "Shift+K",
+        get: (c) => c.mediaHotkeyInsert,
+        set: (c, v) => { c.mediaHotkeyInsert = String(v ?? ""); },
+    },
 ];
 
 export const ALL_DEFS: SettingDef[] = [...EDITOR_DEFS, ...PLUGIN_DEFS];
@@ -1135,7 +1156,7 @@ export function defByKey(key: string): SettingDef | undefined {
 /** 分组顺序(GUI 与生成的 settings.json 都按此顺序) */
 export const GROUP_ORDER: string[] = [
     G_FONT, G_WRAP, G_INDENT, G_CURSOR, G_GUIDE, G_FOLD, G_SCROLL, G_EDIT, G_SUGGEST, G_LOOK,
-    G_FILES, G_MD, G_TERM, G_WORKBENCH, G_TREE,
+    G_FILES, G_MD, G_TERM, G_WORKBENCH, G_TREE, G_MEDIA,
 ];
 
 /** Monaco 里的键路径;返回 null 表示这一项不进 Monaco 选项 */

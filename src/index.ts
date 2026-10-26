@@ -37,6 +37,8 @@ import {
 } from "./settings/user-settings";
 import {buildEditorAllPanel, buildEditorGroupPanel, getEditorSubgroups} from "./settings/editor-settings-ui";
 import {createSettingsPanel, settingsRow, SettingsPanel} from "./settings/plugin-settings-dialog";
+// 自定义快捷键:录入(hotkeyFromEvent)+ 规范化/显示
+import {normalizeHotkeyText, formatHotkey, hotkeyFromEvent} from "./utils/hotkey";
 import {querySQL} from "./api/file";
 import {basename} from "./utils/path";
 import {loadAllExtensions} from "./extensions/extension-manager";
@@ -169,6 +171,9 @@ export default class FileEditorPlugin extends Plugin {
     private versionKeepCountInput?: HTMLInputElement;
     // 删除方式:插件回收站 / 系统回收站(没有"直接删除"选项)
     private deleteModeSelect?: HTMLSelectElement;
+    // 音视频播放器自定义快捷键(点击输入框后按键录入)
+    private mediaHotkeyMarkInput?: HTMLInputElement;
+    private mediaHotkeyInsertInput?: HTMLInputElement;
     // 默认运行内核(代码块/代码文件/ipynb 共用的全局兜底)
     private kernelDefaultSelect?: HTMLSelectElement;
     // 引用关系树(移植自 siyuan-virtual-tree)
@@ -1054,6 +1059,49 @@ export default class FileEditorPlugin extends Plugin {
         this.marketTopBarIconInput.className = "b3-switch";
         addRow("appearance", "顶栏「扩展市场」图标", "顶栏右侧的拼图图标,点击打开扩展市场;隐藏后仍可用命令面板或快捷键 ⇧⌘E 打开,保存后立即生效", this.marketTopBarIconInput);
 
+        // ---------- 音视频播放器 ----------
+        // 快捷键录入控件:点击输入框后直接按组合键(纯修饰键等待,Esc 取消);× 清空 = 禁用
+        const makeHotkeyInput = (): {wrap: HTMLElement; input: HTMLInputElement} => {
+            const input = document.createElement("input");
+            input.className = "b3-text-field";
+            input.type = "text";
+            input.style.width = "140px";
+            input.placeholder = "点击后按键录入";
+            input.addEventListener("keydown", (e: KeyboardEvent) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (e.key === "Escape") {
+                    input.blur();
+                    return;
+                }
+                const combo = hotkeyFromEvent(e);
+                if (!combo) return; // 纯修饰键:等待主键
+                input.value = combo;
+                input.blur();
+            });
+            const clearBtn = document.createElement("button");
+            clearBtn.className = "b3-button b3-button--text";
+            clearBtn.textContent = "×";
+            clearBtn.title = "清空(禁用该快捷键)";
+            clearBtn.addEventListener("click", () => {
+                input.value = "";
+                input.focus();
+            });
+            const wrap = document.createElement("span");
+            wrap.style.display = "inline-flex";
+            wrap.style.alignItems = "center";
+            wrap.style.gap = "4px";
+            wrap.appendChild(input);
+            wrap.appendChild(clearBtn);
+            return {wrap, input};
+        };
+        const markHotkey = makeHotkeyInput();
+        this.mediaHotkeyMarkInput = markHotkey.input;
+        addRow("media", "时间戳打点快捷键", "音视频播放器页签可见时按此键在当前时间打点。点击输入框后直接按组合键录入(Esc 取消,× 清空 = 禁用);播放器工具栏按钮提示会同步显示", markHotkey.wrap);
+        const insertHotkey = makeHotkeyInput();
+        this.mediaHotkeyInsertInput = insertHotkey.input;
+        addRow("media", "时间戳插入笔记快捷键", "按此键把当前时间戳的 Markdown 链接插入旁边可见笔记页签的光标处(分屏记笔记),没有可编辑笔记页签时复制到剪贴板。带修饰键的组合在笔记里打字时也可用;纯字母键在编辑器里让位给打字", insertHotkey.wrap);
+
         // ---------- 新标签页 ----------
         this.newTabReplacePlusInput = document.createElement("input");
         this.newTabReplacePlusInput.type = "checkbox";
@@ -1114,6 +1162,7 @@ export default class FileEditorPlugin extends Plugin {
         // ---------- 页面注册(树顺序) ----------
         addRowsPage("appearance", "外观");
         addRowsPage("openFiles", "文件与打开");
+        addRowsPage("media", "音视频播放器");
         addRowsPage("virtualTree", "虚拟文档树");
         addRowsPage("tags", "标签");
         addRowsPage("fileTree", "文件树");
@@ -1140,6 +1189,9 @@ export default class FileEditorPlugin extends Plugin {
         if (this.globalReadingModeInput) this.globalReadingModeInput.checked = this.config.globalReadingMode !== false;
         if (this.versionKeepCountInput) this.versionKeepCountInput.value = String(this.config.versionKeepCount ?? 10);
         if (this.deleteModeSelect) this.deleteModeSelect.value = this.config.deleteMode || "plugin";
+        // 音视频快捷键:显示规范化串(空 = 禁用)
+        if (this.mediaHotkeyMarkInput) this.mediaHotkeyMarkInput.value = formatHotkey(this.config.mediaHotkeyMark);
+        if (this.mediaHotkeyInsertInput) this.mediaHotkeyInsertInput.value = formatHotkey(this.config.mediaHotkeyInsert);
         if (this.newTabReplacePlusInput) this.newTabReplacePlusInput.checked = this.config.newTabReplacePlus !== false;
         if (this.marketTopBarIconInput) this.marketTopBarIconInput.checked = this.config.marketTopBarIcon !== false;
         if (this.newTabShowPinnedInput) this.newTabShowPinnedInput.checked = this.config.newTabShowPinned !== false;
@@ -1188,6 +1240,8 @@ export default class FileEditorPlugin extends Plugin {
             globalReadingMode: this.globalReadingModeInput?.checked ?? true,
             versionKeepCount: Math.max(0, parseInt(this.versionKeepCountInput?.value || "10", 10) || 0),
             deleteMode: ((this.deleteModeSelect?.value || "plugin") as "plugin" | "system"),
+            mediaHotkeyMark: normalizeHotkeyText(this.mediaHotkeyMarkInput?.value ?? ""),
+            mediaHotkeyInsert: normalizeHotkeyText(this.mediaHotkeyInsertInput?.value ?? ""),
             newTabReplacePlus: this.newTabReplacePlusInput?.checked ?? true,
             newTabShowPinned: this.newTabShowPinnedInput?.checked ?? true,
             newTabShowRecent: this.newTabShowRecentInput?.checked ?? true,

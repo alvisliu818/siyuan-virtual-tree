@@ -73,6 +73,9 @@ export interface EditorConfig {
     //   plugin = 移入插件回收站(工作空间 .siyuan/virtual-tree-trash,按原路径镜像,可一键恢复,默认)
     //   system = 移入操作系统回收站
     deleteMode: "plugin" | "system";
+    // 音视频播放器自定义快捷键(规范串见 utils/hotkey.ts;空 = 禁用)
+    mediaHotkeyMark: string;   // 在当前时间打点
+    mediaHotkeyInsert: string; // 时间戳链接插入可见笔记页签的光标处
     // 「虚拟文档树」面板顶部的**引用关系树**(按文档首块引用链接自动构建,与手动挂载共存)。
     // 关系树结构是只读派生视图(不落盘,每次现查);这里只持久化用户的显式意图:
     // 开关、排序设置、折叠状态(collapsed)。拖拽顺序在挂载配置(virtual-tree.json 的 customOrder)。
@@ -263,6 +266,9 @@ export const DEFAULT_CONFIG: EditorConfig = {
     versionKeepCount: 10,
     // 删除默认走插件回收站(可一键恢复)
     deleteMode: "plugin",
+    // 音视频播放器快捷键默认值(K 打点;Shift+K 把时间戳链接插入可见笔记)
+    mediaHotkeyMark: "K",
+    mediaHotkeyInsert: "Shift+K",
     // 引用关系树默认关闭(按需在设置里开启)
     mountTreeRelation: {
         enabled: false,

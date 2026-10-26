@@ -17,18 +17,28 @@ import {buildFileRefMd, consumePendingRef, peekPendingRef, type FileRef} from ".
 import {loadMarks, upsertMark, removeMark, saveMarks, type MediaMark} from "../utils/media-marks";
 import {openTreeFileWithExternalApp} from "../utils/external-app";
 import {wantsSplitOpen, pickTabOutsideActiveWnd} from "./split-open";
-// 分屏记笔记:把当前时间戳链接插进可见的 Markdown 页签光标处(Shift+K)
+// 分屏记笔记:把当前时间戳链接插进可见的 Markdown 页签光标处(快捷键可在设置里改)
 import {insertMarkdownIntoVisibleTab} from "./markdown-tab";
+// 自定义快捷键组合的解析与匹配
+import {parseHotkey, hotkeyMatches, formatHotkey, HotkeyDef} from "../utils/hotkey";
+// 快捷键默认值的单一定义源(DEFAULT_CONFIG)
+import {DEFAULT_CONFIG} from "../types";
 
 // 音视频播放器 Tab 所需的插件接口(结构化类型,避免循环依赖)
 export interface IPluginForMediaTab {
     app: any;
     name: string;
+    // 播放器快捷键等从插件配置读(结构化取字段,避免完整依赖 EditorConfig)
+    config?: {mediaHotkeyMark?: string; mediaHotkeyInsert?: string};
     getOpenedTab(): { [key: string]: any[] };
     // 时间戳标记持久化(插件存储)
     loadData(key: string): Promise<any>;
     saveData(key: string, data: any): Promise<void>;
 }
+
+// 快捷键默认值(可在设置面板改,空 = 禁用)
+const HOTKEY_MARK_DEFAULT = DEFAULT_CONFIG.mediaHotkeyMark;     // "K"
+const HOTKEY_INSERT_DEFAULT = DEFAULT_CONFIG.mediaHotkeyInsert; // "Shift+K"
 
 // 播放器 Tab 实例上附加的字段
 interface MediaTabInstance {
@@ -187,6 +197,7 @@ interface PlayerDOM {
     nextBtn: HTMLButtonElement;
     marksEl: HTMLElement;
     markAddBtn: HTMLButtonElement;
+    noteBtn: HTMLButtonElement;
 }
 
 // 构建播放器 DOM,返回关键节点引用
@@ -210,8 +221,8 @@ function buildPlayerDOM(container: HTMLElement): PlayerDOM {
                 <button class="b3-button b3-button--text" data-action="fullscreen" title="全屏 (F)">全屏</button>
                 <span class="syfe-media__sep"></span>
                 <button class="b3-button b3-button--text" data-action="copy" title="复制文件链接 (file://)">复制链接</button>
-                <button class="b3-button b3-button--text syfe-media__mark-add" data-action="mark" title="在当前时间打点 (K)">+ 时间戳</button>
-                <button class="b3-button b3-button--text" data-action="note" title="把当前时间戳的 Markdown 链接插入可见笔记页签的光标处 (Shift+K);没有笔记页签时复制链接">插入笔记</button>
+                <button class="b3-button b3-button--text syfe-media__mark-add" data-action="mark">+ 时间戳</button>
+                <button class="b3-button b3-button--text" data-action="note">插入笔记</button>
                 <button class="b3-button b3-button--text" data-action="save" title="另存为">另存为</button>
                 <span class="syfe-media__info"></span>
             </div>
@@ -237,6 +248,7 @@ function buildPlayerDOM(container: HTMLElement): PlayerDOM {
         nextBtn: container.querySelector('[data-action="next"]') as HTMLButtonElement,
         marksEl: container.querySelector(".syfe-media__marks") as HTMLElement,
         markAddBtn: container.querySelector('[data-action="mark"]') as HTMLButtonElement,
+        noteBtn: container.querySelector('[data-action="note"]') as HTMLButtonElement,
     };
 }
 
@@ -258,6 +270,22 @@ function createPlayer(dom: PlayerDOM, plugin: IPluginForMediaTab, tab: MediaTabI
     let loadEpoch = 0;
 
     const currentMedia = () => dom.stage.querySelector("video, audio") as HTMLMediaElement | null;
+
+    // ---- 自定义快捷键(设置面板「音视频播放器」可改) ----
+    // 每次按键现读插件配置:设置保存后已打开的播放器无需重开即生效
+    const hotkeyOf = (): {mark: HotkeyDef | null; insert: HotkeyDef | null} => ({
+        mark: parseHotkey(plugin.config?.mediaHotkeyMark ?? HOTKEY_MARK_DEFAULT),
+        insert: parseHotkey(plugin.config?.mediaHotkeyInsert ?? HOTKEY_INSERT_DEFAULT),
+    });
+
+    // 工具栏按钮提示跟随当前快捷键(创建时与每次切文件时刷新)
+    function refreshHotkeyTitles(): void {
+        const markText = formatHotkey(plugin.config?.mediaHotkeyMark ?? HOTKEY_MARK_DEFAULT);
+        const insertText = formatHotkey(plugin.config?.mediaHotkeyInsert ?? HOTKEY_INSERT_DEFAULT);
+        dom.markAddBtn.title = `在当前时间打点 (${markText || "未设置"})`;
+        dom.noteBtn.title =
+            `把当前时间戳的 Markdown 链接插入可见笔记页签的光标处 (${insertText || "未设置"});没有笔记页签时复制链接`;
+    }
 
     function updateInfo(): void {
         const media = currentMedia();
@@ -437,6 +465,7 @@ function createPlayer(dom: PlayerDOM, plugin: IPluginForMediaTab, tab: MediaTabI
         }
         updateInfo();
         syncToolbar();
+        refreshHotkeyTitles();
     }
 
     // 用系统默认应用打开(浏览器解码失败时的兜底)
@@ -768,19 +797,32 @@ function createPlayer(dom: PlayerDOM, plugin: IPluginForMediaTab, tab: MediaTabI
         const monacoEl = active?.closest?.(".monaco-editor") as HTMLElement | null;
         const inTextField = !!(active && /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName)) && !monacoEl;
         const inEditor = !!(active?.isContentEditable || monacoEl);
-        // K = 在当前时间打点;Shift+K = 时间戳链接插入可见笔记的光标处。
-        // 输入框(打点标签等)里完全不接管;笔记编辑器里打字时纯 K 让位,
-        // Shift+K 仍接管 —— 分屏记笔记不用点回播放器就能连续采集时间戳。
-        if ((e.key === "k" || e.key === "K") && !e.ctrlKey && !e.metaKey && !e.altKey && !inTextField) {
-            if (e.key === "K" || !inEditor) {
-                e.preventDefault();
-                e.stopPropagation();
-                if (e.key === "K") {
-                    void insertTimestampToNote();
-                } else {
-                    void addMarkAt(currentMedia()?.currentTime ?? 0);
+        // 时间戳快捷键(设置面板可自定义;输入框里完全不接管):
+        // 带修饰键的组合不产生文本,在笔记编辑器里也接管;
+        // 纯字母裸键在编辑器里让位给打字,其余位置照常触发
+        if (!inTextField) {
+            const {mark, insert} = hotkeyOf();
+            let action: "mark" | "insert" | null = null;
+            let def: HotkeyDef | null = null;
+            if (insert && hotkeyMatches(e, insert)) {
+                action = "insert";
+                def = insert;
+            } else if (mark && hotkeyMatches(e, mark)) {
+                action = "mark";
+                def = mark;
+            }
+            if (action && def) {
+                const hasMods = def.ctrl || def.alt || def.shift || def.meta;
+                if (hasMods || !inEditor) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (action === "insert") {
+                        void insertTimestampToNote();
+                    } else {
+                        void addMarkAt(currentMedia()?.currentTime ?? 0);
+                    }
+                    return;
                 }
-                return;
             }
         }
         if (inTextField) return;
@@ -836,6 +878,7 @@ function createPlayer(dom: PlayerDOM, plugin: IPluginForMediaTab, tab: MediaTabI
     dom.marksEl.addEventListener("click", onMarksClick);
     dom.marksEl.addEventListener("dblclick", onMarksDblClick);
     window.addEventListener("keydown", onKeyDown, true);
+    refreshHotkeyTitles();
     // 供外部(思源正文里点时间戳链接)让已开的页签跳到指定时间
     tab._applyFileRef = (ref: FileRef) => applyRefT(ref);
 
