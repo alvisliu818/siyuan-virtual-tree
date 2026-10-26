@@ -4,15 +4,15 @@
 // 数据层 src/mount-tree.ts(virtual-tree.json);结构变化派发 syfe:mount-tree-changed 自动重绘。
 import {Menu, Dialog, confirm, showMessage} from "siyuan";
 import {MOUNT_TREE_DOCK_TYPE} from "../constants";
-import {readDir, querySQL, updateBlock, setBlockAttrs, flushTransaction} from "../api/file";
+import {readDir, querySQL} from "../api/file";
 import {DirEntry} from "../types";
 import {basename, dirname, joinPath} from "../utils/path";
 import {fileIconHTML, folderIconHTML} from "../utils/icons";
 import {toFileLink} from "../utils/system-path";
 import {virtualListDir, virtualId, isNotebookRoot, isBoxDocEnabled} from "../utils/virtual-tree";
 import {docTreeIconHTML, cachedDocIcon, ensureDocIcons, getNotebookIcon} from "../utils/siyuan-icon";
-import {listChildBlocks, blockTitle, blockGutterIcon, soloImageInfo, imageMarkdownWithTitle, BlockNode} from "../utils/blocks";
-import {loadBlockNames, localBlockName, setLocalBlockName, blockDisplayMode, setBlockDisplayMode} from "../utils/block-names";
+import {listChildBlocks, blockTitle, blockGutterIcon, soloImageInfo, BlockNode} from "../utils/blocks";
+import {loadBlockDisplayModes, blockDisplayMode, setBlockDisplayMode} from "../utils/block-names";
 import {copyText, revealInFileTree, pickMountTargetDialog, showFileTreeMenu, findTreeRootEl, createNewFile, createNewFolder, buildFileTreeActions} from "../components/file-tree";
 import {openBaiduPanDialog} from "../components/baidu-pan-dialog";
 import {tagIconHTML} from "../tags/tag-ui";
@@ -36,7 +36,7 @@ import {BacklinkItem, findBacklinks, findDirBacklinks, findSiyuanRefBacklinks} f
 import {showDocMenu, showNotebookMenu, addPinFavEntries, DocMenuItem} from "../components/doc-menu";
 import {openSiyuanTagDialog} from "../components/siyuan-tag-dialog";
 import {openFileTab, syncOpenEditors} from "../tabs/editor-tab";
-import {mountPayload, promptMountPathDialog, pickBlockDialog, promptBlockName, showMountTargetMenu, ensureTargetMountItem} from "../components/mount-menu";
+import {mountPayload, promptMountPathDialog, pickBlockDialog, showMountTargetMenu, ensureTargetMountItem} from "../components/mount-menu";
 import {
     getRoots,
     removeMountItem,
@@ -1319,13 +1319,13 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 : "";
 
             // 表格块行内预览:Lute 把 markdown 渲染成块 DOM(截掉尾部 protyle-attr 标记),
-            // 等比缩放由 fitBlockPreviews 统一处理。渲染失败返回空串(退回普通文本行)。
+            // 等比缩放由 fitBlockPreviews 统一处理。结果必须含 <table>,否则视为失败(退回文字行)。
             const tablePreviewHTML = (md: string): string => {
                 if (!md) return "";
                 try {
-                    const html = (window as any).Lute?.Md2BlockDOM?.(md);
-                    if (!html) return "";
-                    return `<span class="syfe-mtree__preview syfe-mtree__preview--fit">${String(html).replace(/<div class="protyle-attr"[\s\S]*$/, "")}</span>`;
+                    const html = String((window as any).Lute?.Md2BlockDOM?.(md) || "");
+                    if (!html.includes("<table")) return "";
+                    return `<span class="syfe-mtree__preview syfe-mtree__preview--fit">${html.replace(/<div class="protyle-attr"[\s\S]*$/, "")}</span>`;
                 } catch {
                     return "";
                 }
@@ -1337,21 +1337,21 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
             // - 表格:块标图标(iconTable),行内等比缩放预览,名称显示块命名(没有就不显示文字);
             // - 其余块:块标(gutter)图标 —— 标题按层级 iconH1-H6、列表按有序/无序/任务细分,
             //   挂载标题块与下面的子标题都各用对应层级的图标;名称显示文本标题。
-            // 命名显示优先取本地命名(设置关闭「块命名写入文档」时的落点),再取文档里的标题/命名。
+            // 表格行的文字显示块命名(bname);名称与预览的显示模式由右键切换,按块记忆。
             const blockRowParts = (blockId: string, fallbackName: string, info: {btype?: string; bsubtype?: string; bmd?: string; bname?: string}) => {
                 // blockGutterIcon 返回的是图标名(如 iconH4),这里包成 svg 才能当行图标渲染
                 const gutter = `<svg><use xlink:href="#${blockGutterIcon(info.btype || "p", info.bsubtype || "")}"></use></svg>`;
                 const img = info.btype === "p" && info.bmd ? soloImageInfo(info.bmd) : null;
                 if (img) {
-                    const local = localBlockName(blockId);
                     const tip = `思源块:${blockId}`
                         + (img.title ? ` · 标题:${img.title}` : "")
                         + (img.alt ? ` · 提示文本:${img.alt}` : "");
-                    // 右键可切「显示标题 / 显示缩放图」:两种模式只出一者,不混排
+                    // 右键可切「显示标题 / 显示缩放图」:两种模式只出一者,不混排。
+                    // 标题模式:用图片标题或提示文字,都没有就用块 id
                     if (blockDisplayMode(blockId) === "text") {
                         return {
                             icon: fileIconHTML(basename(img.src)),
-                            name: local || img.title || img.alt || fallbackName,
+                            name: img.title || img.alt || blockId,
                             sub: "", tip, preview: "",
                         };
                     }
@@ -1362,9 +1362,10 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                     };
                 }
                 if (info.btype === "t") {
-                    // 右键可切「显示标题 / 显示缩放表格」:两种模式只出一者;预览渲染失败回退文本标题
+                    // 右键可切「显示标题 / 显示缩放表格」:两种模式只出一者。
+                    // 标题模式:用块命名,没有就用块 id(不用单元格拼接文本);预览渲染失败同样回退
                     const preview = blockDisplayMode(blockId) === "preview" ? tablePreviewHTML(info.bmd || "") : "";
-                    const name = preview ? "" : (localBlockName(blockId) || info.bname || fallbackName);
+                    const name = preview ? "" : (info.bname || blockId);
                     const tip = `思源块:${blockId}` + (name ? ` · 命名:${name}` : "");
                     return {icon: gutter, name, sub: "", tip, preview};
                 }
@@ -1876,7 +1877,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 ensureRelationTree(true);
             };
 
-            // 图片/表格块的右键显示项:命名 + 行内显示模式二选一(打勾为当前模式,按块记忆)。
+            // 图片/表格块的右键显示项:行内显示模式二选一(打勾为当前模式,按块记忆)。
             // rowInfo 传块子行的行上数据;挂载根行传 null(从 _blockMeta 取)。
             const addBlockDisplayItems = (menu: Menu, blockId: string, rowInfo: {btype?: string; bmd?: string} | null) => {
                 const meta = self._blockMeta?.get(blockId);
@@ -1884,9 +1885,9 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 const isImage = btype === "p" && soloImageInfo(rowInfo?.bmd ?? meta?.markdown ?? "");
                 const isTable = btype === "t";
                 if (!isImage && !isTable) return;
-                menu.addItem({icon: "iconEdit", label: "命名", click: () => renameMountedBlock(blockId, rowInfo)});
                 const mode = blockDisplayMode(blockId);
                 menu.addItem({
+                    icon: "iconFont",
                     label: "显示标题",
                     current: mode === "text",
                     click: () => {
@@ -1903,62 +1904,6 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                         render();
                     },
                 } as any);
-            };
-
-            // 挂载块命名:单图段落 → 改 markdown 里的图片标题;表格 → 写块命名(name 属性)。
-            // 设置「块命名写入文档」关闭时仅存本地(block-names.json),只在虚拟树上显示。
-            // rowInfo 传块子行的行上数据;挂载根行行上没有,传 null 由这里现查。
-            const renameMountedBlock = (blockId: string, rowInfo: {btype?: string; bmd?: string; bname?: string} | null) => {
-                void (async () => {
-                    let info = rowInfo && rowInfo.btype ? rowInfo : null;
-                    if (!info) {
-                        const meta = self._blockMeta?.get(blockId);
-                        if (meta) {
-                            info = {btype: meta.type, bmd: meta.markdown, bname: meta.name};
-                        } else {
-                            try {
-                                const rs = await querySQL(`SELECT type, markdown, name FROM blocks WHERE id = '${blockId.replace(/'/g, "''")}' LIMIT 1`);
-                                info = rs && rs[0]
-                                    ? {btype: String(rs[0].type || "p"), bmd: String(rs[0].markdown || ""), bname: String(rs[0].name || "")}
-                                    : null;
-                            } catch {
-                                info = null;
-                            }
-                        }
-                    }
-                    const img = info && info.btype === "p" ? soloImageInfo(info.bmd || "") : null;
-                    const isTable = info?.btype === "t";
-                    if (!img && !isTable) {
-                        showMessage("只有图片块和表格块支持命名", 3000, "info");
-                        return;
-                    }
-                    const current = localBlockName(blockId)
-                        || (img ? (img.title || img.alt || "") : (info?.bname || ""));
-                    promptBlockName(img ? "命名图片" : "命名表格", current, (name) => {
-                        void (async () => {
-                            try {
-                                if (plugin.config?.mountTreeBlockNameWrite !== false) {
-                                    if (img) {
-                                        const md = imageMarkdownWithTitle(info!.bmd || "", name);
-                                        if (md == null) throw new Error("图片内容已变化,请刷新后重试");
-                                        await updateBlock(blockId, md);
-                                    } else {
-                                        await setBlockAttrs(blockId, {name});
-                                    }
-                                    await flushTransaction();
-                                    // 文档已更新:块元数据与子块缓存作废,重绘时重新查询
-                                    self._blockMeta?.delete(blockId);
-                                    self._cache = new Map<string, DirEntry[] | BlockNode[]>();
-                                } else {
-                                    setLocalBlockName(blockId, name);
-                                }
-                                render();
-                            } catch (err) {
-                                showMessage(`命名失败:${err instanceof Error ? err.message : String(err)}`, 3500, "error");
-                            }
-                        })();
-                    });
-                })();
             };
 
             // 右键:文件/文件夹复用文件树完整菜单;思源文档/笔记本给「原生」文档菜单
@@ -2311,7 +2256,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                     .join("");
             };
             renderToolbar();
-            void loadBlockNames(plugin as any);
+            void loadBlockDisplayModes(plugin as any);
             void loadToolbarCfg(plugin as any).then((cfg) => {
                 toolbarCfg = cfg;
                 renderToolbar();
