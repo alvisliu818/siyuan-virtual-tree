@@ -35,9 +35,11 @@ const SIYUAN_PLUGIN_DIR = process.env.SYFI_PLUGIN_DIR
 
 // node-pty 依赖目录。node-pty 是原生模块(内含平台相关的 .node/.dll),
 // 无法被 webpack 打包,只能原样复制到插件目录,由运行时 require 加载。
-// 装在 scripts/ 下(与 terminal-server 共用依赖),打包时按当前平台只复制一份。
-// 注意:scripts/ 是独立 npm 子项目(有自己的 node_modules),不走根的 PnP。
-const NODE_PTY_SRC = path.resolve(__dirname, "scripts", "node_modules", "node-pty");
+// PnP:根依赖的 node-pty 带构建脚本,install 时自动 unplug 到磁盘(含全套
+// prebuilds),直接作为复制源;scripts/node_modules 保留为 npm 子项目时代的
+// 兜底(terminal-server 外部服务模式仍用它,缺依赖时它自己会提示 npm install)。
+const NODE_PTY_SRC = resolvePkgDir("node-pty")
+    || path.resolve(__dirname, "scripts", "node_modules", "node-pty");
 const NODE_PTY_DEST = "node_modules/node-pty";
 
 /**
@@ -276,13 +278,14 @@ module.exports = (env, argv) => {
         mode: argv.mode || "development",
         watch: !production,
         devtool: production ? false : "eval-source-map",
-        // 持久化缓存:模块图与转换结果序列化到 node_modules/.cache/webpack,
-        // 二次构建跳过全部模块重建/转换(实测 17s → 4s 级)。缓存键含配置与
-        // 依赖清单(见 buildDependencies),改配置/装依赖自动失效,不会用旧缓存
-        // 打出过期产物。PnP 迁移后 node_modules/ 不再由包管理器创建,webpack 会
-        // 自行 mkdir 这个缓存目录(.gitignore 已覆盖 node_modules/),不入库。
+        // 持久化缓存:模块图与转换结果序列化到 .webpack-cache/(PnP 迁移后项目里
+        // 不应再出现 node_modules —— 缓存目录从默认的 node_modules/.cache 挪出,
+        // 否则每次构建都会把 node_modules 目录建回来),二次构建跳过全部模块
+        // 重建/转换(实测 17s → 4s 级)。缓存键含配置与依赖清单(见
+        // buildDependencies),改配置/装依赖自动失效,不会用旧缓存打出过期产物。
         cache: {
             type: "filesystem",
+            cacheDirectory: path.resolve(__dirname, ".webpack-cache"),
             buildDependencies: {
                 config: [__filename, path.resolve(__dirname, "package.json")],
             },

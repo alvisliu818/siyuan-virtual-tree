@@ -58,3 +58,5 @@ tools/_reload.mjs
 .pnp.loader.mjs
 .yarn/
 yarn.lock
+# webpack 文件系统缓存(PnP 迁移后从 node_modules/.cache 挪出,node_modules 不应再出现)
+.webpack-cache/
