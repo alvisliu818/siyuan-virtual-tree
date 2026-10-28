@@ -6,7 +6,7 @@
  * 的个人维护版)。原插件以独立 Plugin 子类运行,并入后拆成宿主适配层:
  *  - applyFakeDocBreadcrumb(host, enabled) = 总开关 + 原 onload/onLayoutReady
  *  - destroyFakeDocBreadcrumb()            = 原 onunload
- *  - openFakeDocBreadcrumbSettings(host)   = 原 openSetting(模块自身的细分设置对话框)
+ *  - getFakeDocBreadcrumbSettings / saveFakeDocBreadcrumbSettings = 细分设置供宿主设置面板读写
  * 设置持久化走宿主 saveData/loadData(独立文件名,避开宿主的 VS Code 式 settings.json);
  * 文案自包含(i18n.ts,源自原插件 i18n/*.json)。除适配层外的逻辑保持原样,便于跟随上游同步。
  * 原模块的 utils.js(占位工具:add/PI)未被任何逻辑引用,未迁入。
@@ -118,12 +118,12 @@ let g_setting_default = {
 //
 // 原插件以独立 Plugin 子类运行;并入宿主后:
 //  - 总开关 = 宿主设置面板「文档面包屑」页(宿主 config.json 的 fakeDocBreadcrumbEnabled,默认开)
-//  - 模块自身 20+ 项细分设置仍存独立文件(SETTINGS_NAME),由 openFakeDocBreadcrumbSettings
-//    打开原设置对话框修改
+//  - 模块自身 20+ 项细分设置仍存独立文件(SETTINGS_NAME),由宿主设置面板「文档面包屑」页直接读写
 //  - 事件挂宿主 plugin.eventBus,打开文档用宿主 plugin.app
 // ==========================================================================
 let g_host: any = null;
 let g_active = false; // 总开关当前状态(apply/destroy 维护)
+let g_lastSavedSnapshot: Record<string, any> | null = null; // 最近一次保存的全量设置(见 saveFakeDocBreadcrumbSettings)
 
 /**
  * 按总开关启用/停用本模块(幂等;宿主 onLayoutReady 与保存设置后调用)
@@ -192,6 +192,11 @@ export function applyFakeDocBreadcrumb(host: any, enabled: boolean): void {
                 if (g_setting[key] == null) {
                     g_setting[key] = g_setting_default[key];
                 }
+            }
+            // 同一次保存里总开关从关→开时,上面的 loadData 可能读到落盘前的旧文件;
+            // 叠加最近一次保存的全量快照,保证最新用户意图不被旧值覆盖
+            if (g_lastSavedSnapshot) {
+                Object.assign(g_setting, g_lastSavedSnapshot);
             }
             eventBusInnerHandler();
             // 启动时清除所有文档的聚焦位置残留记录，避免新开页签恢复聚焦
@@ -269,91 +274,40 @@ function offEventBusInnerHander() {
     }
 }
 
+/** 宿主设置面板读取当前生效设置(初始化前各键为 null,调用方需用默认值兜底) */
+export function getFakeDocBreadcrumbSettings(): Record<string, any> {
+    return g_setting;
+}
+
+/** 宿主设置面板读取默认值表(与 getFakeDocBreadcrumbSettings 同键) */
+export function getFakeDocBreadcrumbDefaultSettings(): Record<string, any> {
+    return g_setting_default;
+}
+
 /**
- * 模块细分设置对话框(原 openSetting,内容与行为不变;持久化走宿主存储)
- * 总开关关闭时也可打开查看/修改,但改动要等总开关重新打开后才应用。
+ * 宿主设置面板保存细分设置(原独立对话框的保存逻辑):
+ * 合并进 g_setting → 全量落盘 → 总开关开着时立即重挂样式/监听/事件
  */
-export function openFakeDocBreadcrumbSettings(host: any) {// 创建dialog
-    g_host = host;
-    const settingDialog = new siyuan.Dialog({
-        "title": language["setting_panel_title"],
-        "content": `
-            <div class="b3-dialog__content" style="flex: 1;">
-                <div id="${CONSTANTS.PLUGIN_NAME}-form-content" style="overflow: auto;"></div>
-            </div>
-            <div class="b3-dialog__action" id="${CONSTANTS.PLUGIN_NAME}-form-action" style="max-height: 40px">
-                <button class="b3-button b3-button--cancel">${language["button_cancel"]}</button><div class="fn__space"></div>
-                <button class="b3-button b3-button--text">${language["button_save"]}</button>
-            </div>
-            `,
-        "width": isMobile() ? "92vw":"1040px",
-        "height": isMobile() ? "70vh":"80vh",
-    });
-    debugPush("dialog", settingDialog);
-    const actionButtons = settingDialog.element.querySelectorAll(`#${CONSTANTS.PLUGIN_NAME}-form-action button`);
-    actionButtons[0].addEventListener("click",()=>{settingDialog.destroy()}),
-    actionButtons[1].addEventListener("click",()=>{
-        debugPush('SAVING');
-        let uiSettings = loadUISettings(settingForm);
-        if (isSomePluginExist(g_host.app.plugins, CONSTANTS.MULTILINE_CONFLICT_PLUGINS) && uiSettings.oneLineBreadcrumb == false) {
-            siyuan.showMessage(`${language["conflict_plugin_oneline_breadcrumb"]}<br/> ——[${g_host.name}]`, 13000);
+export function saveFakeDocBreadcrumbSettings(patch: Record<string, any>): void {
+    Object.assign(g_setting, patch);
+    // 全量落盘(默认值兜底),避免初始化前保存时把 null 写进文件
+    const merged = Object.assign({}, g_setting_default, g_setting);
+    g_lastSavedSnapshot = merged;
+    if (g_host) {
+        try {
+            g_host.saveData(SETTINGS_NAME, JSON.stringify(merged));
+        } catch (e) {
+            warnPush("保存文档面包屑设置失败", e);
         }
-        g_host.saveData(SETTINGS_NAME, JSON.stringify(uiSettings));
-        Object.assign(g_setting, uiSettings);
-        // 总开关开着才即时应用样式/监听/事件;关闭时仅保存,待总开关打开后生效
-        if (g_active) {
-            removeStyle();
-            setStyle();
-            removeMouseKeyboardListener();
-            setMouseKeyboardListener();
-            offEventBusInnerHander();
-            eventBusInnerHandler();
-        }
-        debugPush("SAVED");
-        settingDialog.destroy();
-    });
-    // 绑定dialog和移除操作
-
-    // 生成配置页面
-    const hello = document.createElement('div');
-    const settingForm = document.createElement("form");
-    settingForm.setAttribute("name", CONSTANTS.PLUGIN_NAME);
-    settingForm.appendChild(generateSettingPanel([
-        new SettingProperty("RESERVE_HINT", "HINT", null),
-        new SettingProperty("docMaxNum", "NUMBER", [0, 1024]),
-        new SettingProperty("nameMaxLength", "NUMBER", [0, 1024]),
-        new SettingProperty("showNotebook", "SWITCH", null),
-        new SettingProperty("showRoot", "SWITCH", null),
-        new SettingProperty("typeHide", "SWITCH", null),
-        new SettingProperty("oneLineBreadcrumb", "SWITCH", null),
-        new SettingProperty("foldedFrontShow", "NUMBER", [0, 8]),
-        new SettingProperty("foldedEndShow", "NUMBER", [0, 8]),
-        new SettingProperty("allowFloatWindow", "SWITCH", null),
-        new SettingProperty("usePluginArrow", "SWITCH", null),
-        new SettingProperty("notOnlyOpenDocs", "SWITCH", null),
-        new SettingProperty("preferOpenInCurrentSplit", "SWITCH", null),
-        new SettingProperty("icon", "SELECT", [
-            {value:0},
-            {value:1},
-            {value:2}]),
-        new SettingProperty("immediatelyUpdate", "SWITCH", null),
-        new SettingProperty("menuExtendSubDocDepth", "NUMBER", [1, 7]),
-        new SettingProperty("swapClickFunction", "SWITCH", null),
-        new SettingProperty("showAdjacentDocButton", "SELECT", [
-            {value: CONSTANTS.ADJ_NONE},
-            {value: CONSTANTS.ADJ_SAME_PARENT},
-            {value: CONSTANTS.ADJ_SAME_LEVEL},
-        ]),
-        new SettingProperty("createDocBtnInMenu", "SWITCH", null),
-        new SettingProperty("noFocusRestore", "SWITCH", null),
-        new SettingProperty("headingOnlyBreadcrumb", "SWITCH", null),
-        new SettingProperty("bdClickScroll", "SWITCH", null),
-        new SettingProperty("docIconScrollTop", "SWITCH", null),
-        new SettingProperty("showCurrentDocName", "SWITCH", null),
-    ]));
-
-    hello.appendChild(settingForm);
-    settingDialog.element.querySelector(`#${CONSTANTS.PLUGIN_NAME}-form-content`).appendChild(hello);
+    }
+    if (g_active) {
+        removeStyle();
+        setStyle();
+        removeMouseKeyboardListener();
+        setMouseKeyboardListener();
+        offEventBusInnerHander();
+        eventBusInnerHandler();
+    }
 }
 
 
@@ -409,39 +363,6 @@ function errorPush(str, ... args) {
 function warnPush(str, ... args) {
     if (commonPushCheck() >= 2) {
         console.warn(`${g_FULLNAME}[W] ${new Date().toLocaleString()} ${str}`, ...args);
-    }
-}
-
-class SettingProperty {
-    id;
-    simpId;
-    name;
-    desp;
-    type;
-    limit;
-    value;
-    onClick;
-    /**
-     * 设置属性对象
-     * @param {*} id 唯一定位id
-     * @param {*} type 设置项类型
-     * @param {*} limit 限制
-     */
-    constructor(id, type, limit, value = undefined) {
-        this.id = `${CONSTANTS.PLUGIN_NAME}_${id}`;
-        this.simpId = id;
-        this.name = language[`setting_${id}_name`] ?? id;
-        this.desp = language[`setting_${id}_desp`] ?? id + "_desp";
-        this.type = type;
-        this.limit = limit;
-        if (value) {
-            this.value = value;
-        }else{
-            this.value = g_setting[this.simpId];
-        }
-        if (typeof this.value  === 'function') {
-            this.onClick = this.value;
-        }
     }
 }
 
@@ -3195,191 +3116,6 @@ function isValidStr(s){
 		return false;
 	}
 	return true;
-}
-
-/**
- * 根据设置对象数组，使用 HTMLElement 创建设置面板
- * @param {Array<object>} settingObjectArray - 设置项对象的数组。
- * @param {object} [language={}] - (可选) 语言包对象，用于国际化。
- * @returns {DocumentFragment} - 包含所有设置项 DOM 元素的文档片段。
- */
-function generateSettingPanel(settingObjectArray) {
-    // 使用 DocumentFragment 可以一次性将所有元素添加到 DOM，效率更高
-    const fragment = document.createDocumentFragment();
-
-    for (const oneSettingProperty of settingObjectArray) {
-        // 1. 创建每个设置项的根容器
-        let outterItemContainer;
-        if (oneSettingProperty.type === "SWITCH") {
-            outterItemContainer = document.createElement("label");
-            outterItemContainer.className = "fn__flex b3-label";
-        } else {
-            outterItemContainer = document.createElement("div");
-            outterItemContainer.className = "fn__flex b3-label config__item";
-        }
-
-        // 2. 创建左侧的标题和描述区域
-        const infoDiv = document.createElement("div");
-        infoDiv.className = "fn__flex-1";
-
-        // 处理标题文本
-        infoDiv.appendChild(document.createTextNode(oneSettingProperty.name));
-
-        // 处理描述文本（支持 HTML）
-        let despHTML = oneSettingProperty.desp ?? "";
-        if (oneSettingProperty.name.includes("🧪")) {
-            const experimentalText = language["setting_experimental"] || "（实验性功能）";
-            despHTML = experimentalText + despHTML;
-        }
-
-        if (despHTML) {
-            const descriptionElement = document.createElement('div');
-            descriptionElement.className = 'b3-label__text';
-            // 替换 <code> 为带 class 的版本以应用样式
-            despHTML = despHTML.replace(/<code>/g, "<code class='fn__code'>");
-            descriptionElement.innerHTML = despHTML;
-            infoDiv.appendChild(descriptionElement);
-        }
-
-        outterItemContainer.appendChild(infoDiv);
-
-        // 3. 根据类型创建右侧的交互控件
-        let controlElement = null;
-
-        switch (oneSettingProperty.type) {
-            case "NUMBER": {
-                controlElement = document.createElement("input");
-                controlElement.className = "b3-text-field fn__flex-center fn__size200";
-                controlElement.type = "number";
-                const [min, max] = oneSettingProperty.limit || [null, null];
-                if (min !== null) controlElement.min = min;
-                if (max !== null) controlElement.max = max;
-                controlElement.value = oneSettingProperty.value;
-                break;
-            }
-            case "SELECT": {
-                controlElement = document.createElement("select");
-                controlElement.className = "b3-select fn__flex-center fn__size200";
-                
-                oneSettingProperty.limit.forEach(option => {
-                    const optionElement = document.createElement("option");
-                    optionElement.value = option.value;
-                    let optionName = language[`setting_${oneSettingProperty.simpId}_option_${option.value}`] || option.value;
-                    optionElement.textContent = optionName;
-                    if (option.value == oneSettingProperty.value) {
-                        optionElement.selected = true;
-                    }
-                    controlElement.appendChild(optionElement);
-                });
-                break;
-            }
-            case "TEXT": {
-                controlElement = document.createElement("input");
-                controlElement.className = "b3-text-field fn__flex-center fn__size200";
-                controlElement.type = "text";
-                controlElement.value = oneSettingProperty.value;
-                break;
-            }
-            case "SWITCH": {
-                controlElement = document.createElement("input");
-                controlElement.className = "b3-switch fn__flex-center";
-                controlElement.type = "checkbox";
-                controlElement.checked = !!oneSettingProperty.value;
-                break;
-            }
-            case "TEXTAREA": {
-                // TEXTAREA 结构特殊，控件在左侧区域的下方
-                infoDiv.appendChild(document.createElement("div")).className = "fn__hr";
-                controlElement = document.createElement("textarea");
-                controlElement.className = "b3-text-field fn__block";
-                controlElement.value = oneSettingProperty.value;
-                infoDiv.appendChild(controlElement);
-                controlElement = null; // 标记为 null，防止下面重复添加
-                break;
-            }
-            case "BUTTON": { // ✨ 新增对 BUTTON 的支持
-                controlElement = document.createElement("button");
-                controlElement.className = "b3-button b3-button--outline fn__flex-center fn__size200";
-                controlElement.type = "button";
-                // 按钮文本可由 settingObject 的 `buttonText` 属性指定
-                controlElement.textContent = oneSettingProperty.buttonText || "执行操作 Click to Run";
-                // 可以从 settingObject 传入一个 onClick 回调函数
-                logPush("test", typeof oneSettingProperty.onClick)
-                if (typeof oneSettingProperty.onClick === 'function') {
-                    controlElement.addEventListener('click', oneSettingProperty.onClick);
-                }
-                break;
-            }
-            case "HINT": {
-                // HINT 类型没有交互控件
-                break;
-            }
-        }
-
-        // 4. 如果存在交互控件，则将其添加到容器中
-        if (controlElement) {
-            // 为控件设置通用属性
-            if (oneSettingProperty.id) controlElement.id = oneSettingProperty.id;
-            if (oneSettingProperty.simpId) controlElement.name = oneSettingProperty.simpId;
-
-            // 添加一个间隔元素
-            outterItemContainer.appendChild(document.createElement("span")).className = "fn__space";
-            // 将控件添加到容器
-            outterItemContainer.appendChild(controlElement);
-        }
-
-        // 5. 将构建好的整个设置项添加到文档片段中
-        fragment.appendChild(outterItemContainer);
-    }
-
-    return fragment;
-}
-
-/**
- * 由设置界面读取配置
- */
-function loadUISettings(formElement) {
-    let data = new FormData(formElement);
-    // 扫描标准元素 input[]
-    let result = {};
-    for(const [key, value] of data.entries()) {
-        // console.log(key, value);
-        result[key] = value;
-        if (value === "on") {
-            result[key] = true;
-        }else if (value === "null" || value == "false") {
-            result[key] = "";
-        }
-    }
-    let checkboxes = formElement.querySelectorAll('input[type="checkbox"]');
-    for (let i = 0; i < checkboxes.length; i++) {
-        let checkbox = checkboxes[i];
-        // console.log(checkbox, checkbox.name, data[checkbox.name], checkbox.name);
-        if (result[checkbox.name] == undefined) {
-            result[checkbox.name] = false;
-        }
-    }
-
-    let numbers = formElement.querySelectorAll("input[type='number']");
-    // console.log(numbers);
-    for (let number of numbers) {
-        let minValue = number.getAttribute("min");
-        let maxValue = number.getAttribute("max");
-        let value = parseFloat(number.value);
-
-        if (minValue !== null && value < parseFloat(minValue)) {
-            number.value = minValue;
-            result[number.name] = parseFloat(minValue);
-        } else if (maxValue !== null && value > parseFloat(maxValue)) {
-            number.value = maxValue;
-            result[number.name] = parseFloat(maxValue);
-        } else {
-            result[number.name] = value;
-        }
-    }
-
-    debugPush("UI SETTING", result);
-    return result;
 }
 
 function isMobile() {

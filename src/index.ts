@@ -83,7 +83,8 @@ import {installLuteGuard} from "./utils/lute-guard";
 import {refreshAllExpanded} from "./components/file-tree";
 import {refreshAllTabIcons} from "./utils/tab-icon";
 import {destroyCodeRender, initCodeRender, buildCodeRenderSettingPages} from "./code-render";
-import {applyFakeDocBreadcrumb, destroyFakeDocBreadcrumb, openFakeDocBreadcrumbSettings} from "./fake-doc-breadcrumb";
+import {applyFakeDocBreadcrumb, destroyFakeDocBreadcrumb, getFakeDocBreadcrumbDefaultSettings, getFakeDocBreadcrumbSettings, saveFakeDocBreadcrumbSettings} from "./fake-doc-breadcrumb";
+import {initLanguage as initFdbLanguage, language as fdbLang} from "./fake-doc-breadcrumb/i18n";
 import "./index.scss";
 
 // 守卫必须在插件加载的第一时间生效 —— 早于任何 vditor 实例被创建。
@@ -193,6 +194,8 @@ export default class FileEditorPlugin extends Plugin {
     private mountTreeRelationExpandInput?: HTMLInputElement;
     // 文档面包屑(并入自 fake-doc-breadcrumb)总开关
     private fakeDocBreadcrumbEnabledInput?: HTMLInputElement;
+    // 文档面包屑细分设置控件(键 = 模块设置键,见 buildSettingItems 的 fdbSpec)
+    private fdbControls: Record<string, HTMLInputElement | HTMLSelectElement> = {};
 
     /**
      * 清掉失效的 dock 状态记录。
@@ -1003,12 +1006,65 @@ export default class FileEditorPlugin extends Plugin {
         this.fakeDocBreadcrumbEnabledInput.className = "b3-switch";
         addRow("docBreadcrumb", "启用文档面包屑", "在思源文档顶部插入一行「文档面包屑」:显示笔记本与文档路径层级,点击层级打开文档,点「>」展开同层子文档菜单,右侧可显示上一篇/下一篇;并附带「新开页签不恢复聚焦」「块面包屑仅显示标题」「点击路径滚动定位」等增强。关闭后立即移除已插入的面包屑并停止监听", this.fakeDocBreadcrumbEnabledInput);
 
-        // 细分设置:沿用模块自带对话框(20+ 项,改动保存后立即生效)
-        const fdbSettingsBtn = document.createElement("button");
-        fdbSettingsBtn.className = "b3-button b3-button--outline";
-        fdbSettingsBtn.textContent = "打开详细设置…";
-        fdbSettingsBtn.addEventListener("click", () => openFakeDocBreadcrumbSettings(this as any));
-        addRow("docBreadcrumb", "面包屑详细设置", "文档名最大长度、图标显示、折叠层数、下层文档菜单深度、点击行为交换、浮窗预览等 20+ 项细分设置,在独立对话框中修改", fdbSettingsBtn);
+        // 细分设置:原独立对话框的 23 项直接铺进本页;文案复用模块 i18n(标题/描述/下拉选项)
+        // 设置存模块自己的 fake-doc-breadcrumb-settings.json,保存走 saveFakeDocBreadcrumbSettings(立即生效)
+        initFdbLanguage();
+        const fdbStrip = (s: unknown) => String(s ?? "").replace(/<[^>]*>/g, "");
+        const fdbSpec: Array<{key: string; kind: "switch" | "number" | "select"; min?: number; max?: number; options?: string[]}> = [
+            {key: "docMaxNum", kind: "number", min: 0, max: 1024},
+            {key: "nameMaxLength", kind: "number", min: 0, max: 1024},
+            {key: "showNotebook", kind: "switch"},
+            {key: "showRoot", kind: "switch"},
+            {key: "typeHide", kind: "switch"},
+            // oneLineBreadcrumb(与块面包屑同行)不暴露:上游已标记废弃,保持默认关闭的休眠状态
+            {key: "foldedFrontShow", kind: "number", min: 0, max: 8},
+            {key: "foldedEndShow", kind: "number", min: 0, max: 8},
+            {key: "allowFloatWindow", kind: "switch"},
+            {key: "usePluginArrow", kind: "switch"},
+            {key: "notOnlyOpenDocs", kind: "switch"},
+            {key: "preferOpenInCurrentSplit", kind: "switch"},
+            {key: "icon", kind: "select", options: ["0", "1", "2"]},
+            {key: "immediatelyUpdate", kind: "switch"},
+            {key: "menuExtendSubDocDepth", kind: "number", min: 1, max: 7},
+            {key: "swapClickFunction", kind: "switch"},
+            {key: "showAdjacentDocButton", kind: "select", options: ["0", "1", "2"]},
+            {key: "createDocBtnInMenu", kind: "switch"},
+            {key: "noFocusRestore", kind: "switch"},
+            {key: "headingOnlyBreadcrumb", kind: "switch"},
+            {key: "bdClickScroll", kind: "switch"},
+            {key: "docIconScrollTop", kind: "switch"},
+            {key: "showCurrentDocName", kind: "switch"},
+        ];
+        for (const spec of fdbSpec) {
+            const title = fdbStrip(fdbLang[`setting_${spec.key}_name`]) || spec.key;
+            const desc = fdbStrip(fdbLang[`setting_${spec.key}_desp`]);
+            let ctl: HTMLInputElement | HTMLSelectElement;
+            if (spec.kind === "switch") {
+                const input = document.createElement("input");
+                input.type = "checkbox";
+                input.className = "b3-switch";
+                ctl = input;
+            } else if (spec.kind === "number") {
+                const input = document.createElement("input");
+                input.type = "number";
+                input.className = "b3-text-field";
+                if (spec.min != null) input.min = String(spec.min);
+                if (spec.max != null) input.max = String(spec.max);
+                ctl = input;
+            } else {
+                const select = document.createElement("select");
+                select.className = "b3-select";
+                for (const v of spec.options ?? []) {
+                    const opt = document.createElement("option");
+                    opt.value = v;
+                    opt.textContent = fdbStrip(fdbLang[`setting_${spec.key}_option_${v}`]) || v;
+                    select.appendChild(opt);
+                }
+                ctl = select;
+            }
+            this.fdbControls[spec.key] = ctl;
+            addRow("docBreadcrumb", title, desc, ctl);
+        }
 
         // ---------- 百度网盘 ----------
         const bdPanBtn = document.createElement("button");
@@ -1267,6 +1323,18 @@ export default class FileEditorPlugin extends Plugin {
         if (this.mountTreeRelationExpandInput) this.mountTreeRelationExpandInput.value = String(rel.defaultExpandLevel ?? 1);
         // 文档面包屑总开关回填
         if (this.fakeDocBreadcrumbEnabledInput) this.fakeDocBreadcrumbEnabledInput.checked = this.config.fakeDocBreadcrumbEnabled !== false;
+        // 文档面包屑细分设置回填(模块未初始化时各键为 null,用默认值兜底)
+        const fdbCur = getFakeDocBreadcrumbSettings();
+        const fdbDef = getFakeDocBreadcrumbDefaultSettings();
+        for (const key of Object.keys(this.fdbControls)) {
+            const ctl = this.fdbControls[key];
+            const v = fdbCur[key] != null ? fdbCur[key] : fdbDef[key];
+            if (ctl instanceof HTMLInputElement && ctl.type === "checkbox") {
+                ctl.checked = v === true;
+            } else {
+                ctl.value = v == null ? "" : String(v);
+            }
+        }
         // 主题下拉的选项依赖扩展数据,此处仅同步值;选项在 onLayoutReady 后填充
         this.refreshThemeSettingUI();
     }
@@ -1352,6 +1420,23 @@ export default class FileEditorPlugin extends Plugin {
         setTrashMode(this.config.deleteMode || "plugin");
         // 关闭未保存行为跟随设置生效
         setCloseUnsavedAction(this.config.closeUnsavedAction);
+        // 文档面包屑细分设置:收集控件值(开关=布尔,数字=夹紧范围,下拉=字符串)写模块设置文件
+        // 必须先于总开关 apply:总开关打开时的初始化会从磁盘读刚写入的值
+        const fdbPatch: Record<string, string | number | boolean> = {};
+        for (const [key, ctl] of Object.entries(this.fdbControls)) {
+            if (ctl instanceof HTMLInputElement && ctl.type === "checkbox") {
+                fdbPatch[key] = ctl.checked;
+            } else if (ctl instanceof HTMLInputElement && ctl.type === "number") {
+                const min = ctl.min === "" ? -Infinity : parseFloat(ctl.min);
+                const max = ctl.max === "" ? Infinity : parseFloat(ctl.max);
+                let n = parseFloat(ctl.value);
+                if (isNaN(n)) n = Number(getFakeDocBreadcrumbDefaultSettings()[key] ?? 0) || 0;
+                fdbPatch[key] = Math.min(max, Math.max(min, n));
+            } else {
+                fdbPatch[key] = (ctl as HTMLSelectElement).value;
+            }
+        }
+        saveFakeDocBreadcrumbSettings(fdbPatch);
         // 文档面包屑总开关:关闭立即摘除已插入的面包屑,开启立即注入
         applyFakeDocBreadcrumb(this as any, this.config.fakeDocBreadcrumbEnabled !== false);
         // 主题设置立即生效
