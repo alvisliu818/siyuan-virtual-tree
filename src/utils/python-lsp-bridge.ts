@@ -185,9 +185,29 @@ interface LspRangeLike {
 
 function findModelForPath(fsPath: string): monaco.editor.ITextModel | null {
     for (const e of currentEditors) {
-        if (e.path === fsPath) return e.editor.getModel();
+        if (sameFsPath(e.path, fsPath)) return e.editor.getModel();
     }
     return null;
+}
+
+/**
+ * Windows 盘符路径等价比较。
+ *
+ * 为什么不能用严格 ===(实测踩过,症状极具迷惑性):
+ *   pyright 回传 publishDiagnostics 时会把 URI 的盘符**小写化**并转义冒号
+ *   (发过去 file:///E:/... → 回来 file:///e%3A/...,探针实测),
+ *   uriToPath 还原出 e:\HOME\... ,而编辑器登记的是原始大小写 E:\HOME\...
+ *   → 严格相等永远失配 → setMarkers 直接 return → **诊断永远不显示**。
+ *   而 hover/补全/跳转都是客户端主动发请求、响应不回显路径,所以全部正常。
+ *
+ * 规则:任一方形如盘符路径(X:\ 或 X:/)→ 大小写不敏感 + 统一斜杠比较;
+ *      否则(POSIX)保持严格比较。
+ */
+function sameFsPath(a: string, b: string): boolean {
+    if (a === b) return true;
+    const isDrivePath = /^[a-zA-Z]:[\\/]/;
+    if (!isDrivePath.test(a) && !isDrivePath.test(b)) return false;
+    return a.replace(/\//g, "\\").toLowerCase() === b.replace(/\//g, "\\").toLowerCase();
 }
 
 /** 扩展名 → monaco language id(与 editor/monaco.ts 的 LANG_MAP 保持一致) */
