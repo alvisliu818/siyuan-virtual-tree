@@ -8,8 +8,8 @@ export interface ViewCtx {
     container: HTMLElement;
 }
 
-/** 「今日 / 习惯 / 目标 / 任务 / 待办 / 计时 / 倒数日 / 统计」八个分区 */
-export type ViewId = "today" | "habits" | "goals" | "tasks" | "todo" | "timer" | "countdowns" | "stats";
+/** 「今日 / 习惯 / 目标 / 任务 / 待办 / 计时 / 倒数日 / 日历 / 统计」九个分区 */
+export type ViewId = "today" | "habits" | "goals" | "tasks" | "todo" | "timer" | "countdowns" | "calendar" | "stats";
 
 export interface ViewDef {
     id: ViewId;

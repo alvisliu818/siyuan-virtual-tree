@@ -10,6 +10,7 @@
 import {showMessage} from "siyuan";
 import {flushPlanner, loadPlanner} from "./store";
 import {disposeTimer, initPlannerTimer} from "./timer";
+import {disposeReminders, initReminders} from "./remind";
 import {tryImportLegacy} from "./migrate";
 import "./styles.scss";
 
@@ -33,6 +34,7 @@ export async function applyPlannerEnabled(host: any, enabled: boolean): Promise<
     try {
         await loadPlanner(host);
         initPlannerTimer(host);
+        initReminders(host);
     } catch (e) {
         console.error("[planner] 加载数据失败:", e);
         return;
@@ -56,6 +58,7 @@ export function destroyPlanner(): void {
     g_active = false;
     try {
         disposeTimer();
+        disposeReminders();
         flushPlanner();
     } catch {
         // ignore

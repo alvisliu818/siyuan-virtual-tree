@@ -9,6 +9,7 @@ import {showMessage} from "siyuan";
 import {FocusSession, newId, PersistedTimer, PomodoroPhase, TimerMode} from "./types";
 import {addSession, getData, getSettings, IPlannerPlugin, persistQuietly} from "./store";
 import {todayKey} from "./dates";
+import {systemNotify} from "./remind";
 
 export interface TimerTarget {
     taskId?: string;
@@ -284,12 +285,17 @@ function checkout(seconds: number, manual: boolean): void {
     const cfg = getSettings();
     if (s.mode === "pomodoro") {
         if (s.phase === "focus") {
-            if (cfg.notify) showMessage(`专注结束 · ${Math.round(seconds / 60)} 分钟`, 4000);
+            if (cfg.notify) {
+                showMessage(`专注结束 · ${Math.round(seconds / 60)} 分钟`, 4000);
+                // 应用内提示之外再发系统通知:窗口最小化/后台时也能看到(点击可跳回面板)
+                systemNotify("番茄钟", `专注结束 · ${Math.round(seconds / 60)} 分钟`);
+            }
         } else if (cfg.notify) {
             showMessage("休息结束,回到专注", 3000);
         }
     } else if (cfg.notify) {
         showMessage(`${manual ? "计时已记录" : "倒计时结束"} · ${Math.round(seconds / 60)} 分钟`, 3000);
+        systemNotify("计时结束", `${manual ? "计时已记录" : "倒计时结束"} · ${Math.round(seconds / 60)} 分钟`);
     }
     if (cfg.sound && !manual) beep(s.mode === "pomodoro" && s.phase !== "focus");
 }

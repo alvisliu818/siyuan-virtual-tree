@@ -91,6 +91,29 @@ export function persistQuietly(): void {
     schedulePersist();
 }
 
+/**
+ * 记录"某提醒键在某天已发过"。只落盘不广播 —— 提醒状态变化不需要重绘界面。
+ * notified 里超过 7 天的条目顺手清掉,防止无限增长。
+ */
+export function markNotified(key: string, day: string): void {
+    cached.notified[key] = day;
+    const cutoff = addDays(day, -7);
+    for (const k of Object.keys(cached.notified)) {
+        if (cached.notified[k] < cutoff) delete cached.notified[k];
+    }
+    schedulePersist();
+}
+
+function sanitizeNotified(raw: any): Record<string, string> {
+    const out: Record<string, string> = {};
+    if (raw && typeof raw === "object") {
+        for (const k of Object.keys(raw)) {
+            if (typeof k === "string" && isValidKey(raw[k])) out[k] = raw[k];
+        }
+    }
+    return out;
+}
+
 /** 所有写操作的唯一入口 */
 function mutate<T>(fn: () => T, detail?: any): T {
     const r = fn();
@@ -130,7 +153,8 @@ function sanitizeHabit(h: any): Habit | null {
         unit: str(h.unit, "次"),
         startDate,
         endDate: isValidKey(h.endDate) ? h.endDate : undefined,
-        archived: bool(h.archived),
+        remindAt: /^\d{2}:\d{2}$/.test(h.remindAt) ? h.remindAt : undefined,
+    archived: bool(h.archived),
         note: str(h.note),
         goalId: typeof h.goalId === "string" ? h.goalId : undefined,
         order: num(h.order, 0),
@@ -185,6 +209,7 @@ function sanitizeTask(t: any): Task | null {
         recur: t.recur && Number.isFinite(Number(t.recur.every)) && ["day", "week", "month"].includes(t.recur.unit)
             ? {every: Math.max(1, Math.round(Number(t.recur.every))), unit: t.recur.unit, from: t.recur.from === "done" ? "done" : "due"}
             : undefined,
+        remindAt: /^\d{2}:\d{2}$/.test(t.remindAt) ? t.remindAt : undefined,
         order: num(t.order, 0),
         createdAt: num(t.createdAt, Date.now()),
         updatedAt: num(t.updatedAt, Number(t.createdAt) || Date.now()),
@@ -288,6 +313,7 @@ function sanitize(raw: any): PlannerData {
         lists: normalizeOrder(lists),
         countdowns: Array.isArray(raw.countdowns) ? raw.countdowns.map(sanitizeCountdown).filter(Boolean) as Countdown[] : [],
         sessions: Array.isArray(raw.sessions) ? raw.sessions.map(sanitizeSession).filter(Boolean) as FocusSession[] : [],
+        notified: sanitizeNotified(raw.notified),
         timer: {
             running: bool(timer.running),
             mode: ["pomodoro", "stopwatch", "countdown"].includes(timer.mode) ? timer.mode : "pomodoro",
@@ -301,6 +327,7 @@ function sanitize(raw: any): PlannerData {
             round: Math.max(0, Math.round(num(timer.round, 0))),
         },
         settings: {
+            remindersEnabled: settings.remindersEnabled !== false,
             pomodoro: {
                 focus: Math.max(1, Math.round(num(pom.focus, def.settings.pomodoro.focus))),
                 short: Math.max(1, Math.round(num(pom.short, def.settings.pomodoro.short))),

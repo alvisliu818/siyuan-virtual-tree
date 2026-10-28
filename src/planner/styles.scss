@@ -1651,3 +1651,171 @@
         }
     }
 }
+
+// ==== 日历视图 ====
+.syfe-pl__cal-month {
+    font-weight: 600;
+    margin: 0 6px;
+}
+
+.syfe-pl__cal-weekdays {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 4px;
+    margin-bottom: 4px;
+}
+
+.syfe-pl__cal-weekday {
+    text-align: center;
+    font-size: 11px;
+    color: var(--b3-theme-on-surface);
+    opacity: 0.7;
+}
+
+.syfe-pl__cal-grid {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 4px;
+}
+
+.syfe-pl__cal-cell {
+    min-height: 62px;
+    border-radius: 6px;
+    padding: 4px 5px;
+    cursor: pointer;
+    background: var(--b3-theme-surface);
+    border: 1px solid transparent;
+    overflow: hidden;
+
+    &:hover {
+        background: var(--b3-list-hover);
+    }
+
+    &.is-other {
+        opacity: 0.4;
+    }
+
+    &.is-today .syfe-pl__cal-daynum {
+        background: var(--b3-theme-primary);
+        color: var(--b3-theme-primary-light);
+        border-radius: 50%;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 18px;
+        height: 18px;
+    }
+
+    &.is-selected {
+        border-color: var(--b3-theme-primary);
+        background: var(--b3-theme-primary-lightest, var(--b3-theme-surface));
+    }
+}
+
+.syfe-pl__cal-daynum {
+    font-size: 11px;
+    font-weight: 600;
+    margin-bottom: 2px;
+}
+
+.syfe-pl__cal-markers {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 0;
+}
+
+.syfe-pl__cal-task {
+    font-size: 10px;
+    line-height: 13px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--b3-theme-on-background);
+    padding-left: 4px;
+    border-left: 2px solid var(--b3-theme-primary);
+
+    &.is-done {
+        text-decoration: line-through;
+        opacity: 0.55;
+        border-left-color: var(--b3-theme-on-surface);
+    }
+
+    &.syfe-pl__cal-more {
+        border-left-color: transparent;
+        opacity: 0.6;
+    }
+}
+
+.syfe-pl__cal-dots {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px;
+    padding: 1px 0;
+}
+
+.syfe-pl__cal-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.syfe-pl__cal-focus {
+    font-size: 10px;
+    line-height: 13px;
+    opacity: 0.85;
+}
+
+.syfe-pl__cal-cd {
+    font-size: 10px;
+    line-height: 13px;
+}
+
+.syfe-pl__cal-detail {
+    margin-top: 10px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    background: var(--b3-theme-surface);
+}
+
+.syfe-pl__detailhead {
+    font-weight: 600;
+    margin-bottom: 6px;
+}
+
+.syfe-pl__detail-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 0;
+    font-size: 12px;
+
+    .b3-checkbox {
+        margin: 0;
+    }
+}
+
+.syfe-pl__detail-task {
+    &.is-done {
+        text-decoration: line-through;
+        opacity: 0.55;
+    }
+}
+
+.syfe-pl__detail-time {
+    opacity: 0.6;
+    font-size: 11px;
+}
+
+.syfe-pl__detail-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.syfe-pl__detail-empty {
+    opacity: 0.55;
+    font-size: 12px;
+}

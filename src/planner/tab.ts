@@ -15,6 +15,7 @@ import {renderTasks} from "./views/tasks";
 import {renderCountdowns} from "./views/countdowns";
 import {renderTimerView, patchTimerView} from "./views/timer";
 import {renderStatsView} from "./views/stats";
+import {renderCalendar} from "./views/calendar";
 import {disposeTimer} from "./timer";
 
 export interface IPluginForPlannerTab extends IPlannerPlugin {
@@ -40,6 +41,7 @@ const VIEWS: {id: ViewId; label: string; icon: string}[] = [
     {id: "todo", label: "待办", icon: "📥"},
     {id: "timer", label: "计时", icon: "⏱️"},
     {id: "countdowns", label: "倒数日", icon: "📅"},
+    {id: "calendar", label: "日历", icon: "🗓️"},
     {id: "stats", label: "统计", icon: "📊"},
 ];
 
@@ -156,6 +158,9 @@ function render(plugin: IPluginForPlannerTab, host: HTMLElement, view: ViewId): 
             break;
         case "countdowns":
             renderCountdowns(ctx);
+            break;
+        case "calendar":
+            renderCalendar(ctx);
             break;
         case "stats":
             renderStatsView(ctx);

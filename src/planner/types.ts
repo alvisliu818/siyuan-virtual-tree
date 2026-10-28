@@ -41,6 +41,8 @@ export interface Habit {
     note: string;
     /** 关联目标(打卡会推进该目标的 habits 型进度) */
     goalId?: string;
+    /** 每日提醒时间 HH:MM(留空不提醒;到点未完成当天目标时发系统通知) */
+    remindAt?: string;
     order: number;
     createdAt: number;
 }
@@ -120,6 +122,8 @@ export interface Task {
     /** 计时累计秒(由计时器回填) */
     spentSec: number;
     recur?: RecurRule;
+    /** 提醒时间 HH:MM:设了 due 则在截止当天到点提醒,否则每天到点提醒(直到完成/删除) */
+    remindAt?: string;
     order: number;
     createdAt: number;
     updatedAt: number;
@@ -205,8 +209,10 @@ export interface PlannerSettings {
     pomodoro: PomodoroConfig;
     /** 倒计时模式的默认分钟数 */
     defaultCountdownMin: number;
-    /** 结束是否提示 */
+    /** 结束是否提示(应用内消息 + 系统通知) */
     notify: boolean;
+    /** 任务到期 / 习惯打卡提醒(系统通知);总开关,关掉后 remindAt 一律不发 */
+    remindersEnabled: boolean;
     /** 结束是否响铃(WebAudio 合成音,不带资源文件) */
     sound: boolean;
     /** 一周的第一天:0=周日 1=周一 */
@@ -227,6 +233,8 @@ export interface PlannerData {
     sessions: FocusSession[];
     timer: PersistedTimer;
     settings: PlannerSettings;
+    /** 已发过的提醒:remindKey -> 触发日 YYYY-MM-DD(去重 + 重启后不重发) */
+    notified: Record<string, string>;
 }
 
 export const PLANNER_VERSION = 1;
@@ -244,6 +252,7 @@ export const DEFAULT_SETTINGS: PlannerSettings = {
     pomodoro: {...DEFAULT_POMODORO},
     defaultCountdownMin: 25,
     notify: true,
+    remindersEnabled: true,
     sound: true,
     weekStart: 1,
     heatmapWeeks: 15,
@@ -262,6 +271,7 @@ export function createDefaultData(): PlannerData {
         lists: [{id: INBOX_LIST_ID, name: "待办", color: "#4c8bff", icon: "📥", builtin: true, order: 0}],
         countdowns: [],
         sessions: [],
+        notified: {},
         timer: {
             running: false,
             mode: "pomodoro",

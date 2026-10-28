@@ -241,6 +241,12 @@ export function openHabitDialog(plugin: IPlannerPlugin, habit?: Habit, onDone?: 
         [{value: "", label: "（不关联）"}].concat(goals.map(g => ({value: g.id, label: g.title}))),
         h.goalId || ""), "关联后,打卡会推进该目标的完成进度"));
 
+    const habitRemindInput = el("input", "b3-text-field") as HTMLInputElement;
+    habitRemindInput.type = "time";
+    habitRemindInput.id = "syfe-habit-remind";
+    habitRemindInput.value = h.remindAt || "";
+    body.appendChild(formRow("每日提醒", habitRemindInput, "到点若当天还未达标,发系统通知;留空关闭(需在设置里开「任务/习惯提醒」)"));
+
     const note = el("textarea", "b3-text-field fn__block") as HTMLTextAreaElement;
     note.id = "syfe-habit-note";
     note.rows = 3;
@@ -283,6 +289,7 @@ export function openHabitDialog(plugin: IPlannerPlugin, habit?: Habit, onDone?: 
                 startDate,
                 endDate: isValidKey(endDateRaw) ? endDateRaw : undefined,
                 goalId: val(root, "syfe-habit-goal") || undefined,
+                remindAt: /^\d{2}:\d{2}$/.test(val(root, "syfe-habit-remind")) ? val(root, "syfe-habit-remind") : undefined,
                 note: (root.querySelector("#syfe-habit-note") as HTMLTextAreaElement)?.value || "",
             } as Partial<Habit>;
             if (isNew) addHabit(plugin, patch);
@@ -467,6 +474,12 @@ export function openTaskDialog(plugin: IPlannerPlugin, task?: Task, onDone?: () 
     dueRow.appendChild(tomorrowBtn);
     body.appendChild(formRow("截止", dueRow));
 
+    const taskRemindInput = el("input", "b3-text-field") as HTMLInputElement;
+    taskRemindInput.type = "time";
+    taskRemindInput.id = "syfe-task-remind";
+    taskRemindInput.value = t.remindAt || "";
+    body.appendChild(formRow("提醒", taskRemindInput, "到点发系统通知:设了截止日则在截止当天提醒,否则每天提醒直到完成;留空不提醒"));
+
     body.appendChild(formRow("优先级", selectField("syfe-task-priority", [
         {value: "0", label: "无"},
         {value: "1", label: "低"},
@@ -580,6 +593,7 @@ export function openTaskDialog(plugin: IPlannerPlugin, task?: Task, onDone?: () 
                 listId: val(root, "syfe-task-list") || INBOX_LIST_ID,
                 due: isValidKey(dueRaw) ? dueRaw : undefined,
                 dueTime: /^\d{2}:\d{2}$/.test(timeRaw) ? timeRaw : undefined,
+                remindAt: /^\d{2}:\d{2}$/.test(val(root, "syfe-task-remind")) ? val(root, "syfe-task-remind") : undefined,
                 priority: Number(val(root, "syfe-task-priority")) as Task["priority"],
                 goalId: val(root, "syfe-task-goal") || undefined,
                 tags,
