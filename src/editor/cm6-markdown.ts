@@ -21,6 +21,7 @@ import {search, searchKeymap, highlightSelectionMatches, openSearchPanel} from "
 import {markdown, markdownLanguage} from "@codemirror/lang-markdown";
 import {languages} from "@codemirror/language-data";
 import {tags} from "@lezer/highlight";
+import {cm6MarkdownRender, preloadCm6Katex} from "./cm6-render";
 
 export interface Cm6MarkdownOptions {
     /** 初始内容(Markdown 全文) */
@@ -33,6 +34,11 @@ export interface Cm6MarkdownOptions {
     onCursor?(): void;
     /** Ctrl+F 打开内置查找面板(宿主查找按钮转发用) */
     onFind?(): void;
+    /**
+     * 图片地址解析:相对路径 → blob URL 等;返回 null 表示无法加载(渲染占位失败态)。
+     * 不传则图片语法只保留源码高亮。
+     */
+    resolveImageSrc?(src: string): Promise<string | null>;
     placeholder?: string;
 }
 
@@ -95,6 +101,69 @@ const syfeCmTheme = EditorView.theme({
     },
     ".cm-searchMatch": {backgroundColor: "var(--b3-theme-primary-lightest, rgba(53,118,144,.25))"},
     ".cm-searchMatch-selected": {backgroundColor: "var(--b3-theme-primary-lighter, rgba(53,118,144,.45))"},
+
+    // ===== 富渲染(cm6-render.ts 的装饰与 widget) =====
+    ".syfe-cm-codeblock-line": {
+        backgroundColor: "var(--b3-theme-surface)",
+        boxShadow: "inset 2px 0 0 var(--b3-theme-primary-lighter, var(--b3-border-color))",
+    },
+    ".syfe-cm-tablesrc-line": {backgroundColor: "var(--b3-theme-surface)"},
+    ".syfe-cm-mathsrc-line": {backgroundColor: "var(--b3-theme-surface)"},
+    ".syfe-cm-img": {
+        display: "inline-block",
+        padding: "2px 0",
+        minWidth: "40px",
+        minHeight: "22px",
+    },
+    ".syfe-cm-img__pic": {
+        display: "block",
+        maxWidth: "100%",
+        maxHeight: "360px",
+        borderRadius: "4px",
+        border: "1px solid var(--b3-border-color)",
+    },
+    ".syfe-cm-img.is-broken .syfe-cm-img__pic": {
+        display: "none",
+    },
+    ".syfe-cm-img.is-broken::before": {
+        content: "'🖼 (图片加载失败)'",
+        color: "var(--b3-theme-on-surface)",
+        fontSize: "12px",
+        opacity: ".7",
+    },
+    ".syfe-cm-img__alt": {
+        fontSize: "11px",
+        color: "var(--b3-theme-on-surface)",
+        opacity: ".7",
+        textAlign: "center",
+    },
+    ".syfe-cm-math": {
+        padding: "6px 10px",
+        margin: "2px 0",
+        overflowX: "auto",
+    },
+    ".syfe-cm-math.is-error": {
+        fontFamily: "var(--b3-font-family-code, monospace)",
+        color: "var(--b3-theme-on-surface)",
+        whiteSpace: "pre-wrap",
+    },
+    ".syfe-cm-table": {
+        padding: "4px 0",
+        overflowX: "auto",
+    },
+    ".syfe-cm-md-table": {
+        borderCollapse: "collapse",
+        fontSize: "13px",
+        margin: "4px 0",
+    },
+    ".syfe-cm-md-table th, .syfe-cm-md-table td": {
+        border: "1px solid var(--b3-border-color)",
+        padding: "4px 10px",
+    },
+    ".syfe-cm-md-table th": {
+        backgroundColor: "var(--b3-theme-surface)",
+        fontWeight: "600",
+    },
 });
 
 // ===== 语法高亮(Markdown 结构,色值走思源变量) =====
@@ -121,6 +190,8 @@ export function createCm6MarkdownEditor(
     container: HTMLElement,
     opts: Cm6MarkdownOptions,
 ): Cm6MarkdownHandle {
+    // KaTeX 预热(本地资源,百毫秒级;首个公式渲染时基本已就绪)
+    preloadCm6Katex();
     const state = EditorState.create({
         doc: opts.value,
         extensions: [
@@ -137,6 +208,7 @@ export function createCm6MarkdownEditor(
             search({top: true}),
             highlightSelectionMatches(),
             markdown({base: markdownLanguage, codeLanguages: languages}),
+            cm6MarkdownRender({resolveImageSrc: opts.resolveImageSrc}),
             EditorView.lineWrapping,
             syfeCmTheme,
             // Ctrl/Cmd+S:默认键位不含保存,最高优先级拦给宿主

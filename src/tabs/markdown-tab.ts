@@ -1140,6 +1140,15 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                 syncModeButtons();
                 const cm = createCm6MarkdownEditor(self._contentEl!, {
                     value: self._model?.getValue() ?? "",
+                    // cm6 富渲染:图片地址 → blob URL(与 vditor 预览同一条解析链)
+                    resolveImageSrc: (src) => {
+                        const resolved = resolveAssetSrc(self._path!, src);
+                        if (resolved === null) {
+                            // 网络/内联地址可直接加载
+                            return /^(https?:|data:|blob:|file:)/i.test(src) ? src : null;
+                        }
+                        return loadBlobUrl(self, resolved, src);
+                    },
                     onSave: save,
                     onInput: () => {
                         markDirty(path, true);
