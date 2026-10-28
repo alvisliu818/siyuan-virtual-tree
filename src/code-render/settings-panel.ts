@@ -2,7 +2,8 @@
 import { listRenderers, getRenderer } from "./registry";
 import { bindPersist, getSettings, SETTINGS_NAME, uid, updateSettings } from "./settings";
 import { testDataSource } from "./datasource";
-import { restoreAll, closeAll } from "./inplace";
+import { restoreAll } from "./inplace";
+import { closeAll } from "./engine";
 import { t } from "./i18n";
 import { txt } from "./types";
 import type { DataSource, RenderRule, Settings } from "./types";
