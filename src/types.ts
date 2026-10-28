@@ -86,6 +86,9 @@ export interface EditorConfig {
     // 关系树结构是只读派生视图(不落盘,每次现查);这里只持久化用户的显式意图:
     // 开关、排序设置、折叠状态(collapsed)。拖拽顺序在挂载配置(virtual-tree.json 的 customOrder)。
     mountTreeRelation: RelationTreeConfig;
+    // 文档面包屑(并入自 fake-doc-breadcrumb 模块)总开关:在思源文档顶部插入一层虚拟文档层级面包屑。
+    // 模块的 20+ 项细分设置存独立文件 fake-doc-breadcrumb-settings.json(由设置面板「文档面包屑」页打开)
+    fakeDocBreadcrumbEnabled: boolean;
 }
 
 /** 引用关系树配置(移植自独立插件 siyuan-virtual-tree) */
@@ -291,4 +294,6 @@ export const DEFAULT_CONFIG: EditorConfig = {
         defaultExpandLevel: -1,
         collapsed: [],
     },
+    // 文档面包屑默认开启(并入该模块即为使用它;不需要时在设置「文档面包屑」页关掉总开关)
+    fakeDocBreadcrumbEnabled: true,
 };

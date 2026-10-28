@@ -83,6 +83,7 @@ import {installLuteGuard} from "./utils/lute-guard";
 import {refreshAllExpanded} from "./components/file-tree";
 import {refreshAllTabIcons} from "./utils/tab-icon";
 import {destroyCodeRender, initCodeRender, buildCodeRenderSettingPages} from "./code-render";
+import {applyFakeDocBreadcrumb, destroyFakeDocBreadcrumb, openFakeDocBreadcrumbSettings} from "./fake-doc-breadcrumb";
 import "./index.scss";
 
 // 守卫必须在插件加载的第一时间生效 —— 早于任何 vditor 实例被创建。
@@ -190,6 +191,8 @@ export default class FileEditorPlugin extends Plugin {
     private mountTreeRelationDepthInput?: HTMLInputElement;
     private mountTreeRelationNodesInput?: HTMLInputElement;
     private mountTreeRelationExpandInput?: HTMLInputElement;
+    // 文档面包屑(并入自 fake-doc-breadcrumb)总开关
+    private fakeDocBreadcrumbEnabledInput?: HTMLInputElement;
 
     /**
      * 清掉失效的 dock 状态记录。
@@ -462,6 +465,8 @@ export default class FileEditorPlugin extends Plugin {
         setTrashMode(this.config.deleteMode || "plugin");
         // 关闭未保存行为跟随磁盘配置生效
         setCloseUnsavedAction(this.config.closeUnsavedAction);
+        // 文档面包屑(并入自 fake-doc-breadcrumb):按总开关启用;启用时会自动给已打开文档补插面包屑
+        applyFakeDocBreadcrumb(this as any, this.config.fakeDocBreadcrumbEnabled !== false);
         // 设置面板控件同步当前值
         this.syncSettingUI();
 // 加载标签数据(预设标签库 + 文件/文件夹打标记录)
@@ -633,6 +638,12 @@ export default class FileEditorPlugin extends Plugin {
     }
 
     onunload(): void {
+        // 文档面包屑:摘事件、去样式、移除已插入的面包屑
+        try {
+            destroyFakeDocBreadcrumb();
+        } catch {
+            // ignore
+        }
         // 代码块渲染:还原被接管的代码块为思源原生高亮
         try {
             destroyCodeRender();
@@ -985,6 +996,20 @@ export default class FileEditorPlugin extends Plugin {
         this.mountTreeRelationExpandInput.placeholder = "1";
         addRow("virtualTree", "关系树:默认展开层级", "0 = 全部折叠,-1 = 全部展开,N = 展开前 N 层(修改后点「刷新」生效)", this.mountTreeRelationExpandInput);
 
+        // ---------- 文档面包屑 ----------
+        // 总开关:并入自 fake-doc-breadcrumb 模块;关闭后立即摘除已插入的面包屑并停止监听
+        this.fakeDocBreadcrumbEnabledInput = document.createElement("input");
+        this.fakeDocBreadcrumbEnabledInput.type = "checkbox";
+        this.fakeDocBreadcrumbEnabledInput.className = "b3-switch";
+        addRow("docBreadcrumb", "启用文档面包屑", "在思源文档顶部插入一行「文档面包屑」:显示笔记本与文档路径层级,点击层级打开文档,点「>」展开同层子文档菜单,右侧可显示上一篇/下一篇;并附带「新开页签不恢复聚焦」「块面包屑仅显示标题」「点击路径滚动定位」等增强。关闭后立即移除已插入的面包屑并停止监听", this.fakeDocBreadcrumbEnabledInput);
+
+        // 细分设置:沿用模块自带对话框(20+ 项,改动保存后立即生效)
+        const fdbSettingsBtn = document.createElement("button");
+        fdbSettingsBtn.className = "b3-button b3-button--outline";
+        fdbSettingsBtn.textContent = "打开详细设置…";
+        fdbSettingsBtn.addEventListener("click", () => openFakeDocBreadcrumbSettings(this as any));
+        addRow("docBreadcrumb", "面包屑详细设置", "文档名最大长度、图标显示、折叠层数、下层文档菜单深度、点击行为交换、浮窗预览等 20+ 项细分设置,在独立对话框中修改", fdbSettingsBtn);
+
         // ---------- 百度网盘 ----------
         const bdPanBtn = document.createElement("button");
         bdPanBtn.className = "b3-button b3-button--outline";
@@ -1190,6 +1215,7 @@ export default class FileEditorPlugin extends Plugin {
         addRowsPage("openFiles", "文件与打开");
         addRowsPage("media", "音视频播放器");
         addRowsPage("virtualTree", "虚拟文档树");
+        addRowsPage("docBreadcrumb", "文档面包屑");
         addRowsPage("tags", "标签");
         addRowsPage("fileTree", "文件树");
         addRowsPage("baiduPan", "百度网盘");
@@ -1239,6 +1265,8 @@ export default class FileEditorPlugin extends Plugin {
         if (this.mountTreeRelationDepthInput) this.mountTreeRelationDepthInput.value = String(rel.maxDepth ?? 8);
         if (this.mountTreeRelationNodesInput) this.mountTreeRelationNodesInput.value = String(rel.maxNodes ?? 500);
         if (this.mountTreeRelationExpandInput) this.mountTreeRelationExpandInput.value = String(rel.defaultExpandLevel ?? 1);
+        // 文档面包屑总开关回填
+        if (this.fakeDocBreadcrumbEnabledInput) this.fakeDocBreadcrumbEnabledInput.checked = this.config.fakeDocBreadcrumbEnabled !== false;
         // 主题下拉的选项依赖扩展数据,此处仅同步值;选项在 onLayoutReady 后填充
         this.refreshThemeSettingUI();
     }
@@ -1284,6 +1312,7 @@ export default class FileEditorPlugin extends Plugin {
             closeUnsavedAction: ((this.closeUnsavedSelect?.value || "ask") as "ask" | "discard" | "save"),
             takeoverSplitOpen: this.takeoverSplitOpenInput?.checked ?? false,
             treeBacklinkIcon: this.treeBacklinkIconInput?.checked ?? true,
+            fakeDocBreadcrumbEnabled: this.fakeDocBreadcrumbEnabledInput?.checked ?? true,
             // 「文件」面板功能已移除(虚拟文档树全面承接);保留配置键兼容旧存储
             showFileTreeDock: false,
             mountTreeRelation: {
@@ -1323,6 +1352,8 @@ export default class FileEditorPlugin extends Plugin {
         setTrashMode(this.config.deleteMode || "plugin");
         // 关闭未保存行为跟随设置生效
         setCloseUnsavedAction(this.config.closeUnsavedAction);
+        // 文档面包屑总开关:关闭立即摘除已插入的面包屑,开启立即注入
+        applyFakeDocBreadcrumb(this as any, this.config.fakeDocBreadcrumbEnabled !== false);
         // 主题设置立即生效
         this.applyConfiguredThemes();
         // 顶栏「扩展市场」图标显隐立即生效
