@@ -261,6 +261,11 @@ export class PythonLanguageServer {
             "pyright",
         );
         this.conn = conn;
+        // 处理器注册标志是**每条连接一份**:handlers 挂在 conn 的 Map 上,
+        // dispose 时被清空。pyright 意外退出后重启会建新 conn,不重置的话
+        // publishDiagnostics/workspace/configuration 全部没人接 —— 症状是
+        // 补全/hover(请求-响应,不依赖这些 handlers)正常、诊断永远不来。
+        this.handlersRegistered = false;
 
         child.stdout.on("data", (chunk: Buffer) => {
             try {
