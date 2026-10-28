@@ -760,6 +760,7 @@ export const EDITOR_DEFS: SettingDef[] = [
 // 反过来在这里改完保存也会立即覆盖面板值(见 user-settings 的双向同步)。
 
 const G_FILES = "文件";
+const G_SEARCH = "搜索";
 const G_MD = "Markdown";
 const G_TERM = "终端";
 const G_WORKBENCH = "工作台";
@@ -870,6 +871,29 @@ export const PLUGIN_DEFS: SettingDef[] = [
         default: false,
         get: (c) => c.showFileTreeDock === true,
         set: (c, v) => { c.showFileTreeDock = v === true; },
+    },
+
+    {
+        key: "search.everythingUrl",
+        kind: "string",
+        group: G_SEARCH,
+        title: "Everything 服务地址",
+        description: "全局搜索「Everything」范围连接的 voidtools Everything HTTP 服务;需在 Everything「工具→选项→HTTP 服务器」中启用,默认端口 80",
+        default: "http://127.0.0.1:80",
+        placeholder: "http://127.0.0.1:80",
+        get: (c) => c.searchEverythingUrl,
+        set: (c, v) => { c.searchEverythingUrl = String(v ?? "").trim() || "http://127.0.0.1:80"; },
+    },
+    {
+        key: "search.anytxtUrl",
+        kind: "string",
+        group: G_SEARCH,
+        title: "AnyTXT 服务地址",
+        description: "全局搜索「AnyTXT」范围连接的 AnyTXT Searcher 内建 SDK 服务(JSON-RPC);桌面端保持 AnyTXT 运行即可,默认端口 9920",
+        default: "http://127.0.0.1:9920",
+        placeholder: "http://127.0.0.1:9920",
+        get: (c) => c.searchAnytxtUrl,
+        set: (c, v) => { c.searchAnytxtUrl = String(v ?? "").trim() || "http://127.0.0.1:9920"; },
     },
 
     {
@@ -1156,7 +1180,7 @@ export function defByKey(key: string): SettingDef | undefined {
 /** 分组顺序(GUI 与生成的 settings.json 都按此顺序) */
 export const GROUP_ORDER: string[] = [
     G_FONT, G_WRAP, G_INDENT, G_CURSOR, G_GUIDE, G_FOLD, G_SCROLL, G_EDIT, G_SUGGEST, G_LOOK,
-    G_FILES, G_MD, G_TERM, G_WORKBENCH, G_TREE, G_MEDIA,
+    G_FILES, G_SEARCH, G_MD, G_TERM, G_WORKBENCH, G_TREE, G_MEDIA,
 ];
 
 /** Monaco 里的键路径;返回 null 表示这一项不进 Monaco 选项 */

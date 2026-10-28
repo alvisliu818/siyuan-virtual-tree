@@ -76,6 +76,9 @@ export interface EditorConfig {
     // 音视频播放器自定义快捷键(规范串见 utils/hotkey.ts;空 = 禁用)
     mediaHotkeyMark: string;   // 在当前时间打点
     mediaHotkeyInsert: string; // 时间戳链接插入可见笔记页签的光标处
+    // 全局搜索的「Everything」「AnyTXT」服务范围连接的本地服务地址
+    searchEverythingUrl: string; // voidtools Everything HTTP 服务(需在 Everything 选项→HTTP 服务器 中启用)
+    searchAnytxtUrl: string;     // AnyTXT Searcher 的 JSON-RPC SDK 服务(桌面端运行 AnyTXT 即有,默认 9920)
     // 「虚拟文档树」面板顶部的**引用关系树**(按文档首块引用链接自动构建,与手动挂载共存)。
     // 关系树结构是只读派生视图(不落盘,每次现查);这里只持久化用户的显式意图:
     // 开关、排序设置、折叠状态(collapsed)。拖拽顺序在挂载配置(virtual-tree.json 的 customOrder)。
@@ -269,6 +272,9 @@ export const DEFAULT_CONFIG: EditorConfig = {
     // 音视频播放器快捷键默认值(K 打点;Shift+K 把时间戳链接插入可见笔记)
     mediaHotkeyMark: "K",
     mediaHotkeyInsert: "Shift+K",
+    // 本地搜索服务默认地址:Everything HTTP 端口 80;AnyTXT SDK 端口 9920(实测本机版本)
+    searchEverythingUrl: "http://127.0.0.1:80",
+    searchAnytxtUrl: "http://127.0.0.1:9920",
     // 引用关系树默认关闭(按需在设置里开启)
     mountTreeRelation: {
         enabled: false,

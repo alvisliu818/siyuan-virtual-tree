@@ -13,6 +13,7 @@ import {fileIconHTML, folderIconHTML} from "../utils/icons";
 import {revealInFileTree, findTreeRootEl, showFileTreeMenu, IFileTreeActions} from "./file-tree";
 import {enumerateMountItems, loadMountContent, MAX_ITEMS} from "./mount-search";
 import {openSiyuanDoc} from "./entry-menu";
+import {searchEverything, searchAnyTxt, fetchAnyTxtFragment, ServiceHit} from "../api/search-service";
 
 // 搜索面板所需的插件接口
 export interface IPluginForSearch {
@@ -27,7 +28,13 @@ export interface IPluginForSearch {
 // 搜索模式:全部(名称+内容) / 文件名(仅名称匹配) / 内容(仅内容匹配)
 type SearchMode = "all" | "filename" | "content";
 // 搜索范围:目录(真实文件,递归) / 虚拟文档树(挂载的思源文档、块与文件)
-type SearchScope = "dir" | "mount";
+//           / Everything(本地全盘文件名服务) / AnyTXT(本地全盘全文服务)
+type SearchScope = "dir" | "mount" | "everything" | "anytxt";
+
+// 服务范围取结果的上限(Everything 名字命中可以多点;AnyTXT 每个文件还要取一次片段)
+const EVERYTHING_LIMIT = 300;
+const ANYTXT_LIMIT = 50;
+const ANYTXT_FRAGMENT_LIMIT = 30;
 
 // 内容匹配选项(搜索栏下方一排开关)
 interface SearchOptions {
@@ -62,7 +69,6 @@ interface LineMatch {
     before: string[];
     after: string[];
 }
-
 // 搜索 Tab 实例上附加的字段
 interface SearchTabInstance {
     element: HTMLElement;
@@ -152,6 +158,35 @@ function highlightRegex(text: string, re: RegExp): string {
     const escaped = escapeHTML(text);
     re.lastIndex = 0;
     return escaped.replace(re, (m) => `<mark class="syfe-search__mark">${m}</mark>`);
+}
+
+// 服务范围(Everything/AnyTXT)的高亮正则:查询语法是我们不解析的服务方言,
+// 按空白拆词转义后取「或」,只为结果里描黄,不参与服务端匹配
+function buildServiceHighlight(keyword: string): RegExp | null {
+    const terms = keyword.split(/\s+/).filter(Boolean).map(escapeRegExp);
+    if (terms.length === 0) return null;
+    try {
+        return new RegExp(`(${terms.join("|")})`, "gi");
+    } catch {
+        return null;
+    }
+}
+
+// 服务命中的副标题:目录 · 修改日期 · 大小
+function serviceHitSubtitle(h: ServiceHit): string {
+    const parts: string[] = [];
+    const dir = dirname(h.path);
+    if (dir && dir !== h.path) parts.push(dir);
+    if (h.modifiedMs && Number.isFinite(h.modifiedMs)) {
+        const d = new Date(h.modifiedMs);
+        if (!isNaN(d.getTime())) parts.push(d.toLocaleDateString());
+    }
+    if (h.size && h.size > 0) {
+        parts.push(h.size >= 1024 * 1024
+            ? `${(h.size / 1024 / 1024).toFixed(1)} MB`
+            : `${Math.max(1, Math.round(h.size / 1024))} KB`);
+    }
+    return parts.join(" · ");
 }
 
 // 递归枚举所有条目:返回全部条目(名称搜索用)与文本文件列表(内容搜索用)
@@ -252,9 +287,11 @@ function appendGroup(container: HTMLElement, g: FileGroup, re: RegExp, keyword: 
             ${g.matches.map(m => {
                 const ctxBefore = m.before.map(b => `<div class="syfe-search__ctx">${highlightRegex(b, re) || highlightKeyword(b, keyword)}</div>`).join("");
                 const ctxAfter = m.after.map(b => `<div class="syfe-search__ctx">${highlightRegex(b, re) || highlightKeyword(b, keyword)}</div>`).join("");
+                // lineNo<=0 表示无行号(AnyTXT 服务只给片段),不渲染行号徽标
+                const lineBadge = m.lineNo > 0 ? `<span class="syfe-search__item-line">${m.lineNo}</span>` : "";
                 return `<li class="syfe-search__item" data-kind="${g.kind}" data-path="${escapeHTML(g.path)}" data-line="${m.lineNo}"${g.docId ? ` data-doc-id="${escapeHTML(g.docId)}"` : ""}>
                     ${ctxBefore}
-                    <div class="syfe-search__hit"><span class="syfe-search__item-line">${m.lineNo}</span>${highlightRegex(m.preview, re) || highlightKeyword(m.preview, keyword)}</div>
+                    <div class="syfe-search__hit">${lineBadge}${highlightRegex(m.preview, re) || highlightKeyword(m.preview, keyword)}</div>
                     ${ctxAfter}
                 </li>`;
             }).join("")}
@@ -311,6 +348,8 @@ export function createSearchTabConfig(plugin: IPluginForSearch) {
                         <div class="syfe-search__scopes" id="syfe-search-scopes">
                             <button class="syfe-search__scope active" data-scope="dir" title="${escapeHTML(rootPath)}">目录</button>
                             <button class="syfe-search__scope" data-scope="mount" title="虚拟文档树里挂载的思源文档、块与文件">虚拟文档树</button>
+                            <button class="syfe-search__scope" data-scope="everything" title="voidtools Everything 全盘文件名搜索(需在 Everything 选项→HTTP 服务器 中启用)">Everything</button>
+                            <button class="syfe-search__scope" data-scope="anytxt" title="AnyTXT Searcher 全盘全文搜索(需保持 AnyTXT 运行)">AnyTXT</button>
                         </div>
                     </div>
                     <div class="syfe-search__opts">
@@ -347,8 +386,17 @@ export function createSearchTabConfig(plugin: IPluginForSearch) {
             const ctxSel = this.element.querySelector("#syfe-opt-ctx") as HTMLSelectElement;
             const self = this;
 
+            const scopeLabel = (scope: SearchScope): string => {
+                switch (scope) {
+                    case "mount": return "虚拟文档树";
+                    case "everything": return "全盘(Everything)";
+                    case "anytxt": return "全盘(AnyTXT)";
+                    default: return "目录";
+                }
+            };
+
             const updatePlaceholder = () => {
-                const scope = self._scope === "mount" ? "虚拟文档树" : "目录";
+                const scope = scopeLabel(self._scope || "dir");
                 input.placeholder = self._mode === "content"
                     ? `在${scope}中搜索文件内容...`
                     : self._mode === "filename"
@@ -438,7 +486,10 @@ export function createSearchTabConfig(plugin: IPluginForSearch) {
                 const mode = self._mode || "all";
                 const scope = self._scope || "dir";
                 const opts = readOptions();
-                const re = buildRegex(keyword, opts);
+                // 服务范围(Everything/AnyTXT)用的是服务自己的查询方言,不做本端正则校验,
+                // 只为描黄构造宽松的拆词正则;目录/虚拟文档树范围维持原逻辑
+                const isServiceScope = scope === "everything" || scope === "anytxt";
+                const re = isServiceScope ? buildServiceHighlight(keyword) : buildRegex(keyword, opts);
                 if (!re) {
                     infoEl.textContent = "正则表达式无效,请检查后重试";
                     return;
@@ -463,6 +514,111 @@ export function createSearchTabConfig(plugin: IPluginForSearch) {
                     let nameCount = 0;
                     let contentCount = 0;
                     let fileCount = 0;
+
+                    // ===== 服务范围:Everything(全盘文件名)=====
+                    if (scope === "everything") {
+                        if (mode === "content") {
+                            infoEl.textContent = "Everything 只提供文件名搜索,请切回「文件名」模式";
+                            return;
+                        }
+                        infoEl.textContent = "搜索中... Everything 查询中";
+                        const hits = await searchEverything(keyword, {
+                            url: plugin.config.searchEverythingUrl,
+                            limit: EVERYTHING_LIMIT,
+                        });
+                        if ((self as any)._token !== myToken) return;
+                        const matched = hits.filter(h => h.path && h.name && keep(h.path, h.name));
+                        for (const h of matched) {
+                            const result: SearchResult = {
+                                path: h.path,
+                                lineNo: 0,
+                                line: "",
+                                preview: "",
+                                kind: "name",
+                                name: h.name,
+                                isDir: h.isDir,
+                            };
+                            self._results!.push(result);
+                            nameCount++;
+                            appendNameResult(resultsEl, result, keyword);
+                        }
+                        infoEl.textContent = nameCount > 0
+                            ? `名称 ${nameCount}` + (mode === "all" ? "(Everything 只有文件名维度)" : "")
+                            : "未找到结果";
+                        return;
+                    }
+
+                    // ===== 服务范围:AnyTXT(全盘全文)=====
+                    if (scope === "anytxt") {
+                        infoEl.textContent = "搜索中... AnyTXT 查询中";
+                        const hits = await searchAnyTxt(keyword, {
+                            url: plugin.config.searchAnytxtUrl,
+                            limit: ANYTXT_LIMIT,
+                        });
+                        if ((self as any)._token !== myToken) return;
+                        const matched = hits.filter(h => h.path && h.name && keep(h.path, h.name));
+                        // 有 fid 的前 N 个并发取命中片段;失败降级为只列文件
+                        const fragTexts = new Map<number, string>();
+                        if (mode !== "filename") {
+                            const targets = matched.slice(0, ANYTXT_FRAGMENT_LIMIT);
+                            const concurrency = 4;
+                            for (let i = 0; i < targets.length; i += concurrency) {
+                                if ((self as any)._token !== myToken) return;
+                                await Promise.all(targets.slice(i, i + concurrency).map(async (h, j) => {
+                                    const text = h.fid
+                                        ? await fetchAnyTxtFragment(plugin.config.searchAnytxtUrl, h.fid!, keyword)
+                                        : "";
+                                    fragTexts.set(i + j, text);
+                                }));
+                                infoEl.textContent = `搜索中... 文件 ${matched.length},片段 ${Math.min(i + concurrency, targets.length)}/${targets.length}`;
+                            }
+                            if ((self as any)._token !== myToken) return;
+                        }
+                        for (let idx = 0; idx < matched.length; idx++) {
+                            const h = matched[idx];
+                            const frag = (fragTexts.get(idx) || "").replace(/\s+/g, " ").trim().slice(0, 300);
+                            if (frag) {
+                                const g: FileGroup = {
+                                    path: h.path,
+                                    name: h.name,
+                                    subtitle: serviceHitSubtitle(h),
+                                    kind: "content",
+                                    matches: [{lineNo: 0, preview: frag, before: [], after: []}],
+                                };
+                                appendGroup(resultsEl, g, re, keyword);
+                                contentCount++;
+                                fileCount++;
+                            } else {
+                                // 无片段(文件名命中 / 片段获取失败):退化为普通名称结果,点击直接打开
+                                const result: SearchResult = {
+                                    path: h.path,
+                                    lineNo: 0,
+                                    line: "",
+                                    preview: "",
+                                    kind: "name",
+                                    name: h.name,
+                                    isDir: h.isDir,
+                                };
+                                self._results!.push(result);
+                                appendNameResult(resultsEl, result, keyword);
+                            }
+                        }
+                        for (const h of matched) {
+                            self._results!.push({
+                                path: h.path,
+                                lineNo: 0,
+                                line: fragTexts.get(matched.indexOf(h)) || "",
+                                preview: (fragTexts.get(matched.indexOf(h)) || "").slice(0, 200),
+                                kind: "content",
+                            });
+                        }
+                        infoEl.textContent = (contentCount + matched.length) > 0
+                            ? (contentCount > 0
+                                ? `内容 ${contentCount} 片段(${fileCount} 个文件,取前 ${Math.min(matched.length, ANYTXT_FRAGMENT_LIMIT)} 个的片段)`
+                                : `文件 ${matched.length}(未取到片段)`)
+                            : "未找到结果" + (hits.length === 0 && mode !== "filename" ? "(AnyTXT 建索引期间可能搜不到东西)" : "");
+                        return;
+                    }
 
                     // 1. 名称匹配(大小写不敏感)
                     if (mode !== "content") {
@@ -595,11 +751,17 @@ export function createSearchTabConfig(plugin: IPluginForSearch) {
                 if (input.value.trim()) doSearch();
             });
 
-            // 范围切换:目录 ⇄ 虚拟文档树挂载项
+            // 范围切换:目录 ⇄ 虚拟文档树挂载项 ⇄ 本地服务(Everything/AnyTXT)
             scopesEl.addEventListener("click", (e: MouseEvent) => {
                 const btnScope = (e.target as HTMLElement).closest("[data-scope]") as HTMLElement;
                 if (!btnScope) return;
                 self._scope = btnScope.dataset.scope as SearchScope;
+                // 服务范围固定可用模式:Everything 只做文件名;AnyTXT 主打内容(「全部」等同内容)
+                if (self._scope === "everything" && self._mode !== "filename") self._mode = "filename";
+                if (self._scope === "anytxt" && self._mode === "all") self._mode = "content";
+                modesEl.querySelectorAll(".syfe-search__mode").forEach(b => {
+                    b.classList.toggle("active", b.dataset.mode === self._mode);
+                });
                 scopesEl.querySelectorAll(".syfe-search__scope").forEach(b => {
                     b.classList.toggle("active", b === btnScope);
                 });
@@ -653,10 +815,12 @@ export function createSearchTabConfig(plugin: IPluginForSearch) {
                         openFileTab(plugin as IPluginForTab, path);
                     }
                 } else {
-                    // 内容结果:跳转到对应文件与行
+                    // 内容结果:跳转到对应文件与行;无行号(服务范围的命中片段)直接打开文件
                     const lineNo = parseInt(item.dataset.line!, 10);
                     if (lineNo) {
                         revealInFile(plugin, path, lineNo);
+                    } else {
+                        openFileTab(plugin as IPluginForTab, path);
                     }
                 }
             };

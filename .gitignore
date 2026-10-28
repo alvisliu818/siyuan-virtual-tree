@@ -60,3 +60,5 @@ tools/_reload.mjs
 yarn.lock
 # webpack 文件系统缓存(PnP 迁移后从 node_modules/.cache 挪出,node_modules 不应再出现)
 .webpack-cache/
+# 全局搜索服务接入时的一次性实机诊断脚本/截图(验证完即弃,同 tools/_diag* 约定)
+tests/e2e/_*

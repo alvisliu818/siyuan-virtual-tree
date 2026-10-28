@@ -141,6 +141,9 @@ export default class FileEditorPlugin extends Plugin {
     }
     private searchMaxSizeInput?: HTMLInputElement;
     private fileTreeRootInput?: HTMLInputElement;
+    // 全局搜索服务地址(Everything 文件名 / AnyTXT 全文)
+    private searchEverythingUrlInput?: HTMLInputElement;
+    private searchAnytxtUrlInput?: HTMLInputElement;
     private terminalBackendSelect?: HTMLSelectElement;
     private terminalServerUrlInput?: HTMLInputElement;
     private siyuanWorkspacePathInput?: HTMLInputElement;
@@ -988,6 +991,19 @@ export default class FileEditorPlugin extends Plugin {
         this.searchMaxSizeInput.max = "10240";
         addRow("fileTree", "搜索最大文件大小(KB)", "超过此大小的文件不参与搜索", this.searchMaxSizeInput);
 
+        // 本地搜索服务地址:全局搜索面板的「Everything」「AnyTXT」两个范围用
+        this.searchEverythingUrlInput = document.createElement("input");
+        this.searchEverythingUrlInput.className = "b3-text-field";
+        this.searchEverythingUrlInput.type = "text";
+        this.searchEverythingUrlInput.placeholder = "http://127.0.0.1:80";
+        addRow("fileTree", "Everything 服务地址", "全局搜索范围「Everything」连接的 voidtools Everything HTTP 服务,全盘秒搜文件名。需在 Everything「工具→选项→HTTP 服务器」中启用(默认关闭,端口默认 80)", this.searchEverythingUrlInput);
+
+        this.searchAnytxtUrlInput = document.createElement("input");
+        this.searchAnytxtUrlInput.className = "b3-text-field";
+        this.searchAnytxtUrlInput.type = "text";
+        this.searchAnytxtUrlInput.placeholder = "http://127.0.0.1:9920";
+        addRow("fileTree", "AnyTXT 服务地址", "全局搜索范围「AnyTXT」连接的 AnyTXT Searcher 内建 SDK 服务(JSON-RPC),全盘全文搜索。桌面端保持 AnyTXT 运行即可;刚启动还在建索引时可能搜不到东西", this.searchAnytxtUrlInput);
+
         // 文件树根目录
         this.fileTreeRootInput = document.createElement("input");
         this.fileTreeRootInput.className = "b3-text-field";
@@ -1181,6 +1197,8 @@ export default class FileEditorPlugin extends Plugin {
             this.searchMaxSizeInput.value = String(Math.round(this.config.searchMaxFileSize / 1024));
         }
         if (this.fileTreeRootInput) this.fileTreeRootInput.value = this.config.fileTreeRoot;
+        if (this.searchEverythingUrlInput) this.searchEverythingUrlInput.value = this.config.searchEverythingUrl || DEFAULT_CONFIG.searchEverythingUrl;
+        if (this.searchAnytxtUrlInput) this.searchAnytxtUrlInput.value = this.config.searchAnytxtUrl || DEFAULT_CONFIG.searchAnytxtUrl;
         if (this.terminalBackendSelect) this.terminalBackendSelect.value = this.config.terminalBackend || "auto";
         if (this.terminalServerUrlInput) this.terminalServerUrlInput.value = this.config.terminalServerUrl;
         if (this.siyuanWorkspacePathInput) this.siyuanWorkspacePathInput.value = this.config.siyuanWorkspacePath;
@@ -1229,6 +1247,8 @@ export default class FileEditorPlugin extends Plugin {
             showMinimap: getResolved("editor.minimap.enabled") !== false,
             searchMaxFileSize: (parseInt(this.searchMaxSizeInput?.value || "1024", 10)) * 1024,
             fileTreeRoot: (this.fileTreeRootInput?.value || "").trim() || "/data",
+            searchEverythingUrl: (this.searchEverythingUrlInput?.value || "").trim() || DEFAULT_CONFIG.searchEverythingUrl,
+            searchAnytxtUrl: (this.searchAnytxtUrlInput?.value || "").trim() || DEFAULT_CONFIG.searchAnytxtUrl,
             terminalBackend: (this.terminalBackendSelect?.value as "auto" | "builtin" | "server") || "auto",
             terminalShell: (this.terminalShellSelect?.value as string) || "auto",
             terminalServerUrl: (this.terminalServerUrlInput?.value || "").trim() || DEFAULT_TERMINAL_SERVER_URL,
