@@ -154,6 +154,8 @@ export default class FileEditorPlugin extends Plugin {
     private marketTopBarIconEl?: HTMLElement;
     private marketTopBarIconInput?: HTMLInputElement;
     private markdownModeSelect?: HTMLSelectElement;
+    // Markdown 编辑器引擎下拉(vditor 所见即所得 / cm6 源码编辑)
+    private markdownEditorSelect?: HTMLSelectElement;
     private newTabReplacePlusInput?: HTMLInputElement;
     private newTabShowPinnedInput?: HTMLInputElement;
     private newTabShowRecentInput?: HTMLInputElement;
@@ -906,6 +908,14 @@ export default class FileEditorPlugin extends Plugin {
         this.globalReadingModeInput.className = "b3-switch";
         addRow("openFiles", "全局阅读模式", "开启后所有 Markdown 文件默认以「阅读」(只读渲染)方式打开,需要编辑时再用页签顶部的按钮切换;关闭则使用上面的「Markdown 默认模式」", this.globalReadingModeInput);
 
+        // Markdown 编辑器引擎(live 态的编辑面;对新开页签生效)
+        this.markdownEditorSelect = document.createElement("select");
+        this.markdownEditorSelect.className = "b3-select";
+        this.markdownEditorSelect.innerHTML = `
+            <option value="vditor">Vditor(所见即所得)</option>
+            <option value="cm6">CodeMirror 6(源码编辑)</option>`;
+        addRow("openFiles", "Markdown 编辑器", "实时预览模式的编辑引擎,对新开页签生效:vditor = 所见即所得(光标行显示源码,其余实时渲染);cm6 = CodeMirror 6 源码编辑(整篇源码 + 语法高亮,大文件更流畅,阅读态仍为完整渲染)。已有页签按页签顶部按钮重新切换即可应用", this.markdownEditorSelect);
+
         // 导入 Markdown 到思源时,是否把源文件作为资源插入文档顶部的引述块
         this.importMdSourceAssetInput = document.createElement("input");
         this.importMdSourceAssetInput.type = "checkbox";
@@ -1204,6 +1214,7 @@ export default class FileEditorPlugin extends Plugin {
         if (this.siyuanWorkspacePathInput) this.siyuanWorkspacePathInput.value = this.config.siyuanWorkspacePath;
         if (this.terminalShellSelect) this.terminalShellSelect.value = this.config.terminalShell || "auto";
         if (this.markdownModeSelect) this.markdownModeSelect.value = this.config.markdownDefaultMode || "live";
+        if (this.markdownEditorSelect) this.markdownEditorSelect.value = this.config.markdownEditor || "vditor";
         if (this.globalReadingModeInput) this.globalReadingModeInput.checked = this.config.globalReadingMode !== false;
         if (this.versionKeepCountInput) this.versionKeepCountInput.value = String(this.config.versionKeepCount ?? 10);
         if (this.deleteModeSelect) this.deleteModeSelect.value = this.config.deleteMode || "plugin";
@@ -1257,6 +1268,7 @@ export default class FileEditorPlugin extends Plugin {
             iconTheme: this.iconThemeSelect?.value || "",
             marketTopBarIcon: this.marketTopBarIconInput?.checked ?? true,
             markdownDefaultMode: (this.markdownModeSelect?.value as "live" | "source" | "reading") || "live",
+            markdownEditor: (this.markdownEditorSelect?.value as "vditor" | "cm6") || "vditor",
             globalReadingMode: this.globalReadingModeInput?.checked ?? true,
             versionKeepCount: Math.max(0, parseInt(this.versionKeepCountInput?.value || "10", 10) || 0),
             deleteMode: ((this.deleteModeSelect?.value || "plugin") as "plugin" | "system"),
