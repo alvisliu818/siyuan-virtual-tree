@@ -50,3 +50,11 @@ tools/_vc-*.png
 tools/_trash-*
 tools/_diag*
 tools/_reload.mjs
+
+# ===== Yarn 4 PnP(2026-10 迁移,包管理全局 yarn,产物全部可再生不入库) =====
+# cache 在 globalFolder(E:/HOME/Code/.yarn-global),不进仓;unplugged 为
+# node-pty/zeromq/esbuild 及复制源包(basedpyright 等)的磁盘解压形态,体积大
+.pnp.cjs
+.pnp.loader.mjs
+.yarn/
+yarn.lock

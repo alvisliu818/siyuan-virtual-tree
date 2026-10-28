@@ -75,16 +75,16 @@
 ## 开发 / Development
 
 ```bash
-npm install
-npm run dev   # 监听构建,输出到思源插件目录(直接生效)
+yarn install
+yarn dev   # 监听构建,输出到思源插件目录(直接生效)
 ```
 
 在思源中通过「本地插件」加载本项目目录即可调试。
 
 ```bash
-npm run build      # 生产构建,输出到 dist/(构建前自动清空,只含插件打包文件)
-npm run zip        # 将 dist/ 打包为 build/package.zip
-npm run package    # 构建 + 打包(一条命令)
+yarn build      # 生产构建,输出到 dist/(构建前自动清空,只含插件打包文件)
+yarn zip        # 将 dist/ 打包为 build/package.zip
+yarn package    # 构建 + 打包(一条命令)
 ```
 
 ## 说明 / Notes

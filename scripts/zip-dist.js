@@ -28,7 +28,7 @@ function walk(dir, base = dir, out = []) {
 
 async function main() {
     if (!fs.existsSync(DIST_DIR)) {
-        console.error("[zip-dist] dist/ 不存在,请先运行 npm run build");
+        console.error("[zip-dist] dist/ 不存在,请先运行 yarn build");
         process.exit(1);
     }
 

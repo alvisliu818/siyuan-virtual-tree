@@ -36,8 +36,46 @@ const SIYUAN_PLUGIN_DIR = process.env.SYFI_PLUGIN_DIR
 // node-pty 依赖目录。node-pty 是原生模块(内含平台相关的 .node/.dll),
 // 无法被 webpack 打包,只能原样复制到插件目录,由运行时 require 加载。
 // 装在 scripts/ 下(与 terminal-server 共用依赖),打包时按当前平台只复制一份。
+// 注意:scripts/ 是独立 npm 子项目(有自己的 node_modules),不走根的 PnP。
 const NODE_PTY_SRC = path.resolve(__dirname, "scripts", "node_modules", "node-pty");
 const NODE_PTY_DEST = "node_modules/node-pty";
+
+/**
+ * 定位一个依赖包在磁盘上的目录。
+ *
+ * 2026-10 迁移 Yarn 4 PnP 后,包默认装在全局 cache 的 zip 里,而下面这些包
+ * (basedpyright/vditor/vscode-oniguruma/cmake-ts/zeromq)的内容要**整目录复制**
+ * 进产物,zip 里的文件无法被 CopyPlugin 拷贝。因此约定:
+ *   - 复制源包必须 `yarn unplug <pkg>` 解压到 .yarn/unplugged/(带构建脚本的包
+ *     如 zeromq/esbuild 会自动 unplug;纯内容包要手动,cmake-ts 已加进 devDeps
+ *     以便 unplug 匹配);
+ *   - 这里按「npm 布局 → PnP 解析(unplug 后返回磁盘真实路径)→ 扫 unplug 目录」
+ *     三级定位,任一命中即返回,都失败返回 null(调用方决定降级或报错)。
+ */
+function resolvePkgDir(name) {
+    const direct = path.resolve(__dirname, "node_modules", name);
+    if (fs.existsSync(direct)) return direct; // npm 布局(向后兼容)
+    const pnpCjs = path.resolve(__dirname, ".pnp.cjs");
+    if (!fs.existsSync(pnpCjs)) return null;
+    try {
+        const pnpApi = require(pnpCjs);
+        const resolved = pnpApi.resolveRequest(`${name}/package.json`, __filename);
+        if (resolved && fs.existsSync(resolved)) return path.dirname(resolved);
+    } catch {
+        // 解析失败(包不在依赖树)→ 走兜底
+    }
+    // 兜底:扫 unplug 目录(命名形如 <pkg>-npm-<ver>-<hash>,scoped 包把 / 换 -)
+    const unpluggedRoot = path.resolve(__dirname, ".yarn", "unplugged");
+    if (fs.existsSync(unpluggedRoot)) {
+        const prefix = `${name.replace(/^@/, "").replace(/\//g, "-")}-npm-`;
+        for (const dir of fs.readdirSync(unpluggedRoot)) {
+            if (!dir.startsWith(prefix)) continue;
+            const candidate = path.join(unpluggedRoot, dir, "node_modules", name);
+            if (fs.existsSync(candidate)) return candidate;
+        }
+    }
+    return null;
+}
 
 // basedpyright(pyright 的开源 fork,MIT)语言服务器依赖目录。它是**运行时**用
 // ELECTRON_RUN_AS_NODE 拉起的独立 Node 进程,不能被 webpack 打包(webpack 会把
@@ -47,14 +85,26 @@ const NODE_PTY_DEST = "node_modules/node-pty";
 // 静态声明该能力,是语义着色(参数名/函数调用等)的数据源。
 // 注意:运行时入口路径仍是 <插件目录>/pyright/langserver.index.js —— 目标目录名
 // 保持 "pyright" 不变,python-lsp.ts 的定位逻辑与已部署的目录结构都不用动。
-const PYRIGHT_SRC = path.resolve(__dirname, "node_modules", "basedpyright");
+// PnP:必须 `yarn unplug basedpyright`(整包 ~35M,zip 里拷不了,见 resolvePkgDir)。
 const PYRIGHT_DEST = "pyright";
 
 // zeromq(Task D / Jupyter 后端)。同为原生模块(.node 二进制 + 平台相关 build 目录),
 // 无法被 webpack 打包。它的 JS 层(lib/)只做相对引用,原生层在 build/<plat>/<arch>/<abi>,
 // 所以复制 lib + package.json + 整个 build 即可(排除各自的调试符号)。
-const ZEROMQ_SRC = path.resolve(__dirname, "node_modules", "zeromq");
+// PnP:带构建脚本,install 时自动 unplug 到磁盘,resolvePkgDir 直接可定位。
 const ZEROMQ_DEST = "node_modules/zeromq";
+
+/** 严格版:复制源缺失时直接抛错(vditor/oniguruma 是硬运行时依赖,缺了必须构建失败) */
+function requirePkgDir(name) {
+    const dir = resolvePkgDir(name);
+    if (!dir) {
+        throw new Error(`依赖 ${name} 未定位到磁盘目录 —— 确认已安装,且 PnP 下已 \`yarn unplug ${name}\``);
+    }
+    return dir;
+}
+// vditor 的 dist 与 oniguruma 的 wasm 在生产/开发两个分支都要复制,启动时定位一次
+const VDITOR_DIST = path.join(requirePkgDir("vditor"), "dist");
+const ONIG_WASM = path.join(requirePkgDir("vscode-oniguruma"), "release", "onig.wasm");
 
 /**
  * 生成 pyright 的复制规则。
@@ -68,8 +118,12 @@ const ZEROMQ_DEST = "node_modules/zeromq";
  * 相比这些,体积不构成取舍理由。
  */
 function pyrightPatterns() {
-    if (!fs.existsSync(PYRIGHT_SRC)) return [];
-    return [{from: PYRIGHT_SRC, to: PYRIGHT_DEST}];
+    const src = resolvePkgDir("basedpyright");
+    if (!src) {
+        console.warn("[webpack] 找不到 basedpyright(npm node_modules 或 yarn unplug 均未命中),跳过 pyright 复制 —— Python LSP 将不可用");
+        return [];
+    }
+    return [{from: src, to: PYRIGHT_DEST}];
 }
 
 /**
@@ -107,17 +161,24 @@ function nodePtyPatterns() {
  * 排除 .pdb。宿主仓库没装 zeromq 时返回空(不影响构建)。
  */
 function zeromqPatterns() {
-    if (!fs.existsSync(ZEROMQ_SRC)) return [];
+    const src = resolvePkgDir("zeromq");
+    if (!src) return [];
+    // cmake-ts 是 zeromq 的 dependencies(lib/load-addon.js 运行时 require
+    // "cmake-ts/build/loader" 来定位预编译 .node,缺了整个 zeromq 加载失败 →
+    // 所有 Jupyter/conda 内核起不来(实测踩过))。PnP 下它不再是 zeromq 的
+    // 物理邻居,必须独立解析;它无构建脚本,已加进 devDeps 以便 yarn unplug。
+    const cmakeSrc = resolvePkgDir("cmake-ts");
+    if (!cmakeSrc) {
+        console.warn("[webpack] 找不到 cmake-ts(zeromq 运行时依赖),跳过 zeromq 复制 —— Jupyter 内核将不可用");
+        return [];
+    }
     return [
-        {from: path.join(ZEROMQ_SRC, "package.json"), to: `${ZEROMQ_DEST}/`},
-        {from: path.join(ZEROMQ_SRC, "lib"), to: `${ZEROMQ_DEST}/lib`, globOptions: {ignore: ["**/*.map"]}},
-        {from: path.join(ZEROMQ_SRC, "build"), to: `${ZEROMQ_DEST}/build`, globOptions: {ignore: ["**/*.pdb"]}},
-        // zeromq/lib/load-addon.js 运行时 require("cmake-ts/build/loader") 来定位
-        // 预编译 .node —— cmake-ts 是它的构建期工具但**运行时也要**,缺了整个
-        // zeromq 加载失败 → 所有 Jupyter/conda 内核起不来(实测踩过)。loader 只
-        // 依赖 Node 内置模块,复制包本体(package.json + build)即可
-        {from: path.join(path.dirname(ZEROMQ_SRC), "cmake-ts", "package.json"), to: "node_modules/cmake-ts/"},
-        {from: path.join(path.dirname(ZEROMQ_SRC), "cmake-ts", "build"), to: "node_modules/cmake-ts/build", globOptions: {ignore: ["**/*.map"]}},
+        {from: path.join(src, "package.json"), to: `${ZEROMQ_DEST}/`},
+        {from: path.join(src, "lib"), to: `${ZEROMQ_DEST}/lib`, globOptions: {ignore: ["**/*.map"]}},
+        {from: path.join(src, "build"), to: `${ZEROMQ_DEST}/build`, globOptions: {ignore: ["**/*.pdb"]}},
+        // loader 只依赖 Node 内置模块,复制包本体(package.json + build)即可
+        {from: path.join(cmakeSrc, "package.json"), to: "node_modules/cmake-ts/"},
+        {from: path.join(cmakeSrc, "build"), to: "node_modules/cmake-ts/build", globOptions: {ignore: ["**/*.map"]}},
     ];
 }
 
@@ -161,7 +222,7 @@ module.exports = (env, argv) => {
                     {from: "plugin.json", to: "./"},
                     {from: "src/i18n/", to: "./i18n/"},
                     // Vditor(Markdown 所见即所得)的静态资源:运行时按 cdn 路径懒加载
-                    {from: "node_modules/vditor/dist", to: "./vditor/dist"},
+                    {from: VDITOR_DIST, to: "./vditor/dist"},
                     // pty-helper:真 PTY 的承载进程(ELECTRON_RUN_AS_NODE 拉起,内部用 node-pty)
                     {from: "tools/pty-helper.js", to: "./pty-helper.js"},
                     // syfe-kernel:Python 内核本体(由 pty-helper 以 raw 子进程拉起)
@@ -178,7 +239,7 @@ module.exports = (env, argv) => {
                     // + oniguruma WASM:运行时 fetch /plugins/<name>/grammars/ 加载,
                     // 着色不依赖 CDN(离线可用、加载确定性)
                     {from: "src/grammars/", to: "./grammars/"},
-                    {from: "node_modules/vscode-oniguruma/release/onig.wasm", to: "./grammars/onig.wasm"},
+                    {from: ONIG_WASM, to: "./grammars/onig.wasm"},
                 ],
             }),
         );
@@ -190,7 +251,7 @@ module.exports = (env, argv) => {
                     {from: "src/i18n/", to: "./i18n/"},
                     {from: "plugin.json", to: "./"},
                     {from: "icon.png", to: "./", noErrorOnMissing: true},
-                    {from: "node_modules/vditor/dist", to: "./vditor/dist"},
+                    {from: VDITOR_DIST, to: "./vditor/dist"},
                     // pty-helper:真 PTY 的承载进程
                     {from: "tools/pty-helper.js", to: "./pty-helper.js"},
                     // syfe-kernel:Python 内核本体
@@ -205,7 +266,7 @@ module.exports = (env, argv) => {
                     ...pyrightPatterns(),
                     // 内置 TextMate 语法 + oniguruma WASM(同生产模式)
                     {from: "src/grammars/", to: "./grammars/"},
-                    {from: "node_modules/vscode-oniguruma/release/onig.wasm", to: "./grammars/onig.wasm"},
+                    {from: ONIG_WASM, to: "./grammars/onig.wasm"},
                 ],
             }),
         );
@@ -218,7 +279,8 @@ module.exports = (env, argv) => {
         // 持久化缓存:模块图与转换结果序列化到 node_modules/.cache/webpack,
         // 二次构建跳过全部模块重建/转换(实测 17s → 4s 级)。缓存键含配置与
         // 依赖清单(见 buildDependencies),改配置/装依赖自动失效,不会用旧缓存
-        // 打出过期产物;缓存目录在 node_modules 下,不入库。
+        // 打出过期产物。PnP 迁移后 node_modules/ 不再由包管理器创建,webpack 会
+        // 自行 mkdir 这个缓存目录(.gitignore 已覆盖 node_modules/),不入库。
         cache: {
             type: "filesystem",
             buildDependencies: {

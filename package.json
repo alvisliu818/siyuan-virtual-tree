@@ -4,10 +4,10 @@
   "description": "VSCode-like file editor & Obsidian-like file manager for SiYuan, powered by Monaco Editor.",
   "main": "index.js",
   "scripts": {
-    "dev": "node tools/clean-env-run.js node_modules/webpack/bin/webpack.js --config webpack.config.js --mode development",
-    "build": "node tools/clean-env-run.js node_modules/webpack/bin/webpack.js --config webpack.config.js --mode production && node tools/clean-env-run.js scripts/deploy.js",
+    "dev": "yarn webpack --config webpack.config.js --mode development",
+    "build": "yarn webpack --config webpack.config.js --mode production && node tools/clean-env-run.js scripts/deploy.js",
     "zip": "node scripts/zip-dist.js",
-    "package": "npm run build && npm run zip"
+    "package": "yarn build && yarn zip"
   },
   "keywords": [
     "siyuan",
@@ -22,6 +22,7 @@
   },
   "devDependencies": {
     "basedpyright": "^1.40.2",
+    "cmake-ts": "1.0.2",
     "copy-webpack-plugin": "^14.0.0",
     "css-loader": "^7.1.4",
     "esbuild-loader": "^4.4.3",
@@ -50,5 +51,22 @@
     "x-data-spreadsheet": "^1.1.9",
     "xlsx": "^0.18.5",
     "zeromq": "^6.8.0"
+  },
+  "dependenciesMeta": {
+    "basedpyright@1.40.2": {
+      "unplugged": true
+    },
+    "cmake-ts@1.0.2": {
+      "unplugged": true
+    },
+    "vditor@4.0.1": {
+      "unplugged": true
+    },
+    "vscode-oniguruma@2.0.1": {
+      "unplugged": true
+    },
+    "webpack@5.112.2": {
+      "unplugged": true
+    }
   }
 }
