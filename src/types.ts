@@ -89,6 +89,9 @@ export interface EditorConfig {
     // 文档面包屑(并入自 fake-doc-breadcrumb 模块)总开关:在思源文档顶部插入一层虚拟文档层级面包屑。
     // 模块的 20+ 项细分设置存独立文件 fake-doc-breadcrumb-settings.json(由设置面板「文档面包屑」页打开)
     fakeDocBreadcrumbEnabled: boolean;
+    // 习惯与目标(并入自 siyuan-planner 模块)总开关:习惯打卡/目标/任务待办/番茄计时/倒数日。
+    // 细分设置(番茄时长等)存 planner.json 的 settings 段,由设置面板「习惯与目标」页直接修改(即时生效)
+    plannerEnabled: boolean;
 }
 
 /** 引用关系树配置(移植自独立插件 siyuan-virtual-tree) */
@@ -296,4 +299,6 @@ export const DEFAULT_CONFIG: EditorConfig = {
     },
     // 文档面包屑默认开启(并入该模块即为使用它;不需要时在设置「文档面包屑」页关掉总开关)
     fakeDocBreadcrumbEnabled: true,
+    // 习惯与目标默认开启;关闭后 Dock 图标需重启思源才消失(思源无 removeDock),面板/命令会提示已停用
+    plannerEnabled: true,
 };

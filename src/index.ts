@@ -85,6 +85,13 @@ import {refreshAllTabIcons} from "./utils/tab-icon";
 import {destroyCodeRender, initCodeRender, buildCodeRenderSettingPages} from "./code-render";
 import {applyFakeDocBreadcrumb, destroyFakeDocBreadcrumb, getFakeDocBreadcrumbDefaultSettings, getFakeDocBreadcrumbSettings, saveFakeDocBreadcrumbSettings} from "./fake-doc-breadcrumb";
 import {initLanguage as initFdbLanguage, language as fdbLang} from "./fake-doc-breadcrumb/i18n";
+// 习惯与目标(并入自 siyuan-planner):打卡/目标/任务/番茄计时/倒数日
+import {applyPlannerEnabled, destroyPlanner, isPlannerActive} from "./planner";
+import {createPlannerDockConfig} from "./planner/dock";
+import {createPlannerTabConfig, openPlannerTab} from "./planner/tab";
+import {openPlannerSettingsDialog} from "./planner/dialogs";
+import {getSettings as getPlannerSettings, updatePlannerSettings} from "./planner/store";
+import {PLANNER_DOCK_TYPE} from "./planner/constants";
 import "./index.scss";
 
 // 守卫必须在插件加载的第一时间生效 —— 早于任何 vditor 实例被创建。
@@ -155,6 +162,12 @@ export default class FileEditorPlugin extends Plugin {
     // 顶栏「扩展市场」图标:元素引用(显隐控制)+ 设置面板开关
     private marketTopBarIconEl?: HTMLElement;
     private marketTopBarIconInput?: HTMLInputElement;
+    // 顶栏「习惯与目标」图标(显隐跟随 plannerEnabled)
+    private plannerTopBarIconEl?: HTMLElement;
+    // 习惯与目标(并入自 siyuan-planner)总开关
+    private plannerEnabledInput?: HTMLInputElement;
+    // planner 细分设置控件(键见 buildSettingItems 的 plannerSpec;变更即时写 planner.json)
+    private plannerControls: Record<string, HTMLInputElement | HTMLSelectElement> = {};
     private markdownModeSelect?: HTMLSelectElement;
     // Markdown 编辑器引擎下拉(vditor 所见即所得 / cm6 源码编辑)
     private markdownEditorSelect?: HTMLSelectElement;
@@ -214,10 +227,11 @@ export default class FileEditorPlugin extends Plugin {
     private pruneStalePluginDocks(): void {
         // 当前代码会注册的 dock type;文件 dock 即使默认不注册也保留(设置里可开)
         const registered = [
-            DOCK_TYPE, RECENT_DOCK_TYPE, TAG_DOCK_TYPE, MOUNT_TREE_DOCK_TYPE, TERMINAL_DOCK_TYPE,
+            DOCK_TYPE, RECENT_DOCK_TYPE, TAG_DOCK_TYPE, MOUNT_TREE_DOCK_TYPE, TERMINAL_DOCK_TYPE, PLANNER_DOCK_TYPE,
         ];
-        // 本插件用过的旧名字(改名前的命名空间,整个都该清)
-        const legacyNames = ["siyuan-file-editor"];
+        // 本插件用过的旧名字(改名前的命名空间,整个都该清);
+        // siyuan-planner = 已并入的习惯与目标模块的独立插件期命名空间,它的 dock 记录一并清掉
+        const legacyNames = ["siyuan-file-editor", "siyuan-planner"];
         try {
             const storage = (window as any).siyuan?.storage?.["local-plugin-docks"];
             if (!storage || typeof storage !== "object") return;
@@ -351,6 +365,9 @@ export default class FileEditorPlugin extends Plugin {
         // 版本比较页签(历史版本 ↔ 当前内容,或两个历史版本互比)
         this.addTab(asSiyuanCustom(createDiffTabConfig(this as any)));
         this.addTab(asSiyuanCustom(createTerminalTabConfig(this as any)));
+        // 习惯与目标:全屏面板 Tab。工厂必须始终注册(布局恢复可能带着 planner 页签;
+        // 功能开关只控制数据引擎与入口可见性,不控制 Tab 工厂)
+        this.addTab(asSiyuanCustom(createPlannerTabConfig(this as any)));
 
         // 注册 Dock
         // 注:「文件」面板默认**不注册**(能力已由「虚拟文档树」面板承接);
@@ -414,6 +431,33 @@ export default class FileEditorPlugin extends Plugin {
             callback: () => this.openTerminal(this.getFileTreeRoot()),
         });
 
+        // 命令:打开习惯与目标面板(功能开关关闭时提示而不是静默)
+        this.addCommand({
+            langKey: "openPlanner",
+            hotkey: "",
+            callback: () => {
+                if (!isPlannerActive()) {
+                    showMessage("「习惯与目标」已在设置中停用", 3000, "info");
+                    return;
+                }
+                openPlannerTab(this as any);
+            },
+        });
+
+        // 顶栏图标:习惯与目标(勾形)。显隐跟随 plannerEnabled,onLayoutReady/saveSettings 里同步
+        this.plannerTopBarIconEl = this.addTopBar({
+            icon: `<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M9 16.2 4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4z"/></svg>`,
+            title: "习惯与目标",
+            position: "right",
+            callback: () => {
+                if (!isPlannerActive()) {
+                    showMessage("「习惯与目标」已在设置中停用", 3000, "info");
+                    return;
+                }
+                openPlannerTab(this as any);
+            },
+        });
+
         // 顶栏图标:扩展市场(自定义拼图 SVG,currentColor 自适应工具栏配色)
         // 显隐跟随 config.marketTopBarIcon(默认显示),onLayoutReady 里按配置收起
         this.marketTopBarIconEl = this.addTopBar({
@@ -442,6 +486,34 @@ export default class FileEditorPlugin extends Plugin {
     // 该面板默认不注册(见 onload);用户在设置里打开时调用本方法即时生效。
     // 也可以由 openFileTab 在打开文件夹时按需触发(钩子挂在 onload)。
     // 注:思源插件**没有 removeDock**,所以关闭开关后需要重启思源才真正隐藏。
+    // 习惯与目标 Dock 同理:启用时补注册,关闭后图标留到下次重启。
+    private ensurePlannerDock(): void {
+        if (this.config.plannerEnabled === false) return;
+        this.addDockOnce(createPlannerDockConfig(this as any) as any);
+    }
+
+    // 顶栏「习惯与目标」图标显隐跟随配置(立即生效)
+    private applyPlannerTopBarIcon(): void {
+        if (!this.plannerTopBarIconEl) return;
+        this.plannerTopBarIconEl.style.display = this.config.plannerEnabled === false ? "none" : "";
+    }
+
+    // 读取 planner 设置控件值:开关=布尔,数字=夹紧到 [min,max],下拉=字符串
+    private readPlannerControl(ctl: HTMLInputElement | HTMLSelectElement, spec: {kind: "switch" | "number" | "select"}): string | number | boolean {
+        if (spec.kind === "switch") {
+            return (ctl as HTMLInputElement).checked;
+        }
+        if (spec.kind === "number") {
+            const el = ctl as HTMLInputElement;
+            const min = el.min === "" ? -Infinity : parseFloat(el.min);
+            const max = el.max === "" ? Infinity : parseFloat(el.max);
+            const n = parseFloat(el.value);
+            if (isNaN(n)) return 0;
+            return Math.min(max, Math.max(min, n));
+        }
+        return (ctl as HTMLSelectElement).value;
+    }
+
     async onLayoutReady(): Promise<void> {
         this.config = await loadConfig(this);
         // settings.json(VS Code 风格用户设置):优先级高于 config.json。
@@ -470,6 +542,11 @@ export default class FileEditorPlugin extends Plugin {
         setCloseUnsavedAction(this.config.closeUnsavedAction);
         // 文档面包屑(并入自 fake-doc-breadcrumb):按总开关启用;启用时会自动给已打开文档补插面包屑
         applyFakeDocBreadcrumb(this as any, this.config.fakeDocBreadcrumbEnabled !== false);
+        // 习惯与目标(并入自 siyuan-planner):按总开关启用(读档 + 计时引擎 + 首次迁移),并补注册 Dock
+        void applyPlannerEnabled(this as any, this.config.plannerEnabled !== false).then(() => {
+            this.ensurePlannerDock();
+            this.applyPlannerTopBarIcon();
+        });
         // 设置面板控件同步当前值
         this.syncSettingUI();
 // 加载标签数据(预设标签库 + 文件/文件夹打标记录)
@@ -641,6 +718,12 @@ export default class FileEditorPlugin extends Plugin {
     }
 
     onunload(): void {
+        // 习惯与目标:停计时引擎、强制落盘(planner.json 数据保留)
+        try {
+            destroyPlanner();
+        } catch {
+            // ignore
+        }
         // 文档面包屑:摘事件、去样式、移除已插入的面包屑
         try {
             destroyFakeDocBreadcrumb();
@@ -1066,6 +1149,92 @@ export default class FileEditorPlugin extends Plugin {
             addRow("docBreadcrumb", title, desc, ctl);
         }
 
+        // ---------- 习惯与目标 ----------
+        // 总开关:并入自 siyuan-planner 模块;关闭后停计时引擎并落盘,Dock 图标需重启思源才消失
+        this.plannerEnabledInput = document.createElement("input");
+        this.plannerEnabledInput.type = "checkbox";
+        this.plannerEnabledInput.className = "b3-switch";
+        addRow("planner", "启用习惯与目标", "习惯打卡、目标进度、任务与待办、番茄/正计时/倒计时、倒数日。数据存插件的 planner.json;关闭后停用计时引擎并停止记录,数据保留,侧边栏 Dock 图标需重启思源才消失", this.plannerEnabledInput);
+
+        // 细分设置:与独立版设置对话框同一存储(planner.json 的 settings 段),改动即时生效
+        const plStrip = (s: unknown) => String(s ?? "");
+        const plannerSpec: Array<{key: string; label: keyof typeof PLANNER_LABELS; kind: "switch" | "number" | "select"; min?: number; max?: number; options?: Array<[string, string]>}> = [
+            {key: "pomodoro.focus", label: "plFocus", kind: "number", min: 1, max: 120},
+            {key: "pomodoro.short", label: "plShort", kind: "number", min: 1, max: 60},
+            {key: "pomodoro.long", label: "plLong", kind: "number", min: 1, max: 60},
+            {key: "pomodoro.longEvery", label: "plLongEvery", kind: "number", min: 2, max: 8},
+            {key: "pomodoro.autoStartBreak", label: "plAutoBreak", kind: "switch"},
+            {key: "pomodoro.autoStartNext", label: "plAutoNext", kind: "switch"},
+            {key: "defaultCountdownMin", label: "plCountdownMin", kind: "number", min: 1, max: 180},
+            {key: "notify", label: "plNotify", kind: "switch"},
+            {key: "sound", label: "plSound", kind: "switch"},
+            {key: "weekStart", label: "plWeekStart", kind: "select", options: [["1", "周一"], ["0", "周日"]]},
+            {key: "heatmapWeeks", label: "plHeatmapWeeks", kind: "number", min: 4, max: 52},
+        ];
+        const PLANNER_LABELS: Record<string, [string, string]> = {
+            plFocus: ["番茄专注时长(分钟)", "一个专注番茄的分钟数;完成一个番茄记一次专注统计"],
+            plShort: ["短休时长(分钟)", "两个番茄之间的短休息"],
+            plLong: ["长休时长(分钟)", "每完成一组番茄后的长休息"],
+            plLongEvery: ["长休间隔(番茄数)", "每完成多少个番茄进入一次长休息"],
+            plAutoBreak: ["自动开始休息", "番茄结束后自动进入休息倒计时"],
+            plAutoNext: ["自动开始下一个番茄", "休息结束后自动开始下一个专注"],
+            plCountdownMin: ["倒计时默认分钟", "计时页倒计时模式的默认时长"],
+            plNotify: ["结束时系统通知", "番茄/倒计时结束弹系统通知(不只是应用内提示);任务到期与习惯打卡提醒也走系统通知"],
+            plSound: ["结束提示音", "计时结束时播放提示音(WebAudio 合成,无资源文件)"],
+            plWeekStart: ["一周起始日", "统计与日历的周起始日"],
+            plHeatmapWeeks: ["热力图周数", "习惯统计热力图显示的周数"],
+        };
+        for (const spec of plannerSpec) {
+            const [title, desc] = PLANNER_LABELS[spec.label];
+            let ctl: HTMLInputElement | HTMLSelectElement;
+            if (spec.kind === "switch") {
+                const input = document.createElement("input");
+                input.type = "checkbox";
+                input.className = "b3-switch";
+                ctl = input;
+            } else if (spec.kind === "number") {
+                const input = document.createElement("input");
+                input.type = "number";
+                input.className = "b3-text-field";
+                if (spec.min != null) input.min = String(spec.min);
+                if (spec.max != null) input.max = String(spec.max);
+                ctl = input;
+            } else {
+                const select = document.createElement("select");
+                select.className = "b3-select";
+                for (const [v, label] of spec.options ?? []) {
+                    const opt = document.createElement("option");
+                    opt.value = v;
+                    opt.textContent = label;
+                    select.appendChild(opt);
+                }
+                ctl = select;
+            }
+            // 即时保存:planner 设置与宿主 config 无关,变更直接写 planner.json 并广播刷新
+            ctl.addEventListener("change", () => {
+                const patch: Record<string, unknown> = {};
+                const topKey = spec.key.split(".")[0];
+                if (spec.key.startsWith("pomodoro.")) {
+                    const sub = spec.key.split(".")[1];
+                    const cur = getPlannerSettings().pomodoro as unknown as Record<string, unknown>;
+                    patch.pomodoro = {...cur};
+                    (patch.pomodoro as Record<string, unknown>)[sub] = this.readPlannerControl(ctl, spec);
+                } else {
+                    patch[topKey] = this.readPlannerControl(ctl, spec);
+                }
+                updatePlannerSettings(this as any, patch as any);
+            });
+            this.plannerControls[spec.key] = ctl;
+            addRow("planner", title, desc, ctl);
+        }
+
+        // 数据管理:导入/导出/示例数据/清空(沿用独立版设置对话框的数据区)
+        const plannerDataBtn = document.createElement("button");
+        plannerDataBtn.className = "b3-button b3-button--outline";
+        plannerDataBtn.textContent = "数据管理…";
+        plannerDataBtn.addEventListener("click", () => openPlannerSettingsDialog(this as any));
+        addRow("planner", "数据管理", "导出/导入 planner.json、一键生成示例数据、清空全部数据;设置项的完整对话框也可在此打开", plannerDataBtn);
+
         // ---------- 百度网盘 ----------
         const bdPanBtn = document.createElement("button");
         bdPanBtn.className = "b3-button b3-button--outline";
@@ -1272,6 +1441,7 @@ export default class FileEditorPlugin extends Plugin {
         addRowsPage("media", "音视频播放器");
         addRowsPage("virtualTree", "虚拟文档树");
         addRowsPage("docBreadcrumb", "文档面包屑");
+        addRowsPage("planner", "习惯与目标");
         addRowsPage("tags", "标签");
         addRowsPage("fileTree", "文件树");
         addRowsPage("baiduPan", "百度网盘");
@@ -1323,6 +1493,23 @@ export default class FileEditorPlugin extends Plugin {
         if (this.mountTreeRelationExpandInput) this.mountTreeRelationExpandInput.value = String(rel.defaultExpandLevel ?? 1);
         // 文档面包屑总开关回填
         if (this.fakeDocBreadcrumbEnabledInput) this.fakeDocBreadcrumbEnabledInput.checked = this.config.fakeDocBreadcrumbEnabled !== false;
+        // 习惯与目标总开关回填
+        if (this.plannerEnabledInput) this.plannerEnabledInput.checked = this.config.plannerEnabled !== false;
+        // planner 细分设置回填(模块未加载时 getSettings 也有默认值兜底)
+        try {
+            const ps = getPlannerSettings() as unknown as Record<string, any>;
+            for (const [key, ctl] of Object.entries(this.plannerControls)) {
+                const v = key.includes(".") ? key.split(".").reduce<any>((o, k) => (o ? o[k] : undefined), ps) : ps[key];
+                if (v === undefined || v === null) continue;
+                if (ctl instanceof HTMLInputElement && ctl.type === "checkbox") {
+                    ctl.checked = v === true;
+                } else {
+                    ctl.value = String(v);
+                }
+            }
+        } catch {
+            // 模块未就绪时跳过,打开面板时会再同步
+        }
         // 文档面包屑细分设置回填(模块未初始化时各键为 null,用默认值兜底)
         const fdbCur = getFakeDocBreadcrumbSettings();
         const fdbDef = getFakeDocBreadcrumbDefaultSettings();
@@ -1381,6 +1568,7 @@ export default class FileEditorPlugin extends Plugin {
             takeoverSplitOpen: this.takeoverSplitOpenInput?.checked ?? false,
             treeBacklinkIcon: this.treeBacklinkIconInput?.checked ?? true,
             fakeDocBreadcrumbEnabled: this.fakeDocBreadcrumbEnabledInput?.checked ?? true,
+            plannerEnabled: this.plannerEnabledInput?.checked ?? true,
             // 「文件」面板功能已移除(虚拟文档树全面承接);保留配置键兼容旧存储
             showFileTreeDock: false,
             mountTreeRelation: {
@@ -1439,6 +1627,11 @@ export default class FileEditorPlugin extends Plugin {
         saveFakeDocBreadcrumbSettings(fdbPatch);
         // 文档面包屑总开关:关闭立即摘除已插入的面包屑,开启立即注入
         applyFakeDocBreadcrumb(this as any, this.config.fakeDocBreadcrumbEnabled !== false);
+        // 习惯与目标总开关:关闭停引擎落盘,开启读档+启动引擎并补注册 Dock
+        void applyPlannerEnabled(this as any, this.config.plannerEnabled !== false).then(() => {
+            this.ensurePlannerDock();
+            this.applyPlannerTopBarIcon();
+        });
         // 主题设置立即生效
         this.applyConfiguredThemes();
         // 顶栏「扩展市场」图标显隐立即生效
