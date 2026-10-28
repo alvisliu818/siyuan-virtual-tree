@@ -681,6 +681,27 @@ button.syfe-editor__arrow--exp:hover {
     max-width: 100%;
 }
 
+// ===== CM6 编辑面(设置「Markdown 编辑器 = cm6」)=====
+// 编辑器高度撑满内容区;滚动/内边距由 cm6-markdown.ts 的主题给出
+.syfe-md__content .cm-editor {
+    height: 100%;
+}
+.syfe-md__content .cm-editor .cm-scroller {
+    overscroll-behavior: contain;
+}
+
+// CM6 模式的阅读态:Vditor.preview 静态渲染容器(结构同 .vditor-reset,
+// 由 preview 自挂类名),这里只管占满与滚动;正文字体宽窄继承 content-theme
+.syfe-md__cmread {
+    height: 100%;
+    overflow: auto;
+    box-sizing: border-box;
+    padding: 16px 24px 48px;
+}
+.syfe-md__cmread.vditor--dark {
+    background-color: var(--b3-theme-background);
+}
+
 // ===== 阅读模式(类 Obsidian Reading):完整渲染 + 只读 =====
 // Vditor 以 toolbar:[] 创建时通常不渲染工具栏,这里兜底隐藏,
 // 并收窄正文宽度、去掉编辑态的聚焦轮廓,更像"阅读"而非"编辑"。

@@ -26,6 +26,8 @@ import {showVersionHistory} from "../version-control/version-ui";
 import {highlightMatches, clearFindHighlights, setCurrentFindHit} from "../components/markdown-find";
 // 剪贴板增强:阅读/实时预览态可连图一起复制,实时预览/源码态可粘贴图片文件落盘
 import {installMarkdownClipboard, getVditorLute, type MdClipboardHandle} from "../editor/md-clipboard";
+// CM6 编辑面(设置「Markdown 编辑器 = CM6」时的实时预览/编辑面)
+import {createCm6MarkdownEditor, type Cm6MarkdownHandle} from "../editor/cm6-markdown";
 // vditor 与思源共用 window.Lute,且 vditor 那份缺 SetTabs —— 详见 utils/lute-guard 的说明
 import {ensureSiyuanLute} from "../utils/lute-guard";
 
@@ -56,6 +58,8 @@ interface MarkdownTabInstance {
     _mode?: MarkdownMode;
     _vditor?: Vditor;
     _editor?: import("monaco-editor").editor.IStandaloneCodeEditor;
+    // CM6 编辑面(设置「Markdown 编辑器 = cm6」时,live 态的编辑器)
+    _cm6?: Cm6MarkdownHandle;
     _model?: import("monaco-editor").editor.ITextModel;
     _dirtyDot?: HTMLElement;
     _contentEl?: HTMLElement;
@@ -437,8 +441,16 @@ function applyRefToVditor(tab: MarkdownTabInstance, ref: FileRef): void {
     flashHeading(el);
 }
 
-// 按当前模式应用位置(源码态走 Monaco 的行定位)
+// 按当前模式应用位置(源码态走 Monaco 的行定位;CM6 live 同为源码态语义)
 function applyFileRef(tab: MarkdownTabInstance, ref: FileRef): void {
+    if (tab._mode === "live" && tab._cm6) {
+        let line = ref.line ?? 0;
+        if (!line && ref.anchor) {
+            line = headingLineOfAnchor(tab._model?.getValue() ?? "", ref.anchor) ?? 0;
+        }
+        if (line > 0) tab._cm6.revealLine(line, true);
+        return;
+    }
     if (tab._mode === "source") {
         let line = ref.line ?? 0;
         if (!line && ref.anchor) line = headingLineOfAnchor(tab._model?.getValue() ?? "", ref.anchor) ?? 0;
@@ -615,9 +627,12 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                     const sel = window.getSelection();
                     return sel && sel.anchorNode ? sel.anchorNode : null;
                 },
-                isSource: () => self._mode === "source",
-                sourceText: () => self._model?.getValue() ?? "",
-                sourceLine: () => self._editor?.getPosition()?.lineNumber ?? 1,
+                // 源码语义 = Monaco 源码态 或 CM6 编辑面(都是文本推导,行号可跳)
+                isSource: () => self._mode === "source" || !!(self._mode === "live" && self._cm6),
+                sourceText: () => self._cm6?.getValue() ?? self._model?.getValue() ?? "",
+                sourceLine: () => self._cm6
+                    ? self._cm6.currentLine()
+                    : (self._editor?.getPosition()?.lineNumber ?? 1),
                 jump: (crumb) => {
                     if (crumb.element) {
                         // 顺序不能反:先把光标放进标题(面包屑路径随之延伸到这一级),
@@ -637,10 +652,14 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                         }
                         scrollToTopOf(crumb.element);
                         flashHeading(crumb.element);
-                    } else if (crumb.line && self._editor) {
-                        self._editor.revealLineNearTop(crumb.line);
-                        self._editor.setPosition({lineNumber: crumb.line, column: 1});
-                        self._editor.focus();
+                    } else if (crumb.line) {
+                        if (self._cm6) {
+                            self._cm6.revealLine(crumb.line, true);
+                        } else if (self._editor) {
+                            self._editor.revealLineNearTop(crumb.line);
+                            self._editor.setPosition({lineNumber: crumb.line, column: 1});
+                            self._editor.focus();
+                        }
                     }
                 },
                 // 点文档根图标:回到文档顶部,光标也放回去(面包屑随之回到根)
@@ -652,7 +671,8 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                         copyLinkMd(buildFileRefMd({path: p}), "文件链接已复制,可粘贴到思源文档");
                         return;
                     }
-                    const ref: FileRef = (self._mode === "source" && crumb.line)
+                    // 源码语义(Monaco 源码态 / CM6 编辑面)用行号(?line=),渲染态用标题锚点(#slug)
+                    const ref: FileRef = ((self._mode === "source" || (self._mode === "live" && self._cm6)) && crumb.line)
                         ? {path: p, line: crumb.line, label: crumb.text}
                         : {path: p, anchor: slugifyHeading(crumb.text), label: crumb.text};
                     copyLinkMd(buildFileRefMd(ref), "标题链接已复制,粘贴到思源文档点击可定位");
@@ -660,6 +680,10 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                 jumpDocStart: () => {
                     const content = self._contentEl;
                     if (!content) return;
+                    if (self._cm6) {
+                        self._cm6.revealLine(1, true);
+                        return;
+                    }
                     if (self._mode === "source" && self._editor) {
                         self._editor.revealLineNearTop(1);
                         self._editor.setPosition({lineNumber: 1, column: 1});
@@ -748,21 +772,61 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                 }
             };
 
-            // 保存:WYSIWYG 模式先同步 Vditor 内容到 model,再统一落盘
+            // 当前 Markdown 编辑器引擎(每次进入模式时**现读**,设置改完点模式按钮即生效)
+            const mdEditorKind = (): "vditor" | "cm6" =>
+                plugin.config.markdownEditor === "cm6" ? "cm6" : "vditor";
+
+            // 把 live 态当前编辑面(Vditor 走 lute 序列化 + blob 还原;CM6 直取文档)同步回 model
+            const syncLiveToModel = (): void => {
+                if (self._mode !== "live" || !self._model) return;
+                if (self._cm6) {
+                    self._model.setValue(self._cm6.getValue());
+                } else if (self._vditor) {
+                    self._model.setValue(getVditorValue(self));
+                }
+            };
+
+            // 渲染态行号槽安装(Vditor 编辑/阅读与 CM6 模式的 Vditor.preview 阅读共用)
+            const installGutter = (): void => {
+                try {
+                    self._gutterHandle?.dispose();
+                } catch {
+                    // 忽略
+                }
+                try {
+                    self._gutterHandle = installMdLineGutter({
+                        contentEl: () => self._contentEl ?? null,
+                        source: () => self._model?.getValue() ?? "",
+                        copyLineLink: (line: number) => copyLinkMd(
+                            buildFileRefMd({path, line, label: `${basename(path)}:${line}`}),
+                            "行链接已复制,粘贴到思源文档点击可定位",
+                        ),
+                        openBacklinkItem: (item: BacklinkItem) => navigateBacklink(plugin as any, item),
+                    });
+                } catch (e) {
+                    console.warn("[syfe-ref] 行号槽安装失败:", e);
+                }
+            };
+
+            // 保存:live 模式先同步当前编辑面内容到 model,再统一落盘
             const save = async () => {
                 if (self._saving) return;
                 self._saving = true;
                 try {
-                    // live 模式先把 Vditor 内容同步回 model(含 blob 还原兜底);
-                    // source 模式 Monaco 直接改 model、reading 模式不可编辑,都无需同步
-                    if (self._mode === "live" && self._vditor && self._model) {
-                        // 取值走 lute.dom2md(读 DOM),先清掉查找高亮避免多余 span 参与序列化
-                        if (self._findHits && self._findHits.length > 0) {
-                            clearFindHighlights(self._contentEl);
-                            self._findHits = [];
-                            self._findIndex = -1;
+                    // live 模式先把编辑面内容同步回 model;source 模式 Monaco 直接改
+                    // model、reading 模式不可编辑,都无需同步
+                    if (self._mode === "live" && self._model) {
+                        if (self._cm6) {
+                            self._model.setValue(self._cm6.getValue());
+                        } else if (self._vditor) {
+                            // 取值走 lute.dom2md(读 DOM),先清掉查找高亮避免多余 span 参与序列化
+                            if (self._findHits && self._findHits.length > 0) {
+                                clearFindHighlights(self._contentEl);
+                                self._findHits = [];
+                                self._findIndex = -1;
+                            }
+                            self._model.setValue(getVditorValue(self));
                         }
-                        self._model.setValue(getVditorValue(self));
                     }
                     await saveModel(path);
                     updateDirtyUI(false);
@@ -775,10 +839,14 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
             };
             (self as any).save = save;
 
-            // 模式按钮高亮
+            // 模式按钮高亮 + live 按钮文案随引擎切换(CM6 下实时预览=源码态编辑)
             const syncModeButtons = () => {
+                const kind = mdEditorKind();
                 self.element.querySelectorAll<HTMLElement>(".syfe-md__modebtn").forEach(btn => {
                     btn.classList.toggle("b3-button--primary", btn.dataset.mode === self._mode);
+                    if (btn.dataset.mode === "live") {
+                        btn.textContent = kind === "cm6" ? "编辑" : "实时预览";
+                    }
                 });
             };
 
@@ -797,6 +865,10 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
 
             // 在渲染态里查一次并高亮;dir=1 下一个 / -1 上一个
             const runFind = (dir: 1 | -1, fromStart = false) => {
+                if (self._cm6) {
+                    self._cm6.openSearch();
+                    return;
+                }
                 if (self._mode === "source") {
                     // 交给 Monaco
                     try {
@@ -835,6 +907,10 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
             };
 
             const openFind = () => {
+                if (self._cm6) {
+                    self._cm6.openSearch();
+                    return;
+                }
                 if (self._mode === "source") {
                     try {
                         self._editor?.focus();
@@ -884,10 +960,11 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                     else closeFind();
                 });
 
-            // Ctrl+F:源码模式留给 Monaco,渲染态打开查找栏
+            // Ctrl+F:源码模式留给 Monaco,CM6 编辑面有自己的查找面板(searchKeymap),
+            // 渲染态打开查找栏
             self.element.addEventListener("keydown", (e: KeyboardEvent) => {
                 if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
-                    if (self._mode === "source") return; // Monaco 自己处理
+                    if (self._mode === "source" || (self._mode === "live" && self._cm6)) return;
                     e.preventDefault();
                     openFind();
                 }
@@ -896,18 +973,21 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
             // 切换到源码模式;reveal 指定跳转行号(搜索结果),未指定则尝试消费待跳转请求
             const enterSource = (reveal?: number) => {
                 closeFind();   // 离开渲染态:关掉查找栏并清高亮
-                // reading 模式不可编辑,内容以 model 为准;live 模式需先从 Vditor 同步最新内容
-                const content = self._mode === "live" ? getVditorValue(self) : (self._model?.getValue() ?? "");
+                // reading 模式不可编辑,内容以 model 为准;
+                // live 模式需先把当前编辑面(Vditor / CM6)的最新内容同步回 model
+                if (self._mode === "live") {
+                    syncLiveToModel();
+                }
                 destroyVditor(self);
+                destroyCm6(self);
                 self._contentEl?.classList.remove("syfe-md__content--reading");
                 if (self._imgDebounce) {
                     window.clearTimeout(self._imgDebounce);
                     self._imgDebounce = undefined;
                 }
                 self._imgObserver?.disconnect();
-                if (self._model) {
-                    self._model.setValue(content);
-                }
+                // 内容已由 syncLiveToModel 同步进 model(reading 模式 model 本就是真值),
+                // 这里不再 setValue —— 重复写会把光标/滚动状态打回文档头
                 self._mode = "source";
                 syncModeButtons();
                 const editor = createEditor(self._contentEl!, self._model!, path, plugin.config, save);
@@ -957,6 +1037,7 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                 await ensureSiyuanLute();
                 closeFind();   // 离开源码态:关掉查找栏并清高亮
                 destroyMonaco(self);
+                destroyCm6(self);
                 // 同一容器上可能已有 Vditor(live ⇄ reading 切换),必须先销毁
                 destroyVditor(self);
                 self._mode = readOnly ? "reading" : "live";
@@ -1029,24 +1110,7 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                         // 链接带来的位置(标题锚点 / 行号):渲染完成才能查得到标题元素。
                         // 先消费再装槽位,且槽位安装失败不能吞掉定位
                         const ref = consumePendingRef(path);
-                        try {
-                            self._gutterHandle?.dispose();
-                        } catch {
-                            // 忽略
-                        }
-                        try {
-                            self._gutterHandle = installMdLineGutter({
-                                contentEl: () => self._contentEl ?? null,
-                                source: () => self._model?.getValue() ?? "",
-                                copyLineLink: (line: number) => copyLinkMd(
-                                    buildFileRefMd({path, line, label: `${basename(path)}:${line}`}),
-                                    "行链接已复制,粘贴到思源文档点击可定位",
-                                ),
-                                openBacklinkItem: (item: BacklinkItem) => navigateBacklink(plugin as any, item),
-                            });
-                        } catch (e) {
-                            console.warn("[syfe-ref] 行号槽安装失败:", e);
-                        }
+                        installGutter();
                         // 行号槽上铺反链标记(缓存扫描,数据到位后 handle 自行重画)
                         applyBacklinkMarkers(self, path);
                         if (ref) applyFileRef(self, ref);
@@ -1059,10 +1123,117 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                 setTimeout(() => processImages(self), 200);
             };
 
-            // 实时预览(类 Obsidian Live Preview)
-            const enterLive = () => void enterVditor("ir", false);
+            // ===== CM6 编辑面(设置「Markdown 编辑器 = cm6」)=====
+            // live = CM6 源码态编辑(语法高亮/行号/查找/图片粘贴落盘全走标准机制)
+            const enterCm6Live = (reveal?: number) => {
+                closeFind();   // 离开渲染态:关掉查找栏并清高亮
+                destroyVditor(self);
+                destroyMonaco(self);
+                destroyCm6(self);
+                self._contentEl?.classList.remove("syfe-md__content--reading");
+                if (self._imgDebounce) {
+                    window.clearTimeout(self._imgDebounce);
+                    self._imgDebounce = undefined;
+                }
+                self._imgObserver?.disconnect();
+                self._mode = "live";
+                syncModeButtons();
+                const cm = createCm6MarkdownEditor(self._contentEl!, {
+                    value: self._model?.getValue() ?? "",
+                    onSave: save,
+                    onInput: () => {
+                        markDirty(path, true);
+                        updateDirtyUI(true);
+                        // 标题增删/改名会改变面包屑内容
+                        self._hcrumbsHandle?.refresh();
+                    },
+                    onCursor: () => self._hcrumbsHandle?.refresh(),
+                    placeholder: "输入 Markdown 内容...",
+                });
+                self._cm6 = cm;
+                self._hcrumbsHandle?.refresh();
+                // 搜索结果跳转 / 链接位置:行号直跳,标题锚点换算成行(与 Monaco 源码态同款)
+                let revealLine = reveal !== undefined ? reveal : consumePendingReveal(path);
+                if (reveal === undefined) {
+                    const ref = consumePendingRef(path);
+                    if (ref) {
+                        revealLine = ref.line
+                            ?? (ref.anchor ? (headingLineOfAnchor(self._model?.getValue() ?? "", ref.anchor) ?? null) : null);
+                    }
+                }
+                if (revealLine !== null) {
+                    const doReveal = (focus: boolean) => {
+                        if (self._cm6 !== cm) return;   // 已切走,别对旧编辑器操作
+                        cm.revealLine(revealLine!, focus);
+                    };
+                    setTimeout(() => doReveal(true), 300);
+                    setTimeout(() => doReveal(false), 1100);
+                }
+            };
+
+            // reading = Vditor.preview 静态渲染(不经编辑器实例,渲染管线与 Vditor 阅读
+            // 完全一致:hljs/math/mermaid 全保留),DOM 同为 .vditor-reset —— 行号槽、
+            // 反链标记、图片本地化、面包屑、查找高亮等渲染态机制原样复用
+            const enterCm6Reading = async () => {
+                await ensureSiyuanLute();
+                closeFind();
+                destroyMonaco(self);
+                destroyCm6(self);
+                destroyVditor(self);
+                self._mode = "reading";
+                syncModeButtons();
+                self._contentEl!.classList.add("syfe-md__content--reading");
+                self._imgObserver?.disconnect();
+                if (self._imgDebounce) {
+                    window.clearTimeout(self._imgDebounce);
+                    self._imgDebounce = undefined;
+                }
+                ensureVditorCSS();
+                const isDark = getCurrentMode() === 1;
+                const host = document.createElement("div");
+                host.className = "syfe-md__cmread";
+                self._contentEl!.innerHTML = "";
+                self._contentEl!.appendChild(host);
+                // Vditor.preview 是文档化的静态 API(渲染 without 编辑器实例);
+                // 防御式调用:构建差异下拿不到就退化为纯文本,保证可读
+                const previewFn = (Vditor as unknown as {
+                    preview?: (el: HTMLElement, md: string, opts?: Record<string, unknown>) => void;
+                }).preview;
+                if (typeof previewFn === "function") {
+                    previewFn.call(Vditor, host, self._model?.getValue() ?? "", {
+                        cdn: VDITOR_CDN,
+                        lang: "zh_CN",
+                        mode: isDark ? "dark" : "light",
+                        theme: {
+                            current: isDark ? "dark" : "light",
+                            path: `${VDITOR_CDN}/dist/css/content-theme`,
+                        },
+                    });
+                } else {
+                    host.textContent = self._model?.getValue() ?? "";
+                }
+                self._imgObserver?.observe(self._contentEl!, {childList: true, subtree: true});
+                // preview 是异步管线(lute 渲染 + hljs/math 懒加载),给一拍再装槽位/定位
+                setTimeout(() => {
+                    processImages(self);
+                    self._hcrumbsHandle?.refresh();
+                    installGutter();
+                    applyBacklinkMarkers(self, path);
+                    const ref = consumePendingRef(path);
+                    if (ref) applyFileRef(self, ref);
+                }, 300);
+            };
+
+            // 实时预览(类 Obsidian Live Preview):引擎按设置选择
+            const enterLive = () => {
+                if (mdEditorKind() === "cm6") void enterCm6Live();
+                else void enterVditor("ir", false);
+            };
             // 阅读模式(类 Obsidian Reading):完整渲染 + 只读
-            const enterReading = () => void enterVditor("wysiwyg", true);
+            const enterReading = () => {
+                if (mdEditorKind() === "cm6") void enterCm6Reading();
+                else void enterVditor("wysiwyg", true);
+            };
 
             // 模式切换按钮
             this.element.querySelector<HTMLElement>(".syfe-md__bar")!.addEventListener("click", (e: MouseEvent) => {
@@ -1090,9 +1261,7 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                     enterSource();
                 } else if (next === "reading") {
                     // 阅读模式渲染 model,先把 live 的编辑内容同步回去,避免丢改动
-                    if (self._mode === "live" && self._vditor && self._model) {
-                        self._model.setValue(getVditorValue(self));
-                    }
+                    syncLiveToModel();
                     enterReading();
                 } else {
                     enterLive();
@@ -1150,6 +1319,10 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
             // 图片跟不过去 —— md-clipboard 在 capture 阶段接管,补写内联了 data URI 的富文本。
             // 光标处插入 Markdown(live → vditor,source → Monaco);reading 只读返回 false
             const insertMd = (md: string): boolean => {
+                // CM6 编辑面:直接插到光标处
+                if (self._mode === "live" && self._cm6) {
+                    return self._cm6.insertAtCursor(md);
+                }
                 if (self._mode === "live" && self._vditor) {
                     try {
                         self._vditor.insertValue(md);
@@ -1201,6 +1374,9 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                     if (raw) return raw;
                     return /^(https?:|data:|file:)/i.test(src) ? src : null;
                 },
+                // CM6 编辑面的复制/剪切语义完好(标准 contentEditable),交还原生;
+                // 粘贴图片落盘仍由本模块处理
+                nativeCopy: () => !!self._cm6,
             });
             // 供 openMarkdownTab 复用已开页签时直接定位(思源正文点带位置的链接走这里)
             self._applyFileRef = (ref: FileRef) => applyFileRef(self, ref);
@@ -1224,12 +1400,13 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                 }
                 updateDirtyUI(isDirty(path));
 
-                // 初始模式:显式指定 > 待跳转行(强制源码) > 大文件强制源码 > 配置默认
+                // 初始模式:显式指定 > 待跳转行(强制源码) > 大文件强制源码(仅 Vditor
+                // 渲染吃力;CM6 是源码态编辑,视口虚拟化,大文件无压力) > 配置默认
                 const revealLine = consumePendingReveal(path);
                 let initialMode = self._mode;
                 if (revealLine !== null) {
                     initialMode = "source";
-                } else if ((self._model.getValue().length) > WYSIWYG_MAX_SIZE) {
+                } else if (mdEditorKind() === "vditor" && (self._model.getValue().length) > WYSIWYG_MAX_SIZE) {
                     initialMode = "source";
                     showMessage("文件较大,已使用源码模式打开", 3000, "info");
                 }
@@ -1258,12 +1435,14 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                     // 已关闭
                 }
             };
-            const saveThenClose = () => {
-                // 保存后关闭(仅 live 模式需把 Vditor 内容同步到 model)
-                if (self._mode === "live" && self._vditor && self._model) {
-                    self._model.setValue(getVditorValue(self));
-                }
-                saveModel(path)
+        const saveThenClose = () => {
+            // 保存后关闭(仅 live 模式需把编辑面内容同步到 model;syncLiveToModel
+            // 定义在 init 作用域,这里等价内联)
+            if (self._mode === "live" && self._model) {
+                if (self._cm6) self._model.setValue(self._cm6.getValue());
+                else if (self._vditor) self._model.setValue(getVditorValue(self));
+            }
+            saveModel(path)
                     .then(() => {
                         self._closing = true;
                         try {
@@ -1280,6 +1459,7 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
         destroy(this: MarkdownTabInstance) {
             destroyVditor(this);
             destroyMonaco(this);
+            destroyCm6(this);
             this._clipboard?.destroy();
             this._clipboard = undefined;
             this._hcrumbsHandle?.dispose();
@@ -1354,4 +1534,16 @@ function destroyMonaco(tab: MarkdownTabInstance): void {
         tab._editor = undefined;
     }
     if (tab._contentEl) tab._contentEl.innerHTML = "";
+}
+
+// 销毁 CM6 编辑面(不碰 model:内容已由 syncLiveToModel 归位)
+function destroyCm6(tab: MarkdownTabInstance): void {
+    if (tab._cm6) {
+        try {
+            tab._cm6.destroy();
+        } catch {
+            // 忽略
+        }
+        tab._cm6 = undefined;
+    }
 }

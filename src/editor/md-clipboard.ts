@@ -55,6 +55,9 @@ export interface MdClipboardHost {
     refreshImages(): void;
     // 某张渲染后的图片在 Markdown 里写的原始 src(拿不到返回 null)
     rawSrcFor(img: HTMLImageElement): string | null;
+    /** 当前编辑面是否需要原生复制(CM6 等标准 contentEditable 实现):
+     *  true 时本模块不接管 copy/cut,交还宿主原生行为;粘贴(图片落盘)不受影响 */
+    nativeCopy?(): boolean;
 }
 
 export interface MdClipboardHandle {
@@ -106,8 +109,10 @@ export function installMarkdownClipboard(host: MdClipboardHost): MdClipboardHand
     const writeSelection = (ev: ClipboardEvent): boolean => {
         const content = host.contentEl();
         const mode = host.mode();
-        // 源码态由 Monaco(editor/monaco.ts 的 Ctrl+C 拦截)处理,这里不插手
+        // 源码态由 Monaco(editor/monaco.ts 的 Ctrl+C 拦截)处理,这里不插手;
+        // CM6 等标准编辑面(nativeCopy)复制语义完好,同样交还原生
         if (mode === "source") return false;
+        if (host.nativeCopy?.() === true) return false;
         if (!hasSelectionIn(content)) return false;
         const range = currentRange();
         if (!range) return false;

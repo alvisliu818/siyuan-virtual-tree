@@ -42,6 +42,9 @@ export interface EditorConfig {
     iconTheme: string; // 图标主题:""=自动(第一个);"__none__"=思源内置图标;其他=扩展 id
     marketTopBarIcon: boolean; // 顶栏「扩展市场」图标:false=隐藏(仍可用命令 ⇧⌘E 打开)
     markdownDefaultMode: "live" | "source" | "reading"; // Markdown 默认模式:实时预览 / 源码 / 阅读(对齐 Obsidian)
+    // Markdown 编辑器引擎:vditor = 所见即所得(实时预览/阅读);cm6 = CodeMirror 6
+    // 源码编辑(实时预览)+ Vditor.preview 静态渲染(阅读)。默认 vditor
+    markdownEditor: "vditor" | "cm6";
     newTabReplacePlus: boolean;      // 接管思源顶部「+」:点击改为打开新标签页(而非新建文档)
     newTabShowPinned: boolean;       // 新标签页显示「固定」区
     newTabShowRecent: boolean;       // 新标签页显示「最近打开」区
@@ -251,6 +254,7 @@ export const DEFAULT_CONFIG: EditorConfig = {
     iconTheme: "", // 自动
     marketTopBarIcon: true, // 顶栏默认显示「扩展市场」图标
     markdownDefaultMode: "live", // 实时预览(类 Obsidian Live Preview)
+    markdownEditor: "vditor",    // Markdown 编辑器引擎:vditor(所见即所得)默认;cm6 备选
     newTabReplacePlus: true,        // 默认接管顶部「+」
     newTabShowPinned: true,
     newTabShowRecent: true,

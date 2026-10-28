@@ -920,6 +920,21 @@ export const PLUGIN_DEFS: SettingDef[] = [
         get: (c) => c.globalReadingMode !== false,
         set: (c, v) => { c.globalReadingMode = v !== false; },
     },
+    {
+        key: "markdown.editor",
+        kind: "enum",
+        group: G_MD,
+        title: "Markdown 编辑器",
+        description: "vditor = 所见即所得(实时预览/阅读均为 Vditor);cm6 = CodeMirror 6 源码编辑" +
+            "(实时预览为源码态编辑,阅读仍为静态渲染),对新开页签生效",
+        default: "vditor",
+        enum: ["vditor", "cm6"],
+        enumLabels: {vditor: "Vditor(所见即所得)", cm6: "CodeMirror 6(源码编辑)"},
+        get: (c) => c.markdownEditor,
+        set: (c, v) => {
+            c.markdownEditor = v === "cm6" ? "cm6" : "vditor";
+        },
+    },
 
     {
         key: "terminal.backend",
