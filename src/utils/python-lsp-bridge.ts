@@ -297,9 +297,14 @@ export function registerPythonLsp(): void {
             if (!res) return null;
             const content = toMarkdown(res.contents as any);
             if (!content) return null;
+            // pyright/basedpyright 返回的 markdown **已自带 ```python 围栏**(探针实测:
+            // contents.value = "```python\n(function) xxx: Unknown\n```"),
+            // 再包一层会把内层围栏渲染成字面文本 —— 弹框顶部出现一行 ```python(实测踩过)。
+            // 只有纯文本内容(不含围栏)才需要补围栏获得代码样式。
+            const value = content.includes("```") ? content : "```python\n" + content + "\n```";
             const r = res.range ? fromLspRange(res.range) : null;
             return {
-                contents: [{value: "```python\n" + content + "\n```"}],
+                contents: [{value}],
                 ...(r ? {range: new monaco.Range(r.startLineNumber, r.startColumn, r.endLineNumber, r.endColumn)} : {}),
             };
         },
