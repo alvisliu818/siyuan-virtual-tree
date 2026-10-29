@@ -146,9 +146,26 @@ export function applyFakeDocBreadcrumb(host: any, enabled: boolean): void {
         g_setting.oneLineBreadcrumb = true;
     }
     g_pluginInstance = host;
-    host.loadData(SETTINGS_NAME).then((settingCache) => {
+    host.loadData(SETTINGS_NAME).then(async (settingCache) => {
         // 配置读取完成前总开关又被关掉:放弃初始化
         if (!g_active) {
+            return;
+        }
+        // 首次启用(本模块还没有自己的设置文件)时,尝试从独立版插件目录迁移旧设置
+        if (settingCache === "" || settingCache === null || settingCache === undefined) {
+            const legacy = await tryImportLegacySettings();
+            if (legacy) {
+                settingCache = legacy;
+                // 采纳即落盘:后续加载直接走自己的文件,不再重复迁移
+                try {
+                    g_host.saveData(SETTINGS_NAME, JSON.stringify(legacy));
+                } catch (e) {
+                    debugPush("迁移设置落盘失败(不影响本次会话)", e);
+                }
+            }
+        }
+        if (!g_active) {
+            // 迁移请求期间总开关又被关掉:放弃
             return;
         }
         // 解析并载入配置(原 onLayoutReady 逻辑)
@@ -214,6 +231,39 @@ export function applyFakeDocBreadcrumb(host: any, enabled: boolean): void {
     }, (e) => {
         warnPush("配置文件读入失败", e);
     });
+}
+
+/**
+ * 从独立版插件(syplugin-fakeDocBreadcrumb)目录迁移旧设置。
+ * 仅当本模块自己还没有设置文件时调用(apply 的空档分支);
+ * 读不到/损坏一律返回 null,静默跳过,绝不拖垮启动。
+ * 键名与 g_setting_default 求交,老版本遗留键(hideNativeBreadcrumb 等)不迁。
+ */
+async function tryImportLegacySettings(): Promise<any | null> {
+    try {
+        const cfg = (window as any)?.siyuan?.config;
+        const token = cfg?.api?.token || cfg?.system?.conf?.api?.token || "";
+        const headers: Record<string, string> = token ? {Authorization: `Token ${token}`} : {};
+        const resp = await fetch("/api/file/getFile", {
+            method: "POST",
+            headers,
+            body: JSON.stringify({path: "data/storage/petal/syplugin-fakeDocBreadcrumb/settings.json"}),
+        });
+        if (!resp.ok) return null;
+        const text = new TextDecoder("utf-8").decode(await resp.arrayBuffer());
+        if (!text || !text.trim()) return null;
+        const parsed = JSON.parse(text);
+        if (!parsed || typeof parsed !== "object" || !parsed["@version"]) return null;
+        const clean: Record<string, any> = {};
+        for (const key of Object.keys(g_setting_default)) {
+            if (parsed[key] !== undefined) clean[key] = parsed[key];
+        }
+        debugPush("从独立版迁移设置", clean);
+        return Object.keys(clean).length ? clean : null;
+    } catch (e) {
+        debugPush("迁移独立版设置失败(当无旧数据)", e);
+        return null;
+    }
 }
 
 /** 给所有已打开的文档补插面包屑(总开关打开后立即生效,无需逐个切换页签) */
