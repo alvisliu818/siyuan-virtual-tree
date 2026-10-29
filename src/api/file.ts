@@ -1,5 +1,5 @@
 import {DirEntry} from "../types";
-import {isSiyuanPath} from "../utils/path";
+import {isKernelPath} from "../utils/path";
 import {isBaiduPath} from "../utils/baidu-path";
 import {decodeAuto} from "../utils/encoding";
 import {
@@ -23,7 +23,7 @@ import {
 } from "./native-fs";
 
 // 文件访问多后端:
-// - 思源虚拟路径(/data/...) → 思源内核 /api/file/*(工作空间内)
+// - 内核路径(工作空间根相对路径:/data/...、/conf/...、/ 等,见 isKernelPath) → 思源内核 /api/file/*
 // - 系统绝对路径(如 E:\HOME\BaiduSyncdisk) → 原生 Node fs(工作空间外)
 // - 百度网盘虚拟路径(bdpan://...) → 网盘网页接口(cookie 鉴权,见 api/baidu-pan.ts)
 // 每个导出函数按路径类型分流,外部路径在非桌面端(无 Node 集成)会抛出可读错误。
@@ -55,7 +55,7 @@ export async function readTextFile(path: string): Promise<string> {
     // 百度网盘路径走网盘接口下载
     if (isBaiduPath(path)) return decodeAuto(new Uint8Array(await bdDownloadFile(path)));
     // 工作空间外路径走原生 fs
-    if (!isSiyuanPath(path)) return nativeReadTextFile(path);
+    if (!isKernelPath(path)) return nativeReadTextFile(path);
     const resp = await fetch("/api/file/getFile", {
         method: "POST",
         headers: {"Content-Type": "application/json", ...authHeaders()},
@@ -70,7 +70,7 @@ export async function readBinaryFile(path: string): Promise<ArrayBuffer> {
     // 百度网盘路径走网盘接口下载
     if (isBaiduPath(path)) return bdDownloadFile(path);
     // 工作空间外路径走原生 fs
-    if (!isSiyuanPath(path)) return nativeReadBinaryFile(path);
+    if (!isKernelPath(path)) return nativeReadBinaryFile(path);
     const resp = await fetch("/api/file/getFile", {
         method: "POST",
         headers: {"Content-Type": "application/json", ...authHeaders()},
@@ -84,7 +84,7 @@ export async function readBinaryFile(path: string): Promise<ArrayBuffer> {
 export async function writeFile(path: string, content: string): Promise<void> {
     // 百度网盘路径走 precreate/分片/create 上传(覆盖)
     if (isBaiduPath(path)) return bdUploadFile(path, new TextEncoder().encode(content));
-    if (!isSiyuanPath(path)) return nativeWriteFile(path, content);
+    if (!isKernelPath(path)) return nativeWriteFile(path, content);
     const fd = new FormData();
     fd.append("path", path);
     fd.append("modTime", Date.now().toString());
@@ -107,7 +107,7 @@ export async function writeBinaryFile(path: string, data: ArrayBuffer | Uint8Arr
         const bytes = data instanceof Uint8Array ? new Uint8Array(data) : new Uint8Array(data);
         return bdUploadFile(path, bytes);
     }
-    if (!isSiyuanPath(path)) return nativeWriteBinaryFile(path, data);
+    if (!isKernelPath(path)) return nativeWriteBinaryFile(path, data);
     const fd = new FormData();
     fd.append("path", path);
     fd.append("modTime", Date.now().toString());
@@ -129,7 +129,7 @@ export async function writeBinaryFile(path: string, data: ArrayBuffer | Uint8Arr
 export async function mkdir(path: string): Promise<void> {
     // 百度网盘路径走网盘建目录接口
     if (isBaiduPath(path)) return bdCreateDir(path);
-    if (!isSiyuanPath(path)) return nativeMkdir(path);
+    if (!isKernelPath(path)) return nativeMkdir(path);
     const fd = new FormData();
     fd.append("path", path);
     fd.append("isDir", "true");
@@ -150,7 +150,7 @@ export async function mkdir(path: string): Promise<void> {
 export async function readDir(path: string): Promise<DirEntry[]> {
     // 百度网盘路径走网盘列目录接口(条目自带 bdpan:// 子路径)
     if (isBaiduPath(path)) return bdListDir(path);
-    if (!isSiyuanPath(path)) return nativeReadDir(path);
+    if (!isKernelPath(path)) return nativeReadDir(path);
     const data = await postJSON<any>("/api/file/readDir", {path});
     // 情况1:data 本身是数组
     if (Array.isArray(data)) return data;
@@ -165,7 +165,7 @@ export async function readDir(path: string): Promise<DirEntry[]> {
 export async function renameFile(path: string, newPath: string): Promise<void> {
     // 百度网盘路径走网盘改名接口(仅同目录改名)
     if (isBaiduPath(path)) return bdRename(path, newPath);
-    if (!isSiyuanPath(path)) return nativeRenameFile(path, newPath);
+    if (!isKernelPath(path)) return nativeRenameFile(path, newPath);
     await postJSON("/api/file/renameFile", {path, newPath});
 }
 
@@ -173,7 +173,7 @@ export async function renameFile(path: string, newPath: string): Promise<void> {
 export async function removeFile(path: string): Promise<void> {
     // 百度网盘路径走网盘删除接口(目录递归删除,进回收站)
     if (isBaiduPath(path)) return bdRemove(path);
-    if (!isSiyuanPath(path)) return nativeRemoveFile(path);
+    if (!isKernelPath(path)) return nativeRemoveFile(path);
     await postJSON("/api/file/removeFile", {path});
 }
 
@@ -183,7 +183,7 @@ export async function copyFile(src: string, dest: string): Promise<void> {
     if (isBaiduPath(src) || isBaiduPath(dest)) {
         throw new Error("百度网盘目录暂不支持复制,请使用官方客户端");
     }
-    if (!isSiyuanPath(src)) return nativeCopyFile(src, dest);
+    if (!isKernelPath(src)) return nativeCopyFile(src, dest);
     await postJSON("/api/file/copyFile", {src, dest});
 }
 

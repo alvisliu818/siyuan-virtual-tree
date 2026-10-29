@@ -54,6 +54,17 @@ export function isSiyuanPath(path: string): boolean {
     return p === "/data" || p.startsWith("/data/");
 }
 
+// 是否为内核路径空间的路径(工作空间根相对路径):/data、/data/...、/conf、/temp、/ 等。
+// 内核 /api/file/* 的 path 参数按"工作空间根相对路径"解释,/data 只是其中的数据子目录,
+// /data 的父层(工作空间根:/conf、/temp、/ 等)同样可读写(实测内核 3.8.6 无限制)。
+// 这类路径一律路由到内核;原生 fs 分支只服务盘符/UNC 等系统绝对路径(Windows 桌面端形态)。
+export function isKernelPath(path: string): boolean {
+    if (!path) return false;
+    if (isSiyuanPath(path)) return true;
+    if (path.startsWith("\\\\")) return false;   // UNC 是系统路径
+    return path.replace(/\\/g, "/").startsWith("/");
+}
+
 // 是否为工作空间外的系统绝对路径(Windows 盘符 / UNC / POSIX 绝对路径)
 export function isExternalPath(path: string): boolean {
     if (!path) return false;

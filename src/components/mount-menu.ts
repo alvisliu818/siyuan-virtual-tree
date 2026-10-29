@@ -106,10 +106,12 @@ export function showMountTargetMenu(x: number, y: number, plugin: any, payload: 
 // 判断路径是文件还是文件夹。
 // 注意:不能直接 readDir(目标)——思源内核对**文件**也返回空数组,与"空文件夹"无法区分;
 // 必须读父目录再按名字回查 DirEntry.isDir(与标签面板同一套做法)。
-// 例外:/data 本身恒为目录——它的 dirname 是 "/",而 readDir 只把 /data 前缀的路径
-// 交给思源内核,会落到原生 fs 读到盘符根,名字回查必然失败,挂出来是不可展开的死行。
+// 例外:/data(数据目录)与 /(工作空间根)恒为目录——两者的 dirname 都脱离了
+// "父目录仍是内核路径"的前提(dirname 分别是 "/" 与 "",后者还会落到原生 fs 读盘符根),
+// 名字回查必然失败,挂出来是不可展开的死行。其余内核路径(/conf 等)走正常回查。
 export async function detectIsDir(path: string): Promise<boolean> {
-    if (path.replace(/[\\/]+$/, "") === SIYUAN_ROOT) return true;
+    const norm = path.replace(/[\\/]+$/, "");
+    if (norm === SIYUAN_ROOT || path === "/") return true;
     try {
         const list = await readDir(dirname(path));
         const ent = (Array.isArray(list) ? list : []).find(e => e.name === basename(path));
@@ -160,7 +162,7 @@ export function promptMountPathDialog(
                     <button class="b3-button b3-button--outline" id="syfe-mtree-browse-file">浏览文件…</button>
                     <button class="b3-button b3-button--outline" id="syfe-mtree-browse-dir">浏览文件夹…</button>
                 </div>
-                <div style="margin-top:6px;font-size:12px;opacity:.7;">支持工作空间内路径(/data/...)与系统绝对路径;资源管理器会定位到上次选择的位置</div>
+                <div style="margin-top:6px;font-size:12px;opacity:.7;">支持工作空间内路径(/data/...;/ 为工作空间根)与系统绝对路径;资源管理器会定位到上次选择的位置</div>
             </div>
             <div class="b3-dialog__action">
                 <button class="b3-button b3-button--cancel" id="syfe-mtree-cancel">取消</button>
@@ -195,14 +197,17 @@ export function promptMountPathDialog(
             showMessage("请填写路径", 2000, "error");
             return;
         }
-        // 规范化后再落盘:剥尾分隔符,把 "/"(工作空间根)与思源相对路径归一到 /data 形态;
-        // 系统绝对路径(E:\...)原样保留。"上次浏览位置"仍按原始输入判断(只认盘符形态)。
-        const p = normalizePath(raw);
+        // 落盘前归一化:剥尾分隔符。"/" 是工作空间根(/data 的父层,内核路径空间的根),
+        // 原样保留;其余 "/xxx"(/conf、/temp 等)normalizePath 按 POSIX 绝对路径原样放行,
+        // 内核层按工作空间根相对路径解释;裸相对词补 /data 前缀;系统绝对路径原样保留。
+        // 注意 normalizePath 会把 "/" 映射为 "/data",与工作空间根语义冲突,须先分流。
+        // "上次浏览位置"仍按原始输入判断(只认盘符形态)。
+        const p = raw === "/" ? raw : normalizePath(raw);
         const isDir = await detectIsDir(p);
         // 手动输入的系统绝对路径也计入"上次位置",浏览按钮跟着走
         if (isNativeAbsPath(raw)) rememberLastBrowseDir(raw, isDir);
         close();
-        onPicked(p, isDir, basename(p));
+        onPicked(p, isDir, basename(p) || (p === "/" ? "工作空间" : ""));
     };
     inputEl.focus();
     inputEl.addEventListener("keydown", (e: KeyboardEvent) => {

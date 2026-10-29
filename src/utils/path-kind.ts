@@ -5,7 +5,6 @@
 // 文件夹时把路径当文件开了编辑器 Tab,内容是内核返回的
 // {"code":409,"msg":"path is a directory"}。
 import {getNativeRequire} from "./native-require";
-import {isSiyuanPath} from "./path";
 import {getWorkspacePath, toSystemPath} from "./system-path";
 
 /**
@@ -29,14 +28,12 @@ export function isDirectory(path: string): boolean {
     if (li?.dataset.isDir === "true") return true;
     if (li?.dataset.isDir === "false") return false;
 
-    // 2. 原生 fs
+    // 2. 原生 fs(内核路径先转系统绝对路径;非内核路径原样)
     const req = getNativeRequire();
     if (!req) return false;
     try {
         const fs = req("fs") as typeof import("fs");
-        const sysPath = isSiyuanPath(path)
-            ? toSystemPath(path, getWorkspacePath())
-            : path;
+        const sysPath = toSystemPath(path, getWorkspacePath());
         return fs.statSync(sysPath).isDirectory();
     } catch {
         // 3. 路径不存在或没权限 —— 当作文件

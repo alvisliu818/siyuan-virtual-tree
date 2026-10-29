@@ -234,7 +234,7 @@ export async function deleteToTrash(path: string, isDir: boolean): Promise<Delet
     const mode: TrashMode = currentMode;
 
     if (mode === "system") {
-        const sysPath = isSiyuanPath(path) ? toSystemPath(path, getWorkspacePath()) : path;
+        const sysPath = toSystemPath(path, getWorkspacePath());
         try {
             // Electron 渲染进程(nodeIntegration)暴露 window.process
             const platform: string = (window as any).process?.platform || "win32";
@@ -253,7 +253,7 @@ export async function deleteToTrash(path: string, isDir: boolean): Promise<Delet
     }
 
     // plugin 模式
-    const sysPath = isSiyuanPath(path) ? toSystemPath(path, getWorkspacePath()) : path;
+    const sysPath = toSystemPath(path, getWorkspacePath());
     if (!isSiyuanPath(path) && !/^(?:[A-Za-z]:[\\/]|\/|\\\\)/.test(path)) {
         throw new Error(`无法识别的路径: ${path}`);
     }
@@ -316,7 +316,7 @@ export function restoreFromTrash(id: string): {origin: string; restoredAs: strin
     const e = idx.entries[i];
     if (!f.existsSync(e.trashPath)) throw new Error("回收站内的文件已不存在(可能被手动清理)");
 
-    const originSys = isSiyuanPath(e.origin) ? toSystemPath(e.origin, getWorkspacePath()) : e.origin;
+    const originSys = toSystemPath(e.origin, getWorkspacePath());
     let dest = originSys;
     if (f.existsSync(dest)) {
         const d = new Date();

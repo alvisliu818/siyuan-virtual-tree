@@ -1,5 +1,5 @@
 // 思源虚拟路径与系统文件系统路径的相互转换
-import {isSiyuanPath, basename} from "./path";
+import {isKernelPath} from "./path";
 
 // 获取思源工作空间的绝对路径
 export function getWorkspacePath(): string {
@@ -7,14 +7,14 @@ export function getWorkspacePath(): string {
     return w?.siyuan?.config?.system?.workspaceDir || "";
 }
 
-// 将思源虚拟路径(/data/...)转换为系统文件系统路径
-// siyuanPath: 思源虚拟路径,如 /data/public/foo
+// 将内核路径(工作空间根相对路径:/data/...、/conf/...、/ 等)转换为系统文件系统路径
+// kernelPath: 内核路径,如 /data/public/foo、/conf/conf.json
 // workspacePath: 思源工作空间系统路径,如 E:\HOME\SiYuan(可选,缺省时自动获取)
 // 返回: 系统路径,如 E:\HOME\SiYuan\data\public\foo
-// 注意:非思源虚拟路径(Windows 盘符/UNC/POSIX 绝对路径)原样返回,
+// 注意:非内核路径(Windows 盘符/UNC)原样返回,
 // 否则会把 E:\HOME\... 错误拼成 工作空间+E:\HOME\... 这种非法路径
-export function toSystemPath(siyuanPath: string, workspacePath?: string): string {
-    if (!isSiyuanPath(siyuanPath)) return siyuanPath;
+export function toSystemPath(kernelPath: string, workspacePath?: string): string {
+    if (!isKernelPath(kernelPath)) return kernelPath;
     if (!workspacePath) {
         workspacePath = getWorkspacePath();
     }
@@ -22,7 +22,7 @@ export function toSystemPath(siyuanPath: string, workspacePath?: string): string
         // 拿不到工作空间时返回原路径(调用方需自行兜底)
         return siyuanPath;
     }
-    const relPath = siyuanPath.replace(/^\/+/, "");
+    const relPath = kernelPath.replace(/^\/+/, "");
     const wsNormalized = workspacePath.replace(/[\\/]+$/, "");
     const sep = wsNormalized.includes("\\") ? "\\" : "/";
     return wsNormalized + sep + relPath.replace(/\//g, sep);
@@ -69,10 +69,10 @@ export function fileUrlToPath(url: string): string | null {
     return null;
 }
 
-// 将插件内部路径(思源虚拟路径或系统绝对路径)转换为原始 file:// 链接
-// 思源路径先借工作空间目录还原为系统绝对路径;拿不到工作空间时返回 null
+// 将插件内部路径(内核路径或系统绝对路径)转换为原始 file:// 链接
+// 内核路径先借工作空间目录还原为系统绝对路径;拿不到工作空间时返回 null
 export function toFileLink(path: string): string | null {
-    if (isSiyuanPath(path)) {
+    if (isKernelPath(path)) {
         const ws = getWorkspacePath();
         if (!ws) return null;
         return toFileUrl(toSystemPath(path, ws));

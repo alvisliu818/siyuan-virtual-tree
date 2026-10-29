@@ -2,7 +2,7 @@ import {Menu, Dialog, confirm, showMessage, IMenu} from "siyuan";
 import {readDir, renameFile, mkdir, writeFile, lsNotebooks, listDocsByPath, importStdMd, readBinaryFile, uploadAsset, insertBlockAtDocTop} from "../api/file";
 import {deleteToTrash, getTrashMode} from "../utils/trash";
 import {isImportMdSourceAssetEnabled} from "../utils/config";
-import {joinPath, basename, dirname, pathDepth, extname, isSiyuanPath} from "../utils/path";
+import {joinPath, basename, dirname, pathDepth, extname, isSiyuanPath, isKernelPath} from "../utils/path";
 import {toFileLink, toMarkdownFileLink, getWorkspacePath, toSystemPath} from "../utils/system-path";
 import {openWithExternalApp, revealInSystemExplorer, openTreeFileWithExternalApp, launchOpenWith} from "../utils/external-app";
 import {BINARY_EXTENSIONS, isImageFile, isOfficeFile, isMarkdownFile, isMediaFile, getMediaKind} from "../constants";
@@ -517,8 +517,8 @@ export function revealCandidates(path: string): string[] {
     const candidates: string[] = [path];
     const ws = getWorkspacePath();
     if (ws) {
-        if (isSiyuanPath(path)) {
-            // /data 虚拟路径 → 系统绝对路径
+        if (isKernelPath(path)) {
+            // 内核路径(/data/...、/conf/... 等) → 系统绝对路径
             const sys = toSystemPath(path, ws);
             if (sys && sys !== path) candidates.push(sys);
         } else {
@@ -852,7 +852,7 @@ async function doImportToSiyuan(treePath: string, isDir: boolean): Promise<void>
                     }
                     temp = await nativeWriteTempFile(name, await readBinaryFile(treePath));
                     localPath = temp.tempPath;
-                } else if (isSiyuanPath(treePath)) {
+                } else if (isKernelPath(treePath)) {
                     // 内核拒绝导入工作空间子路径,先复制到系统临时目录(需桌面端原生 fs)
                     if (!getWorkspacePath()) {
                         showMessage("无法获取工作空间路径,导入失败", 4000, "error");

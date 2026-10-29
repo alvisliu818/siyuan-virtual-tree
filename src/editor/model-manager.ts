@@ -2,7 +2,7 @@ import * as monaco from "monaco-editor";
 import {readTextFile, writeFile} from "../api/file";
 import {nativeStat} from "../api/native-fs";
 import {getLanguageByPath} from "./monaco";
-import {isSiyuanPath} from "../utils/path";
+import {isKernelPath} from "../utils/path";
 import {recordVersion} from "../version-control/file-versions";
 
 // path → Monaco 文本模型(同一文件多 Tab 共享)
@@ -33,9 +33,9 @@ export function onDidSaveModel(cb: (path: string) => void): () => void {
 }
 
 function uriForPath(path: string): monaco.Uri {
-    // 思源虚拟路径走专用 scheme;工作空间外的系统绝对路径(如 E:\HOME\BaiduSyncdisk)
-    // 必须用 file:// 才能让 Monaco 正确解析盘符与反斜杠路径
-    if (isSiyuanPath(path)) {
+    // 内核路径(/data/...、/conf/... 等)走专用 scheme;工作空间外的系统绝对路径
+    // (如 E:\HOME\BaiduSyncdisk)必须用 file:// 才能让 Monaco 正确解析盘符与反斜杠路径
+    if (isKernelPath(path)) {
         return monaco.Uri.parse("siyuan://file" + path);
     }
     return monaco.Uri.file(path.replace(/\\/g, "/"));

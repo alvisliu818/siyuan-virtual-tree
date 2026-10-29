@@ -1,6 +1,6 @@
 import {getNativeRequire} from "../utils/native-require";
 import {DirEntry} from "../types";
-import {isSiyuanPath, joinPath} from "../utils/path";
+import {joinPath} from "../utils/path";
 import {toSystemPath, getWorkspacePath} from "../utils/system-path";
 import {decodeAuto} from "../utils/encoding";
 
@@ -34,12 +34,12 @@ function getFs(): any {
 }
 
 // 取文件状态(修改时间 + 大小),用于判断文件是否在思源之外被改动过。
-// 与 isDirectory 同理:思源虚拟路径 /data/... 要先转成系统绝对路径再 stat。
+// 内核路径(/data/...、/conf/... 等工作空间根相对路径)先转成系统绝对路径再 stat。
 // 拿不到就返回 null(环境不支持/文件不存在),调用方按"无法判断"处理,不要误判成"已改"。
 export function nativeStat(path: string): {mtimeMs: number; size: number} | null {
     try {
         const f = getFs();
-        const sysPath = isSiyuanPath(path) ? toSystemPath(path, getWorkspacePath()) : path;
+        const sysPath = toSystemPath(path, getWorkspacePath());
         const st = f.statSync(sysPath);
         if (!st || typeof st.mtimeMs !== "number") return null;
         return {mtimeMs: st.mtimeMs, size: st.size};
