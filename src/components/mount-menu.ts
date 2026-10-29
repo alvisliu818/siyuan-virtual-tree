@@ -7,7 +7,7 @@
 import {Menu, Dialog, showMessage} from "siyuan";
 import {addMountItem, listMountTargets, hasMounted, getRoots, refreshBlockMountImages, MountItem, MountKind} from "../mount-tree";
 import {readDir, querySQL} from "../api/file";
-import {basename, dirname} from "../utils/path";
+import {basename, dirname, normalizePath, SIYUAN_ROOT} from "../utils/path";
 import {showOpenDialog} from "../utils/open-dialog";
 import {getNativeRequire} from "../utils/native-require";
 import {getBlock, blockTitle} from "../utils/blocks";
@@ -106,7 +106,10 @@ export function showMountTargetMenu(x: number, y: number, plugin: any, payload: 
 // 判断路径是文件还是文件夹。
 // 注意:不能直接 readDir(目标)——思源内核对**文件**也返回空数组,与"空文件夹"无法区分;
 // 必须读父目录再按名字回查 DirEntry.isDir(与标签面板同一套做法)。
+// 例外:/data 本身恒为目录——它的 dirname 是 "/",而 readDir 只把 /data 前缀的路径
+// 交给思源内核,会落到原生 fs 读到盘符根,名字回查必然失败,挂出来是不可展开的死行。
 export async function detectIsDir(path: string): Promise<boolean> {
+    if (path.replace(/[\\/]+$/, "") === SIYUAN_ROOT) return true;
     try {
         const list = await readDir(dirname(path));
         const ent = (Array.isArray(list) ? list : []).find(e => e.name === basename(path));
@@ -187,14 +190,17 @@ export function promptMountPathDialog(
     };
 
     const submit = async () => {
-        const p = inputEl.value.trim();
-        if (!p) {
+        const raw = inputEl.value.trim();
+        if (!raw) {
             showMessage("请填写路径", 2000, "error");
             return;
         }
+        // 规范化后再落盘:剥尾分隔符,把 "/"(工作空间根)与思源相对路径归一到 /data 形态;
+        // 系统绝对路径(E:\...)原样保留。"上次浏览位置"仍按原始输入判断(只认盘符形态)。
+        const p = normalizePath(raw);
         const isDir = await detectIsDir(p);
         // 手动输入的系统绝对路径也计入"上次位置",浏览按钮跟着走
-        if (isNativeAbsPath(p)) rememberLastBrowseDir(p, isDir);
+        if (isNativeAbsPath(raw)) rememberLastBrowseDir(raw, isDir);
         close();
         onPicked(p, isDir, basename(p));
     };
