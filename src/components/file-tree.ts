@@ -40,6 +40,8 @@ export interface IFileTreeActions {
     toggleFavorite?(path: string): void;
     // 取消挂载:移除某真实目录下的百度网盘挂载记录
     unmountDoc?(parentDir: string, vPath: string): void;
+    // 右键「新建思源文档」:在设置指定的笔记本/子路径下创建(名字默认值由插件按配置决定)
+    createSiyuanDoc?(path: string, isDir: boolean): void;
 }
 
 // 统一构建 IFileTreeActions:全部委托给插件实例的同名方法。
@@ -62,6 +64,9 @@ export function buildFileTreeActions(plugin: any, onTagsChanged?: () => void): I
         toggleFavorite: (p) => plugin.toggleFavorite(p),
         manageTags: (p, ev) => {
             void openTagMenu(plugin, p, ev, onTagsChanged);
+        },
+        createSiyuanDoc: (p, isDir) => {
+            void plugin.openNewSiyuanDocDialog(p, isDir);
         },
     };
 }
@@ -1324,6 +1329,14 @@ openWith.push({
             label: "新建文件夹",
             click: () => createNewFolder(path, rootEl, rootPath),
         });
+        // 新建思源文档:位置(笔记本/子路径)在设置里配置;对话框里只填名字
+        if (actions.createSiyuanDoc) {
+            menu.addItem({
+                icon: "iconAddDoc",
+                label: "新建思源文档…",
+                click: () => actions.createSiyuanDoc!(path, true),
+            });
+        }
         menu.addSeparator();
         menu.addItem({
             icon: "iconSearch",
@@ -1332,6 +1345,15 @@ openWith.push({
         });
     } else {
         menu.addSeparator();
+        // 文件也能建思源文档(名字默认与文件同名,可在设置里关掉)——
+        // 典型用法:选中一个本地 md/py,一键在指定笔记本里建一篇同名思源文档
+        if (actions.createSiyuanDoc) {
+            menu.addItem({
+                icon: "iconAddDoc",
+                label: "新建思源文档…",
+                click: () => actions.createSiyuanDoc!(path, false),
+            });
+        }
     }
     menu.addItem({
         icon: "iconTags",

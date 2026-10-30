@@ -36,7 +36,7 @@ import {BacklinkItem, findBacklinks, findDirBacklinks, findSiyuanRefBacklinks} f
 import {showDocMenu, showNotebookMenu, addPinFavEntries, DocMenuItem} from "../components/doc-menu";
 import {openSiyuanTagDialog} from "../components/siyuan-tag-dialog";
 import {openFileTab, syncOpenEditors} from "../tabs/editor-tab";
-import {mountPayload, promptMountPathDialog, pickBlockDialog, showMountTargetMenu, ensureTargetMountItem} from "../components/mount-menu";
+import {mountPayload, promptMountPathDialog, pickBlockDialog, showMountTargetMenu, ensureTargetMountItem, ensureFileMountItem} from "../components/mount-menu";
 import {
     getRoots,
     findMountItem,
@@ -1998,14 +1998,32 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                     const fPath = row.kind === "file" ? row.path : row.item.path!;
                     const fIsDir = row.kind === "file" ? row.isDir : !!row.item.isDir;
                     const rootEl = findTreeRootEl(fPath);
+                    // 文件夹行追加挂载入口(挂载思源文档/笔记本、思源块、文件/网盘到它下面):
+                    // 挂载行直接用自身 uid;子目录行先解析/补建对应挂载项(与虚拟文档行同款 ensure)。
+                    // 纯文件行不嵌套(思源文档挂不到文件下),保持原菜单。
+                    const mountUnder: DocMenuItem[] = [];
+                    if (fIsDir) {
+                        const where = `「${row.kind === "file" ? row.name : row.item.name}」下`;
+                        if (row.kind === "mount") {
+                            mountUnder.push(...mountMenuItems(row.uid, where));
+                        } else {
+                            mountUnder.push(...mountMenuItems(async () => {
+                                const r = await ensureFileMountItem(plugin, fPath, row.name);
+                                if (r?.created) {
+                                    self._expanded!.add(mountExpandKeyOf(r.item)); // 新建的挂载行自动展开
+                                }
+                                return r ? r.item.uid : null;
+                            }, where));
+                        }
+                    }
                     // 挂载行(而非子项行)要能取消挂载:行内 × 按钮已去掉,入口只留右键菜单
                     const fileExtra: DocMenuItem[] = row.kind === "mount"
-                        ? [{
+                        ? [...mountUnder, {
                             icon: "iconTrashcan",
                             label: "取消挂载",
                             click: () => unmountMountRow(row),
                         }]
-                        : [];
+                        : mountUnder;
                     showFileTreeMenu(e, fPath, fIsDir, rootEl, rootEl?.dataset.path || "", fileTreeActions, undefined, fileExtra as any);
                     return;
                 }

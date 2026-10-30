@@ -94,6 +94,56 @@ export async function ensureTargetMountItem(
     return item ? {item, created: true} : null;
 }
 
+// 文件夹虚拟行不是挂载项:嵌套挂载前先确保树上存在该路径对应的文件挂载项——
+// 已有同路径挂载(任意位置)直接复用;否则挂到**最近的祖先挂载目录**下(无祖先退回顶层)。
+// 与 ensureTargetMountItem 同思路,只是文件按 path 认目标(文档按 targetId)。
+// 返回挂载项与是否新建;失败返回 null(调用方退回顶层挂载)。
+export async function ensureFileMountItem(
+    plugin: any,
+    path: string,
+    name: string,
+): Promise<{item: MountItem; created: boolean} | null> {
+    // 路径比较:统一正斜杠 + 去尾分隔符;Windows 盘符/目录大小写可能不一致,再比一层小写
+    const norm = (p: string) => p.replace(/\\/g, "/").replace(/\/+$/, "");
+    const samePath = (a: string, b: string) => {
+        const x = norm(a), y = norm(b);
+        return x === y || x.toLowerCase() === y.toLowerCase();
+    };
+    const under = (dir: string, p: string) => {
+        const raw = dir.replace(/\\/g, "/");
+        if (raw === "/") {
+            // 工作空间根("/")经 norm 会剥成空串,须先分流:它是内核路径的祖先,
+            // 但不是盘符/UNC 等原生路径的祖先
+            return norm(p).startsWith("/") || p.startsWith("/");
+        }
+        const d = norm(dir), t = norm(p);
+        if (!d) return false;
+        const pre = d + "/";
+        return (t.startsWith(pre) || t.toLowerCase().startsWith(pre.toLowerCase())) && t.length > d.length;
+    };
+    // 深度优先一趟拿两样:同路径挂载项(exact,命中即整体返回)+ 最深祖先目录(owner)。
+    // owner 用返回值传递而不是外层变量——闭包赋值会被 TS 控制流分析窄化成初始 null(实测踩过)。
+    const walk = (list: MountItem[], depth: number): {exact: MountItem | null; owner: MountItem | null; ownerDepth: number} => {
+        let best = {owner: null as MountItem | null, ownerDepth: -1};
+        for (const it of list) {
+            if (it.kind === "file" && it.path && samePath(it.path, path)) {
+                return {exact: it, owner: null, ownerDepth: -1};
+            }
+            if (it.kind === "file" && it.isDir && it.path && under(it.path, path) && depth > best.ownerDepth) {
+                best = {owner: it, ownerDepth: depth};
+            }
+            const sub = walk(it.children || [], depth + 1);
+            if (sub.exact) return sub;
+            if (sub.ownerDepth > best.ownerDepth) best = {owner: sub.owner, ownerDepth: sub.ownerDepth};
+        }
+        return {exact: null, owner: best.owner, ownerDepth: best.ownerDepth};
+    };
+    const {exact, owner} = walk(getRoots(), 0);
+    if (exact) return {item: exact, created: false};
+    const item = await addMountItem(plugin, {kind: "file", name, path, isDir: true}, owner ? owner.uid : null);
+    return item ? {item, created: true} : null;
+}
+
 // 独立弹出挂载位置选择菜单
 export function showMountTargetMenu(x: number, y: number, plugin: any, payload: MountPayload): void {
     const menu = new Menu();
