@@ -39,6 +39,7 @@ import {openFileTab, syncOpenEditors} from "../tabs/editor-tab";
 import {mountPayload, promptMountPathDialog, pickBlockDialog, showMountTargetMenu, ensureTargetMountItem} from "../components/mount-menu";
 import {
     getRoots,
+    findMountItem,
     removeMountItem,
     reorderMountItem,
     reorderAutoChildren,
@@ -596,7 +597,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                     if (!bestRow.expanded) {
                         const src = rowChildSource(bestRow);
                         if (!src) { notInRange(); return; }
-                        self._expanded!.add(src.key);
+                        self._expanded!.add(src.expandKey || src.key);
                         void load(src.key, src.loader);
                         render();
                         await sleepMs(700);
@@ -642,7 +643,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                         if (isDirRow) {
                             const src = rowChildSource(exact);
                             if (src) {
-                                self._expanded!.add(src.key);
+                                self._expanded!.add(src.expandKey || src.key);
                                 void load(src.key, src.loader);
                             }
                         }
@@ -676,7 +677,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                     if (!bestRow.expanded) {
                         const src = rowChildSource(bestRow);
                         if (!src) { notInRange(); return; }
-                        self._expanded!.add(src.key);
+                        self._expanded!.add(src.expandKey || src.key);
                         void load(src.key, src.loader);
                         render();
                         await sleepMs(700);
@@ -780,7 +781,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                     if (!bestRow.expanded) {
                         const src = rowChildSource(bestRow);
                         if (!src) { notInRange(); return; }
-                        self._expanded!.add(src.key);
+                        self._expanded!.add(src.expandKey || src.key);
                         void load(src.key, src.loader);
                         render();
                         await sleepMs(700);
@@ -1049,6 +1050,14 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 return "b:" + item.targetId;
             };
 
+            // 挂载行的**展开状态键**:与缓存键解耦,用挂载项自己的 uid 记账。
+            // 同一目录可以同时出现两条独立的行——挂载行(如挂载的 /data)与恰好同路径的
+            // 普通子行(如挂载「工作空间 /」下的 data 子行);文档/块挂载行也会与别的
+            // 挂载节点下的虚拟行并存。若按路径/目标记账,展开一条会联动翻另一条。
+            // 前缀 m<kind 首字母>x:(mfx:/mnx:/mdx:/mbx:),loaderForExpandKey 反查挂载项。
+            const mountExpandKeyOf = (item: MountItem): string =>
+                "m" + item.kind.charAt(0) + "x:" + item.uid;
+
             // 子项缓存键 → 加载器(与 rowChildSource/autoLoader 同一套原语;静默刷新用)
             const loaderForKey = (key: string): (() => Promise<DirEntry[] | BlockNode[]>) | null => {
                 if (key.startsWith("d:sydoc://")) return () => virtualListDir(key.slice(2));
@@ -1057,18 +1066,31 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 return null;
             };
 
+            // 展开状态键 → {缓存键, 加载器}:挂载行专属键反查挂载项(已取消挂载则 null,
+            // 静默刷新自然跳过);普通行的展开键就是缓存键。
+            const loaderForExpandKey = (expandKey: string): {cacheKey: string; loader: () => Promise<DirEntry[] | BlockNode[]>} | null => {
+                if (/^m[fndb]x:/.test(expandKey)) {
+                    const it = findMountItem(expandKey.slice(4));
+                    if (!it) return null;
+                    const loader = autoLoader(it);
+                    return loader ? {cacheKey: autoKeyOf(it), loader} : null;
+                }
+                const loader = loaderForKey(expandKey);
+                return loader ? {cacheKey: expandKey, loader} : null;
+            };
+
             // 静默刷新:重取"已展开"的子项列表,内容有变化的键才更新缓存。
             // 返回是否有变化。数据没变就不重绘 —— 否则每次 switch-protyle(切文档防抖后必触发
             // syfe:files-changed)都清缓存全量重绘,整棵树回退「加载中」再重载,看起来就是面板时不时闪烁。
             const silentRefreshExpanded = async (): Promise<boolean> => {
                 const jobs: Promise<void>[] = [];
                 let changed = false;
-                for (const key of Array.from(self._expanded!)) {
-                    const loader = loaderForKey(key);
-                    if (!loader || !self._cache!.has(key)) continue; // 尚未加载过的键,展开时自然取
-                    jobs.push(loader().then((list) => {
-                        if (JSON.stringify(self._cache!.get(key)) !== JSON.stringify(list)) {
-                            self._cache!.set(key, list);
+                for (const expandKey of Array.from(self._expanded!)) {
+                    const job = loaderForExpandKey(expandKey);
+                    if (!job || !self._cache!.has(job.cacheKey)) continue; // 尚未加载过的键,展开时自然取
+                    jobs.push(job.loader().then((list) => {
+                        if (JSON.stringify(self._cache!.get(job.cacheKey)) !== JSON.stringify(list)) {
+                            self._cache!.set(job.cacheKey, list);
                             changed = true;
                         }
                     }).catch(() => { }));
@@ -1168,13 +1190,14 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 }
             };
 
-            // 某一行对应的"子项缓存键 + 加载器";返回 null 表示该行不可能有子项(叶子)
-            const rowChildSource = (r: Row): {key: string; loader: () => Promise<DirEntry[] | BlockNode[]>} | null => {
+            // 某一行对应的"子项缓存键 + 加载器";返回 null 表示该行不可能有子项(叶子)。
+            // expandKey 仅挂载行有:展开状态记在 m*:<uid>(见 mountExpandKeyOf),缓存仍按 key。
+            const rowChildSource = (r: Row): {key: string; loader: () => Promise<DirEntry[] | BlockNode[]>; expandKey?: string} | null => {
                 if (r.kind === "mount") {
                     // doc 挂载 + 引用配置开启:子项来自预构建的引用关系,不走子文档 loader
                     if (r.item.kind === "doc" && relationEnabled()) return null;
                     const ldr = autoLoader(r.item);
-                    return ldr ? {key: autoKeyOf(r.item), loader: ldr} : null;
+                    return ldr ? {key: autoKeyOf(r.item), loader: ldr, expandKey: mountExpandKeyOf(r.item)} : null;
                 }
                 if (r.kind === "file" && r.isDir) {
                     return {key: "f:" + r.path, loader: () => readDir(r.path)};
@@ -1260,9 +1283,9 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 const walk = (item: MountItem, depth: number) => {
                     // 聚焦模式:子树外的挂载行隐藏
                     if (focusIds && !(item.kind === "doc" && item.targetId && focusIds.has(item.targetId))) return;
-                    // 展开状态键必须与点击时 toggle() 写入的键一致(都用 autoKeyOf),
-                    // 否则点击后 _expanded 记在 A 键、这里查 B 键,行永远不会翻转成展开
-                    const expanded = self._expanded!.has(autoKeyOf(item));
+                    // 展开状态记在挂载行专属键(mountExpandKeyOf),与点击 toggleRow 写入的键一致;
+                    // 缓存键(autoKeyOf)只管子项数据,与展开状态互不干涉
+                    const expanded = self._expanded!.has(mountExpandKeyOf(item));
                     const hasChildren = mountHasKids(item);
                     rows.push({kind: "mount", uid: item.uid, depth, expanded, hasChildren, item});
                     if (!expanded) return;
@@ -1676,12 +1699,14 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
             };
 
             // 切换展开;同时保证子项已加载(load 内部对已缓存的键会直接返回),
-            // 这样"已展开但预取被跳过(超过 MAX_PREFETCH)"的节点再点一次也能补上数据
-            const toggle = (key: string, loader: (() => Promise<DirEntry[] | BlockNode[]>) | null) => {
-                if (self._expanded!.has(key)) {
-                    self._expanded!.delete(key);
+            // 这样"已展开但预取被跳过(超过 MAX_PREFETCH)"的节点再点一次也能补上数据。
+            // expandKey:挂载行传专属展开键(m*:<uid>),缓存仍记在 key 下;普通行两者同键。
+            const toggle = (key: string, loader: (() => Promise<DirEntry[] | BlockNode[]>) | null, expandKey?: string) => {
+                const ek = expandKey || key;
+                if (self._expanded!.has(ek)) {
+                    self._expanded!.delete(ek);
                 } else {
-                    self._expanded!.add(key);
+                    self._expanded!.add(ek);
                 }
                 if (loader) void load(key, loader);
                 render();
@@ -1690,8 +1715,8 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
             // 展开/收起某一行(首次展开时懒加载自动子项)
             const toggleRow = (row: Row): void => {
                 if (row.kind === "mount") {
-                    // 用 autoKeyOf 保证加载键与渲染读取键一致
-                    toggle(autoKeyOf(row.item), autoLoader(row.item));
+                    // 展开键(mountExpandKeyOf)与缓存键(autoKeyOf)解耦,见各自注释
+                    toggle(autoKeyOf(row.item), autoLoader(row.item), mountExpandKeyOf(row.item));
                 } else if (row.kind === "file" && row.isDir) {
                     toggle("f:" + row.path, () => readDir(row.path));
                 } else if (row.kind === "doc") {
@@ -2118,7 +2143,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                             ...mountMenuItems(async () => {
                                 const r = await ensureTargetMountItem(plugin, "doc", row.docId, row.name, row.ownerUid ?? null);
                                 if (r?.created) {
-                                    self._expanded!.add(autoKeyOf(r.item)); // 新建的挂载行自动展开,直接看到刚挂进去的内容
+                                    self._expanded!.add(mountExpandKeyOf(r.item)); // 新建的挂载行自动展开,直接看到刚挂进去的内容
                                 }
                                 return r ? r.item.uid : null;
                             }, `「${row.name}」下`),
@@ -2142,7 +2167,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                     appendMountItems(menu, async () => {
                         const r = await ensureTargetMountItem(plugin, "block", row.blockId, menuName, row.ownerUid ?? null);
                         if (r?.created) {
-                            self._expanded!.add(autoKeyOf(r.item));
+                            self._expanded!.add(mountExpandKeyOf(r.item));
                         }
                         return r ? r.item.uid : null;
                     }, `「${menuName}」下`);
@@ -2157,11 +2182,22 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 if (!filterOn) return;
                 const ids = expandWithDescendants(tagSel);
                 const hit = (p: string) => (tagAny ? pathHasAnyTag(p) : pathMatchesFilter(p, ids));
+                // 普通目录子行:展开键即缓存键(f:路径)
                 for (const key of Array.from(self._cache!.keys())) {
                     if (!key.startsWith("f:")) continue;
                     const p = key.slice(2);
                     if (hit(p)) self._expanded!.add(key);
                 }
+                // 挂载行:展开键是 m*:<uid>,按挂载项自身路径匹配(与子行互不联动)
+                const walkMounts = (list: MountItem[]): void => {
+                    for (const it of list) {
+                        if (it.kind === "file" && it.isDir && it.path && hit(it.path)) {
+                            self._expanded!.add(mountExpandKeyOf(it));
+                        }
+                        walkMounts(it.children || []);
+                    }
+                };
+                walkMounts(getRoots());
             };
 
             // 标签 chip 点击:多选(与文件面板一致,多选=或关系;"全部"与具体标签互斥)
