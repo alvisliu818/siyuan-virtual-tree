@@ -39,8 +39,9 @@ import {buildEditorAllPanel, buildEditorGroupPanel, getEditorSubgroups} from "./
 import {createSettingsPanel, settingsRow, SettingsPanel} from "./settings/plugin-settings-dialog";
 // 自定义快捷键:录入(hotkeyFromEvent)+ 规范化/显示
 import {normalizeHotkeyText, formatHotkey, hotkeyFromEvent} from "./utils/hotkey";
-import {querySQL} from "./api/file";
+import {querySQL, lsNotebooks} from "./api/file";
 import {basename} from "./utils/path";
+import {openCreateSiyuanDocDialog, fileBaseName} from "./components/siyuan-new-doc";
 import {loadAllExtensions} from "./extensions/extension-manager";
 import {loadBuiltinGrammars} from "./extensions/grammar-loader";
 import {loadTagData} from "./tags/tag-store";
@@ -76,7 +77,7 @@ import {registerPythonLsp, disposePythonLsp} from "./utils/python-lsp-bridge";
 import {disposePythonKernel} from "./utils/python-kernel";
 import {disposeAllKernels, disposeAllKernelsSync, getGlobalDefaultChoice, getKernelChoice, loadKernelChoices, registerKernelChoicePersistence, setKernelChoice, DEFAULT_KERNEL_ID} from "./utils/kernel/registry";
 import {listKernelSpecs} from "./utils/kernel/interpreter";
-import {stopPythonLanguageServer} from "./utils/python-lsp";
+import {stopPythonLanguageServer, maybeRestartForInterpreterChange} from "./utils/python-lsp";
 // vditor 会用自己的 lute 覆写 window.Lute,使思源之后新建的文档编辑器全部失效。
 // 必须在任何 vditor 实例被创建之前装好守卫 —— 所以放在顶层 import 里(模块求值顺序)。
 import {installLuteGuard} from "./utils/lute-guard";
@@ -180,9 +181,17 @@ export default class FileEditorPlugin extends Plugin {
     // 接管思源文档内文件打开:模式下拉 + 扩展名白名单
     private docOpenTakeoverSelect?: HTMLSelectElement;
     private docOpenTakeoverExtsInput?: HTMLInputElement;
+    // 右键「新建思源文档」:目标笔记本下拉 + 子路径 + 文件同名开关
+    private newDocNotebookSelect?: HTMLSelectElement;
+    private newDocSubPathInput?: HTMLInputElement;
+    private newDocSameNameInput?: HTMLInputElement;
+    // 文件右键挂载思源文档的落点(文件下 / 所在文件夹下)
+    private fileMountTargetSelect?: HTMLSelectElement;
     private _unregisterDocOpenTakeover?: () => void;
     // 文档右键「引用的外部文件」的 window 监听注销(正文入口走 eventBus 无需处理)
     private _unregisterDocExternalFiles?: () => void;
+    // 顶部「+」劫持的 document 监听注销(不摘的话禁用插件后「+」仍被旧监听接管)
+    private _unregisterNewTabHijack?: () => void;
     // 切换思源文档后刷新文件树的防抖 timer(见 switch-protyle 监听)
     private _docSwitchRefreshTimer?: number;
     // 全局阅读模式:Markdown 默认只读打开
@@ -397,8 +406,9 @@ export default class FileEditorPlugin extends Plugin {
         // 正文内 Python 代码块:注入运行按钮 + 代码块下方的输出面板
         registerCodeBlockRun(this);
 
-        // 接管思源顶部「+」:点击改为打开新标签页(设置里可关闭,恢复原生新建文档)
-        installNewTabHijack(this as any, () => this.config.newTabReplacePlus !== false);
+        // 接管思源顶部「+」:点击改为打开新标签页(设置里可关闭,恢复原生新建文档);
+        // 返回注销函数(onunload 摘除,防止思源重载插件后旧监听残留、点一次开两个标签页)
+        this._unregisterNewTabHijack = installNewTabHijack(this as any, () => this.config.newTabReplacePlus !== false);
 
         // 图标主题就绪/切换:文件树、页签头、新标签页都要按新的主题重画。
         // 扩展是异步加载的,它们首屏渲染时常还没有主题(画出来是思源内置图标),
@@ -525,6 +535,9 @@ export default class FileEditorPlugin extends Plugin {
             // 布局恢复的编辑器可能创建于 settings.json 读取完成之前(读到空值时
             // buildEditorOptions 出的是空选项)→ 这里统一刷一遍已存在的编辑器
             applyEditorOptions();
+            // Python 解释器同理:pyright 若在 settings.json 读到之前就启动了,
+            // 拿到的是空配置;与 server 已应用值不同则在这里补一次重启
+            void maybeRestartForInterpreterChange();
             registerSettingsJsonSchema();
         } catch (e) {
             console.error("[siyuan-file-editor] 加载 settings.json 失败:", e);
@@ -740,6 +753,7 @@ export default class FileEditorPlugin extends Plugin {
         try {
             this._unregisterDocOpenTakeover?.();
             this._unregisterDocExternalFiles?.();
+            this._unregisterNewTabHijack?.();
             if (this._docSwitchRefreshTimer) {
                 window.clearTimeout(this._docSwitchRefreshTimer);
                 this._docSwitchRefreshTimer = undefined;
@@ -807,6 +821,40 @@ export default class FileEditorPlugin extends Plugin {
     openMedia(path: string): void {
         void addRecent(this as any, path);
         openMediaTab(this as any, path);
+    }
+
+    // 右键「新建思源文档」:文件与文件夹都可发起。名字默认值:
+    // 文件 + 「与文件同名」开启 → 文件主名(去扩展名);其余留空由用户填。
+    // 创建位置(笔记本/子路径)在设置里配置,见 siyuan-new-doc.ts。
+    // 创建成功后:①把来源路径(内核路径补全成真实绝对路径)追加为文档别名;
+    // ②mountParent 提供时(虚拟文档树右键)按右键行的显示父链自动挂载。
+    openNewSiyuanDocDialog(path: string, isDir: boolean, mountParent?: () => Promise<string | null>, onMounted?: (parentUid: string) => void): void {
+        const defaultName = !isDir && this.config?.newDocSameName !== false ? fileBaseName(path) : "";
+        void openCreateSiyuanDocDialog(this as any, defaultName, path, mountParent, onMounted);
+    }
+
+    // 设置面板用:刷新「新建思源文档」目标笔记本下拉的选项与当前值
+    refreshNewDocSettingUI(): void {
+        const sel = this.newDocNotebookSelect;
+        if (!sel) return;
+        // 注意不要因 sel.isConnected 早退:设置行所在页未打开时 select 尚未挂到 DOM,
+        // 但元素对象持久存在,照常填充,页打开时即是就绪状态
+        const cur = this.config?.newDocNotebook || "";
+        void (async () => {
+            let list: any[] = [];
+            try {
+                list = (await lsNotebooks()) || [];
+            } catch {
+                list = [];
+            }
+            const open = list.filter((n: any) => n && n.id && !n.closed);
+            const esc = (s: string) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
+            sel.innerHTML = open.length
+                ? open.map((n: any) => `<option value="${esc(n.id)}">${esc(String(n.name || n.id))}</option>`).join("")
+                : `<option value="">(没有已打开的笔记本)</option>`;
+            // 配置的笔记本不可用(已删/已关)时落在第一项,不残留无效 value
+            sel.value = open.some((n: any) => n.id === cur) ? cur : (open[0]?.id || "");
+        })();
     }
 
     // 打开新标签页(接管顶部「+」后的启动台)
@@ -1018,6 +1066,28 @@ export default class FileEditorPlugin extends Plugin {
         this.importMdSourceAssetInput.type = "checkbox";
         this.importMdSourceAssetInput.className = "b3-switch";
         addRow("openFiles", "导入 Markdown:插入源文件资源引述块", "导入 .md 到思源后,把源文件上传为资源,并在文档顶部插入一个引述块链接到它(保留出处,便于回溯原文件);仅对单个 Markdown 文件生效,导入文件夹时不处理", this.importMdSourceAssetInput);
+
+        // 右键「新建思源文档」:目标位置(笔记本 + 子路径)与文件同名默认
+        this.newDocNotebookSelect = document.createElement("select");
+        this.newDocNotebookSelect.className = "b3-select";
+        this.newDocNotebookSelect.innerHTML = `<option value="">(加载中…)</option>`;
+        addRow("openFiles", "新建思源文档:目标笔记本", "在文件树/虚拟文档树右键「新建思源文档」时,文档创建到这个笔记本。配置的笔记本被删除或关闭时自动落到第一个可用笔记本", this.newDocNotebookSelect);
+        this.newDocSubPathInput = document.createElement("input");
+        this.newDocSubPathInput.className = "b3-text-field";
+        this.newDocSubPathInput.placeholder = "如 journal 或 book/golang;留空 = 笔记本根";
+        addRow("openFiles", "新建思源文档:子路径", "目标笔记本下的子路径(斜杠分隔多级,不存在时由内核自动创建父级);留空则建在笔记本根", this.newDocSubPathInput);
+        this.newDocSameNameInput = document.createElement("input");
+        this.newDocSameNameInput.type = "checkbox";
+        this.newDocSameNameInput.className = "b3-switch";
+        addRow("openFiles", "新建思源文档:与文件同名", "右键的是文件时,新文档名默认取文件主名(去扩展名)预填;关闭则默认留空。文件夹右键始终留空", this.newDocSameNameInput);
+
+        // 虚拟文档树文件右键「挂载思源文档」的落点
+        this.fileMountTargetSelect = document.createElement("select");
+        this.fileMountTargetSelect.className = "b3-select";
+        this.fileMountTargetSelect.innerHTML = `
+            <option value="file">挂载到文件下(文档成为文件的子行)</option>
+            <option value="folder">挂载到所在文件夹下</option>`;
+        addRow("openFiles", "挂载思源文档:文件右键落点", "在虚拟文档树里右键文件选「挂载思源文档」时,文档挂到文件下面(文件会建成挂载行,文档为其子行),还是挂到文件所在的文件夹下。文件夹右键始终挂到该文件夹下", this.fileMountTargetSelect);
 
         // 版本控制:每文件保留多少个修改前版本
         this.versionKeepCountInput = document.createElement("input");
@@ -1317,7 +1387,8 @@ export default class FileEditorPlugin extends Plugin {
             <option value="auto">自动检测</option>
             <option value="pwsh">PowerShell 7</option>
             <option value="powershell">Windows PowerShell</option>
-            <option value="cmd">命令提示符 (cmd)</option>`;
+            <option value="cmd">命令提示符 (cmd)</option>
+            <option value="bash">Git Bash</option>`;
         addRow("terminal", "终端 Shell", "集成终端使用的 shell 程序,需重启终端 Tab 后生效", this.terminalShellSelect);
 
         // ---------- 外观 ----------
@@ -1483,6 +1554,11 @@ export default class FileEditorPlugin extends Plugin {
         if (this.importMdSourceAssetInput) this.importMdSourceAssetInput.checked = this.config.importMdSourceAsset === true;
         if (this.docOpenTakeoverSelect) this.docOpenTakeoverSelect.value = this.config.docOpenTakeover || "off";
         if (this.docOpenTakeoverExtsInput) this.docOpenTakeoverExtsInput.value = this.config.docOpenTakeoverExts || "";
+        // 「新建思源文档」回填:笔记本下拉选项异步刷新,子路径/同名开关同步
+        this.refreshNewDocSettingUI();
+        if (this.newDocSubPathInput) this.newDocSubPathInput.value = this.config.newDocSubPath || "";
+        if (this.newDocSameNameInput) this.newDocSameNameInput.checked = this.config.newDocSameName !== false;
+        if (this.fileMountTargetSelect) this.fileMountTargetSelect.value = this.config.fileMountTarget === "folder" ? "folder" : "file";
         // 引用关系设置回填(只回填设置项;collapsed 由面板维护,拖拽顺序在挂载配置里)
         const rel = this.config.mountTreeRelation || DEFAULT_CONFIG.mountTreeRelation;
         if (this.mountTreeRelationEnabledInput) this.mountTreeRelationEnabledInput.checked = rel.enabled === true;
@@ -1566,6 +1642,10 @@ export default class FileEditorPlugin extends Plugin {
             importMdSourceAsset: this.importMdSourceAssetInput?.checked ?? false,
             docOpenTakeover: ((this.docOpenTakeoverSelect?.value || "off") as "off" | "exts" | "all"),
             docOpenTakeoverExts: (this.docOpenTakeoverExtsInput?.value || "").trim() || "md,txt",
+            newDocNotebook: (this.newDocNotebookSelect?.value || "").trim(),
+            newDocSubPath: (this.newDocSubPathInput?.value || "").trim().replace(/^[\\/]+/, "").replace(/[\\/]+$/, ""),
+            newDocSameName: this.newDocSameNameInput?.checked ?? true,
+            fileMountTarget: ((this.fileMountTargetSelect?.value || "file") as "file" | "folder"),
             closeUnsavedAction: ((this.closeUnsavedSelect?.value || "ask") as "ask" | "discard" | "save"),
             takeoverSplitOpen: this.takeoverSplitOpenInput?.checked ?? false,
             treeBacklinkIcon: this.treeBacklinkIconInput?.checked ?? true,

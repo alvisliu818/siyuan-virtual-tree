@@ -26,6 +26,8 @@ import {
     setUserValue,
 } from "./user-settings";
 import {enumFontFamiliesViaFs} from "./fonts-enum";
+import {openPythonEnvPicker} from "../utils/python-envs";
+import {maybeRestartForInterpreterChange} from "../utils/python-lsp";
 
 // 每个控件的"从设置回读"函数,供外部(settings.json 保存后)统一刷新
 const syncFns: Array<() => void> = [];
@@ -282,6 +284,23 @@ function buildRow(d: SettingDef): {row: HTMLElement; sync: () => void} {
             wrap.appendChild(input);
             wrap.appendChild(btn);
             control = wrap;
+        } else if (d.envPicker) {
+            // Python 解释器:输入框尾部加「选择」按钮,弹出本机环境列表(conda 等)。
+            // 复用 fontwrap 布局类 —— 它只是一行 flex 收窄控件,与字体无关。
+            const wrap = h("div", "syfe-es__fontwrap");
+            const btn = document.createElement("button");
+            btn.type = "button";
+            btn.className = "b3-button b3-button--text";
+            btn.title = "从本机已安装的 Python 环境中选择(含 conda)";
+            btn.style.padding = "0 8px";
+            btn.style.fontSize = "12px";
+            btn.textContent = "选择";
+            btn.addEventListener("click", () => {
+                void openPythonEnvPicker(input, btn);
+            });
+            wrap.appendChild(input);
+            wrap.appendChild(btn);
+            control = wrap;
         } else {
             control = input;
         }
@@ -304,6 +323,11 @@ function buildRow(d: SettingDef): {row: HTMLElement; sync: () => void} {
 /** 改完一项之后:立即对所有已打开的编辑器生效 */
 function afterChange(d: SettingDef): void {
     applyEditorOptions();
+    // Python 解释器不归 Monaco 管(不进 applyEditorOptions):
+    // 与 server 已应用值不同则重启语言服务器,已打开文档自动恢复服务
+    if (d.key === "python.pythonPath") {
+        void maybeRestartForInterpreterChange();
+    }
     // 只有影响布局/字体的项需要提醒重排,Monaco 的 updateOptions 自己会 layout
     void d;
 }
@@ -322,7 +346,17 @@ export function getEditorSubgroups(): Array<{name: string; count: number}> {
 /** 构建单个子分类面板(缓存共享;每次调用都返回同一份 DOM) */
 export function buildEditorGroupPanel(name: string): HTMLElement {
     let group = groupCache.get(name);
-    if (group) return group;
+    if (group) {
+        // 父页平铺的搜索过滤器会把 display:none 写进这些**共享缓存**的组/行 DOM
+        // (见 buildEditorAllPanel 的 input 监听)。之后直接切到本子页时若不复位,
+        // 整组连同所有行都是隐藏的 —— 表现为子页内容区一片空白。
+        // 代价:平铺页的残留搜索词会暂时失效,下次输入任意字符即全量重算。
+        group.style.display = "";
+        group.querySelectorAll<HTMLElement>(".syfe-es__row").forEach(r => {
+            if (r.style.display === "none") r.style.display = "";
+        });
+        return group;
+    }
     ensureRegistered();
     group = h("div", "syfe-es__group");
     group.dataset.group = name;

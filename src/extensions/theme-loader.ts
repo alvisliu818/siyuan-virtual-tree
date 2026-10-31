@@ -287,11 +287,22 @@ function convertThemeToMonaco(
     // 语义 token 规则(LSP semanticTokens 的类型 → 主题颜色换算)
     appendSemanticRules(themeData, rules);
 
+    // 排查观测(与 obsidian 侧 [lgp-tm] 同款):语义着色"数据到达但 DOM 黑"时,
+    // 第一件事就是确认语义规则是否真的进了 defineTheme 的 rules
+    const semTokens = ["method", "function", "variable", "parameter", "property", "class", "type"];
+    console.info(`[syfe-semantic] defineTheme ${themeName}: rules=${rules.length} 语义规则=${rules.filter(r => semTokens.some(t => r.token === t)).length} semanticHighlighting=${themeData.semanticHighlighting}`);
+
     monaco.editor.defineTheme(themeName, {
         base,
         inherit: true,
         rules,
         colors,
+        // 关键开关:monaco standalone 编辑器的 semanticHighlighting 默认
+        // "configureByTheme" —— 主题对象不声明 true 时,语义 token 的请求
+        // 与渲染整体关闭(与 LSP/basedpyright 能否解析无关,症状是所有
+        // 语义 token 缺失、只剩 TextMate 颜色)。主题 JSON 显式声明 false
+        // 时尊重之,与 VS Code 行为一致。
+        semanticHighlighting: themeData.semanticHighlighting !== false,
     });
 }
 

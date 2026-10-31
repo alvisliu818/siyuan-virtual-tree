@@ -120,9 +120,17 @@ function escapeHTML(s: string): string {
 // 分屏:每个分屏的标签栏都有自己的 + 按钮。思源自己的处理(setPanelFocus → 聚焦所点分屏)
 // 在冒泡阶段,会被这里的 stopPropagation 拦掉,因此必须手动把**所点分屏**置为焦点分屏,
 // 否则 openTab 永远把新页签开到之前聚焦的那个分屏(其余分屏的 + 看起来"没反应")。
-let hijackInstalled = false;
-let hijackBypass = false;
 let startTabSeq = 0; // 每个起始页实例的唯一 data;否则思源按 type+data 去重,永远只会有一个起始页
+
+// 跨模块实例共享的劫持状态(挂 document 上):思源重新 eval 插件模块时(禁用再启用 /
+// 集市更新 / 代码变更重载),模块级变量全部归零、旧监听无人认领,只有 document 上的
+// 引用能跨实例存活。handler 换届时必须先摘掉上一份,否则点一次「+」会触发 N 份监听、
+// 开出 N 个新标签页;bypass 走共享状态,旧实例起始页的「新建思源文档」才能穿透当前监听。
+interface IHijackSharedState {
+    handler?: (e: MouseEvent) => void;
+    bypass?: boolean;
+}
+const HIJACK_STATE_KEY = "__syfeNewTabHijackState__";
 
 // 生成起始页的实例标识。带时间戳:布局恢复会把旧实例的 data 带回来,
 // 纯递增计数器重启后归零会与旧值撞车,又被思源去重合并。
@@ -130,11 +138,15 @@ function nextStartTabData(): {instance: string} {
     return {instance: `${Date.now().toString(36)}-${(++startTabSeq).toString(36)}`};
 }
 
-export function installNewTabHijack(plugin: IPluginForStartTab, isEnabled: () => boolean): void {
-    if (hijackInstalled) return;
-    hijackInstalled = true;
-    document.addEventListener("click", (e: MouseEvent) => {
-        if (hijackBypass || !isEnabled()) return;
+export function installNewTabHijack(plugin: IPluginForStartTab, isEnabled: () => boolean): () => void {
+    const docAny = document as any;
+    const state: IHijackSharedState = docAny[HIJACK_STATE_KEY] || (docAny[HIJACK_STATE_KEY] = {});
+    // 换届:摘掉上一份模块实例留下的监听(它闭包里的插件实例已卸载,却仍在开新标签页)
+    if (state.handler) {
+        document.removeEventListener("click", state.handler, true);
+    }
+    const handler = (e: MouseEvent) => {
+        if (state.bypass || !isEnabled()) return;
         const target = e.target as HTMLElement | null;
         const btn = target?.closest?.('.block__icon[data-type="new"]') as HTMLElement | null;
         if (!btn) return;
@@ -142,7 +154,15 @@ export function installNewTabHijack(plugin: IPluginForStartTab, isEnabled: () =>
         e.stopPropagation();
         const wndId = btn.closest('[data-type="wnd"]')?.getAttribute("data-id") || undefined;
         openStartTab(plugin, {wndId, newTab: true});
-    }, true);
+    };
+    state.handler = handler;
+    document.addEventListener("click", handler, true);
+    return () => {
+        document.removeEventListener("click", handler, true);
+        if (state.handler === handler) {
+            state.handler = undefined;
+        }
+    };
 }
 
 // 把焦点分屏切换到指定 wnd(复刻思源 setPanelFocus 的核心:layout__wnd--active 类切换)
@@ -161,15 +181,21 @@ function focusWnd(wndId: string): boolean {
 // scope 传起始页自身元素:优先用它所在分屏的 + 按钮,保证文档建在同一个分屏(思源原生
 // 处理会先 setPanelFocus 该分屏);否则退回全局第一个 +。
 export function triggerNativeNewDoc(scope?: HTMLElement | null): boolean {
+    const docAny = document as any;
+    const state: IHijackSharedState | undefined = docAny[HIJACK_STATE_KEY];
     const scopeWnd = scope?.closest?.('[data-type="wnd"]');
     const btn = (scopeWnd?.querySelector('.block__icon[data-type="new"]')
         || document.querySelector('.block__icon[data-type="new"]')) as HTMLElement | null;
     if (!btn) return false;
-    hijackBypass = true;
+    if (state) {
+        state.bypass = true;
+    }
     try {
         btn.click();
     } finally {
-        hijackBypass = false;
+        if (state) {
+            state.bypass = false;
+        }
     }
     return true;
 }

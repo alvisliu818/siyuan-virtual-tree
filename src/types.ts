@@ -35,7 +35,7 @@ export interface EditorConfig {
     searchMaxFileSize: number;
     fileTreeRoot: string; // 文件树根目录路径
     terminalBackend: "auto" | "builtin" | "server"; // 终端后端:auto(优先内置)|builtin(内置)|server(外部服务)
-    terminalShell: string; // 终端 shell:auto|pwsh|powershell|cmd
+    terminalShell: string; // 终端 shell:auto|pwsh|powershell|cmd|bash(Git Bash)
     terminalServerUrl: string; // 终端服务 WebSocket 地址(仅 server 模式)
     siyuanWorkspacePath: string; // 思源工作空间系统路径(用于终端工作目录转换)
     colorTheme: string; // 代码主题:""=自动(优先扩展主题);"__siyuan__"=思源配色;其他=主题 name
@@ -89,6 +89,15 @@ export interface EditorConfig {
     // 文档面包屑(并入自 fake-doc-breadcrumb 模块)总开关:在思源文档顶部插入一层虚拟文档层级面包屑。
     // 模块的 20+ 项细分设置存独立文件 fake-doc-breadcrumb-settings.json(由设置面板「文档面包屑」页打开)
     fakeDocBreadcrumbEnabled: boolean;
+    // 右键「新建思源文档」的目标位置:笔记本 ID(空 = 第一个未关闭笔记本)
+    newDocNotebook: string;
+    // 目标笔记本下的子路径(如 "journal",斜杠分隔多级;空 = 笔记本根)
+    newDocSubPath: string;
+    // 右键的是**文件**时,新文档名默认与文件同名(取主名去扩展名);关闭则默认留空
+    newDocSameName: boolean;
+    // 虚拟文档树里右键**文件**挂载思源文档时的落点:file=挂到文件下(文件建挂载行,文档为其子行)
+    // folder=挂到文件所在的文件夹下
+    fileMountTarget: "file" | "folder";
     // 习惯与目标(并入自 siyuan-planner 模块)总开关:习惯打卡/目标/任务待办/番茄计时/倒数日。
     // 细分设置(番茄时长等)存 planner.json 的 settings 段,由设置面板「习惯与目标」页直接修改(即时生效)
     plannerEnabled: boolean;
@@ -253,7 +262,7 @@ export const DEFAULT_CONFIG: EditorConfig = {
     searchMaxFileSize: 1024 * 1024, // 1MB
     fileTreeRoot: "/data", // 默认思源工作空间 data 目录
     terminalBackend: "auto", // 自动选择(桌面端优先内置)
-    terminalShell: "auto", // auto 自动检测,可选 pwsh|powershell|cmd
+    terminalShell: "auto", // auto 自动检测,可选 pwsh|powershell|cmd|bash(Git Bash)
     terminalServerUrl: "ws://127.0.0.1:9800",
     siyuanWorkspacePath: "", // 留空则自动从思源配置获取
     colorTheme: "", // 自动
@@ -299,6 +308,12 @@ export const DEFAULT_CONFIG: EditorConfig = {
     },
     // 文档面包屑默认开启(并入该模块即为使用它;不需要时在设置「文档面包屑」页关掉总开关)
     fakeDocBreadcrumbEnabled: true,
+    // 右键「新建思源文档」:默认用第一个未关闭笔记本、建在笔记本根;文件同名预填默认开
+    newDocNotebook: "",
+    newDocSubPath: "",
+    newDocSameName: true,
+    // 文件右键挂载思源文档:默认挂到文件下
+    fileMountTarget: "file",
     // 习惯与目标默认开启;关闭后 Dock 图标需重启思源才消失(思源无 removeDock),面板/命令会提示已停用
     plannerEnabled: true,
 };

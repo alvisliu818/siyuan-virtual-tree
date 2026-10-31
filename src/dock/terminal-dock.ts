@@ -7,10 +7,11 @@
 //
 // 与终端 Tab 的关系:pane 与 Tab 互相独立,各持各的 shell 会话。
 // pane 与 pane 之间也互相独立:切走时只是 display:none,会话保持存活。
-import {showMessage} from "siyuan";
+import {showMessage, Menu} from "siyuan";
 import {TERMINAL_DOCK_TYPE} from "../constants";
 import {createTerminalTabConfig, IPluginForTerminalTab} from "../tabs/terminal-tab";
 import {basename} from "../utils/path";
+import {listTerminalShellOptions} from "../utils/builtin-terminal";
 
 /** 同时开多少个终端封顶:每个终端是一个常驻 shell 进程,不设限会拖垮机器 */
 const MAX_TERMINALS = 8;
@@ -130,8 +131,34 @@ function fitWhenReady(inst: any, extraDelays: number[]): void {
                         }
                     }
                 }
-                if (!hasText && inst._builtinSession?.write) {
-                    inst._builtinSession.write(inst._builtinSession.backend === "pty" ? "\r" : "\r\n");
+                if (inst._builtinSession) {
+                    const s = inst._builtinSession;
+                    if (s.backend === "pty") {
+                        // PTY 不补 \r(实测:bash --login 慢启动时,这里补的 \r 会在
+                        // profile 完成后被当作空命令执行,出现双提示符)。
+                        // 改为总是做一次行数抖动触发 SIGWINCH 让 shell 重绘当前行:
+                        //   - 不污染输入流(复现实测:启动+resize 仍是单提示符)
+                        //   - 0 尺寸期丢输出/只画出半个提示符的首个 pane 靠它救回
+                        //     (缓冲哪怕非空也可能缺提示符,所以不做 hasText 短路)
+                        //   - shell 还在慢启动时抖动无副作用,提示符稍后自然出现
+                        try {
+                            const cols = inst._term?.cols || 80;
+                            const rows = inst._term?.rows || 24;
+                            s.resize(cols, Math.max(2, rows - 1));
+                            setTimeout(() => {
+                                try {
+                                    s.resize(cols, rows);
+                                } catch {
+                                    // ignore
+                                }
+                            }, 120);
+                        } catch {
+                            // ignore
+                        }
+                    } else if (!hasText) {
+                        // 管道模式无 tty 回显,shell 不主动画提示符,必须逼一下
+                        s.write("\r\n");
+                    }
                 }
             } catch {
                 // ignore
@@ -140,15 +167,57 @@ function fitWhenReady(inst: any, extraDelays: number[]): void {
     }
 }
 
-function createPane(self: TerminalDockInstance, cwd: string): void {
+/** 全局设置里 shell 别名 → 显示名(菜单「默认」项标注当前全局选择用) */
+const GLOBAL_SHELL_LABELS: Record<string, string> = {
+    auto: "自动检测",
+    pwsh: "PowerShell 7",
+    powershell: "Windows PowerShell",
+    cmd: "命令提示符",
+    bash: "Git Bash",
+};
+
+/**
+ * 加号菜单:选择用哪个 shell 新建终端。
+ * 只列出本机实际可用的 shell(listTerminalShellOptions 已做安装探测);
+ * 「默认」项跟随全局设置。未安装的 shell 直接不显示。
+ */
+function openNewShellMenu(self: TerminalDockInstance, e: MouseEvent): void {
+    const cwd = self.data?.cwd || "/data";
+    const menu = new Menu("syfe-terminal-new");
+    const globalId = self._plugin?.config?.terminalShell || "auto";
+    menu.addItem({
+        icon: "iconTerminal",
+        label: `默认(当前:${GLOBAL_SHELL_LABELS[globalId] || globalId})`,
+        click: () => createPane(self, cwd),
+    });
+    menu.addSeparator();
+    let added = 0;
+    for (const opt of listTerminalShellOptions()) {
+        if (opt.id === "auto" || !opt.available) continue;
+        menu.addItem({
+            icon: "iconTerminal",
+            label: opt.label,
+            click: () => createPane(self, cwd, opt.id),
+        });
+        added++;
+    }
+    // click 处理器里同步弹菜单,事件继续冒泡到 document 会被思源 globalClickHideMenu
+    // 立即关闭(实测:菜单开了就被关)——必须掐断冒泡
+    e.stopPropagation();
+    const rect = (e.target as HTMLElement).getBoundingClientRect();
+    menu.open({x: Math.min(rect.left, window.innerWidth - 200), y: rect.bottom + 4});
+}
+
+function createPane(self: TerminalDockInstance, cwd: string, shellOverride?: string): void {
     if (!self._panesEl) return;
     if (self._panes.length >= MAX_TERMINALS) {
         showMessage(`最多同时开 ${MAX_TERMINALS} 个终端`, 3000, "error");
         return;
     }
     const id = ++self._seq;
-    // 标题去重:同目录的第 2/3 个终端加序号
-    const base = basename(cwd) || cwd;
+    // 标题去重:同目录的第 2/3 个终端加序号;不同 shell 的终端以「 · shell」后缀区分
+    const shellSuffix = shellOverride ? ` · ${shellOverride}` : "";
+    const base = (basename(cwd) || cwd) + shellSuffix;
     let title = base;
     let n = 2;
     while (self._panes.some((p) => p.title === title)) title = `${base} (${n++})`;
@@ -162,8 +231,8 @@ function createPane(self: TerminalDockInstance, cwd: string): void {
     if (prevActive) prevActive.el.classList.remove("syfe-terminal-dock__pane--active");
     self._activeId = id;
 
-    // 伪实例:终端 Tab 的 init/destroy/resize 只依赖 element 与 data.cwd
-    const inst: any = {element: paneEl, data: {cwd}};
+    // 伪实例:终端 Tab 的 init/destroy/resize 只依赖 element 与 data.cwd/shell
+    const inst: any = {element: paneEl, data: {cwd, shell: shellOverride || ""}};
     try {
         self._tab.init.call(inst);
     } catch (e) {
@@ -213,7 +282,7 @@ export function createTerminalDockConfig(plugin: IPluginForTerminalTab) {
                 <div class="syfe-terminal-dock__tabs">
                     <div class="syfe-terminal-dock__tablist-items"></div>
                     <span class="fn__flex-1"></span>
-                    <span class="block__icon ariaLabel syfe-terminal-dock__new" data-action="new" aria-label="新建终端" data-position="north">
+                    <span class="block__icon ariaLabel syfe-terminal-dock__new" data-action="new" aria-label="新建终端(选择 Shell)" data-position="north">
                         <svg><use xlink:href="#iconAdd"></use></svg>
                     </span>
                 </div>
@@ -226,7 +295,7 @@ export function createTerminalDockConfig(plugin: IPluginForTerminalTab) {
                 const target = e.target as HTMLElement;
                 const newBtn = target.closest("[data-action='new']");
                 if (newBtn) {
-                    createPane(this, this.data?.cwd || "/data");
+                    openNewShellMenu(this, e);
                     return;
                 }
                 const closeBtn = target.closest("[data-pane-close]");

@@ -47,7 +47,8 @@ export function renderGoals(ctx: ViewCtx): void {
 
     const list = cb.checked ? getGoals() : getGoals("active");
     if (list.length === 0) {
-        container.innerHTML += emptyState("还没有目标", "目标可以关联任务或习惯,进度自动跟着走");
+        // 同 habits:innerHTML += 会洗掉工具栏上的监听
+        container.insertAdjacentHTML("beforeend", emptyState("还没有目标", "目标可以关联任务或习惯,进度自动跟着走"));
         return;
     }
 

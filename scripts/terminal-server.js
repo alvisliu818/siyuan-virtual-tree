@@ -8,7 +8,7 @@
  *
  * 参数说明:
  *   --port <number>   WebSocket 监听端口,默认 9800
- *   --shell <name>    指定 shell:auto|pwsh|powershell|cmd|<路径>,默认 auto
+ *   --shell <name>    指定 shell:auto|pwsh|powershell|cmd|bash|<路径>,默认 auto
  *   --host <addr>     监听地址,默认 127.0.0.1(仅本机访问)
  *   --list-shells     列出可用 shell 后退出
  *
@@ -77,11 +77,12 @@ function parseArgs() {
             console.log("选项:");
             console.log("  --port <number>   WebSocket 监听端口,默认 9800");
             console.log("  --host <addr>     监听地址,默认 127.0.0.1");
-            console.log("  --shell <name>    指定 shell:auto|pwsh|powershell|cmd|<路径>");
+            console.log("  --shell <name>    指定 shell:auto|pwsh|powershell|cmd|bash|<路径>");
             console.log("                    auto   自动检测(默认)");
             console.log("                    pwsh   PowerShell 7");
             console.log("                    powershell  Windows PowerShell 5.1");
             console.log("                    cmd    命令提示符");
+            console.log("                    bash   Git Bash(需已安装 Git for Windows)");
             console.log("  --list-shells     列出可用 shell 后退出");
             process.exit(0);
         }
@@ -123,6 +124,58 @@ function detectShells() {
         const cmd = process.env.ComSpec || path.join(sysRoot, "System32", "cmd.exe");
         if (fileExists(cmd)) result.push({name: "cmd", path: cmd});
         else result.push({name: "cmd", path: cmd});
+        // Git Bash 三级探测(与插件 builtin-terminal.ts、tools/pty-helper.js 保持一致):
+        //   1) 注册表 GitForWindows\InstallPath(官方安装器写入,覆盖自定义目录)
+        //   2) 标准安装位置  3) PATH 扫描(排除 System32/WindowsApps 的 WSL 存根)
+        // 找的是 bin\bash.exe,不是 git-bash.exe(那是 mintty 启动器)
+        const lad = process.env.LocalAppData || "";
+        const findGitBash = () => {
+            const regKeys = [
+                "HKLM\\SOFTWARE\\GitForWindows",
+                "HKLM\\SOFTWARE\\WOW6432Node\\GitForWindows",
+                "HKCU\\SOFTWARE\\GitForWindows",
+            ];
+            for (const k of regKeys) {
+                try {
+                    const out = require("child_process").execSync(`reg query "${k}" /v InstallPath`, {
+                        stdio: ["ignore", "pipe", "ignore"],
+                        timeout: 3000,
+                        windowsHide: true,
+                    }).toString();
+                    const m = out.match(/InstallPath\s+REG_SZ\s+(.+)/i);
+                    if (m) {
+                        const p = path.join(m[1].trim(), "bin", "bash.exe");
+                        if (fileExists(p)) return p;
+                    }
+                } catch {
+                    // 键不存在,试下一个
+                }
+            }
+            const candidates = [
+                path.join(pf, "Git", "bin", "bash.exe"),
+                path.join(process.env.ProgramW6432 || pf, "Git", "bin", "bash.exe"),
+                path.join(pf86, "Git", "bin", "bash.exe"),
+            ];
+            if (lad) candidates.push(path.join(lad, "Programs", "Git", "bin", "bash.exe"));
+            for (const c of candidates) {
+                if (fileExists(c)) return c;
+            }
+            // PATH 扫描:条目可能是 bash 所在目录(...\Git\bin)或 Git 根目录,两种形态都试;
+            // 排除 system32/windowsapps(WSL 存根)与 \vendor\(应用内嵌的 PortableGit)
+            const pathEnv = process.env.PATH || process.env.Path || "";
+            for (const dir of pathEnv.split(";")) {
+                if (!dir) continue;
+                const low = dir.toLowerCase();
+                if (low.includes("system32") || low.includes("windowsapps") || low.includes("\\vendor\\")) continue;
+                for (const rel of ["bash.exe", "bin\\bash.exe", "usr\\bin\\bash.exe"]) {
+                    const p = path.join(dir, rel);
+                    if (fileExists(p)) return p;
+                }
+            }
+            return null;
+        };
+        const gitBash = findGitBash();
+        if (gitBash) result.push({name: "bash", path: gitBash});
     } else {
         // Unix
         const shell = process.env.SHELL || "/bin/bash";
@@ -165,6 +218,13 @@ function resolveShell(shellArg) {
         if (lower === "cmd" || lower === "cmd.exe") {
             const sysRoot = process.env.SystemRoot || process.env.windir || "C:\\Windows";
             return process.env.ComSpec || path.join(sysRoot, "System32", "cmd.exe");
+        }
+        if (lower === "bash" || lower === "bash.exe" || lower === "git-bash" || lower === "gitbash") {
+            const shells = detectShells();
+            const found = shells.find(s => s.name === "bash");
+            if (found) return found.path;
+            console.error(`[terminal-server] 未找到 Git Bash,回退到自动检测`);
+            return detectShell();
         }
     } else {
         if (lower === "bash") return "/bin/bash";
@@ -255,7 +315,12 @@ function main() {
                     // 支持每个会话独立指定 shell(别名或路径),为空则用服务启动时的默认 shell
                     const sessionShell = msg.shell ? resolveShell(msg.shell) : shellPath;
                     try {
-                        ptyProcess = pty.spawn(sessionShell, [], {
+                        // bash 需要 --login 加载 /etc/profile(PATH 注入 git/mingw64 工具链)、
+                        // -i 强制交互;cmd/pwsh 交互模式无需参数,保持空数组
+                        const spawnArgs = path.basename(sessionShell).toLowerCase() === "bash.exe"
+                            ? ["--login", "-i"]
+                            : [];
+                        ptyProcess = pty.spawn(sessionShell, spawnArgs, {
                             name: "xterm-color",
                             cols: cols,
                             rows: rows,

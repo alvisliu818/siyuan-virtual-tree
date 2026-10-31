@@ -17,9 +17,10 @@
 import * as monaco from "monaco-editor";
 import {
     getPythonLanguageServer, isPyrightAvailable, toLspPosition, fromLspRange,
-    PythonLanguageServer,
+    PythonLanguageServer, maybeRestartForInterpreterChange,
 } from "./python-lsp";
 import {getPythonKernel} from "./python-kernel";
+import {registerSettingsChangedHandler} from "../settings/user-settings";
 
 /** 已注册的 provider(用于整体注销) */
 let disposables: monaco.IDisposable[] = [];
@@ -31,6 +32,9 @@ const MARKER_OWNER = "python-lsp";
 /** LSP 状态订阅(设置面板/状态栏显示用) */
 export type LspStatusListener = (status: string, detail?: string) => void;
 const statusListeners = new Set<LspStatusListener>();
+
+/** 语义 token 失效信号(registerPythonLsp 就绪后创建;fire = monaco 重拉全部文档) */
+let semanticChanged: monaco.Emitter<void> | null = null;
 
 export function onLspStatus(cb: LspStatusListener): () => void {
     statusListeners.add(cb);
@@ -232,6 +236,23 @@ export function registerPythonLsp(): void {
     registered = true;
 
     const language = "python";
+    // server 引用必须先于任何使用获取:此前声明在函数末尾(诊断订阅处),
+    // 而上面的 onRestarted 注册先执行 → TDZ "Cannot access 'server' before
+    // initialization",整个注册流程被外层 try/catch 吞掉,
+    // 补全/hover/诊断/语义 provider 全部静默失效。
+    const server = getPythonLanguageServer();
+
+    // ---- Python 解释器变更 → 重启语言服务器 ----
+    // settings.json 被保存(含手改文件)时的广播;GUI 路径由 editor-settings-ui
+    // 的 afterChange 直调 maybeRestartForInterpreterChange,两路最终都靠
+    // "server 已应用值 vs 当前设置值" 的比对去重,重复触发零开销。
+    registerSettingsChangedHandler(() => {
+        void maybeRestartForInterpreterChange();
+    });
+    // server 重启完成(新进程已就绪、文档已重开)后让 monaco 重拉语义 token
+    server.onRestarted(() => {
+        semanticChanged?.fire();
+    });
 
     // ---- 补全 ----
     disposables.push(monaco.languages.registerCompletionItemProvider(language, {
@@ -429,7 +450,6 @@ export function registerPythonLsp(): void {
     }));
 
     // ---- 诊断订阅 ----
-    const server = getPythonLanguageServer();
     disposables.push(monacoDisposable(server.onDiagnostics((fsPath, diagnostics) => {
         setMarkers(fsPath, diagnostics as any);
     })));
@@ -441,9 +461,13 @@ export function registerPythonLsp(): void {
     // 的返回值,拿空 legend 注册会让所有语义 token 因 "not-in-legend" 被丢弃。
     const registerSemanticProvider = (): void => {
         const legend = server.semanticTokensLegend;
-        if (!legend) return;
-        // server 重启(crash 后 didOpen 自动重连)后 fire 一次,让已打开文档重拉
-        const semanticChanged = new monaco.Emitter<void>();
+        if (!legend) {
+            console.info("[syfe-semantic] legend 为空,语义 provider 不注册");
+            return;
+        }
+        // 模块级持有:server 重启(切换 Python 解释器)后 onRestarted 回调要 fire 它,
+        // 让已打开文档重拉语义 token(旧进程的 token 已随连接失效)
+        semanticChanged = new monaco.Emitter<void>();
         disposables.push(semanticChanged);
         disposables.push(monaco.languages.registerDocumentSemanticTokensProvider(language, {
             onDidChange: semanticChanged.event,
@@ -462,11 +486,13 @@ export function registerPythonLsp(): void {
                 // 无资源需要释放
             },
         }));
+        console.info("[syfe-semantic] 语义 provider 已注册: language=python");
     };
 
     emitStatus("starting");
     // start() 幂等:已就绪时立即 resolve,两个分支(新启动/已就绪)都只注册一次
     void server.start().then((ok) => {
+        console.info(`[syfe-semantic] registerPythonLsp start.then ok=${ok} legend=${!!server.semanticTokensLegend}`);
         emitStatus(ok ? "ready" : "error", ok ? server.version : "启动失败");
         if (ok) registerSemanticProvider();
     });

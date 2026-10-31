@@ -112,6 +112,76 @@ function sysRoot(): string {
     return (window as any).process?.env?.SystemRoot || "C:\\Windows";
 }
 
+// Git Bash 探测:三级依次尝试,找到即返回 bin\bash.exe 路径。
+// 注意找的是 bash.exe 而不是根目录的 git-bash.exe —— 后者是拉起 mintty
+// 窗口的启动器,不能当 PTY shell 用。
+//   1) 注册表 GitForWindows\InstallPath(官方安装器写入,覆盖自定义目录如 D:\programs\Git)
+//   2) 标准安装位置(ProgramFiles 64/32位、用户级 LocalAppData)
+//   3) PATH 扫描(排除 System32/WindowsApps —— 那两处的 bash.exe 是 WSL 存根)
+// 与 tools/pty-helper.js、scripts/terminal-server.js 的规则保持一致,改动需三处同步。
+function findGitBash(req: (m: string) => any): string | null {
+    const env = (window as any).process?.env || {};
+    const pf = env.ProgramFiles || "C:\\Program Files";
+    const pfw = env.ProgramW6432 || pf;
+    const pf86 = env["ProgramFiles(x86)"] || pf;
+    const lad = env.LocalAppData || "";
+
+    // 1) 注册表:官方安装器即使装到自定义目录也会写这个键
+    try {
+        const cp = req("child_process") as any;
+        const keys = [
+            "HKLM\\SOFTWARE\\GitForWindows",
+            "HKLM\\SOFTWARE\\WOW6432Node\\GitForWindows",
+            "HKCU\\SOFTWARE\\GitForWindows",
+        ];
+        for (const k of keys) {
+            try {
+                const out = cp.execSync(`reg query "${k}" /v InstallPath`, {
+                    stdio: ["ignore", "pipe", "ignore"],
+                    timeout: 3000,
+                    windowsHide: true,
+                }).toString() as string;
+                const m = out.match(/InstallPath\s+REG_SZ\s+(.+)/i);
+                if (m) {
+                    const found = whichWindows(req, `${m[1].trim()}\\bin\\bash.exe`);
+                    if (found) return found;
+                }
+            } catch {
+                // 键不存在,试下一个
+            }
+        }
+    } catch {
+        // child_process 不可用(理论上到不了这里,isBuiltinTerminalAvailable 已保证)
+    }
+
+    // 2) 标准安装位置(ProgramFiles 64/32位、用户级 LocalAppData)
+    const candidates = [
+        `${pf}\\Git\\bin\\bash.exe`,
+        `${pfw}\\Git\\bin\\bash.exe`,
+        `${pf86}\\Git\\bin\\bash.exe`,
+        lad ? `${lad}\\Programs\\Git\\bin\\bash.exe` : "",
+    ].filter(Boolean);
+    for (const c of candidates) {
+        const found = whichWindows(req, c);
+        if (found) return found;
+    }
+
+    // 3) PATH 扫描:条目可能是 bash 所在目录(...\Git\bin)或 Git 根目录,两种形态都试;
+    //    排除 System32/WindowsApps(WSL 存根)与 \vendor\(应用内嵌的 PortableGit,
+    //    那是宿主应用的私有副本,不该暴露给用户终端)
+    const pathEnv: string = env.PATH || env.Path || "";
+    for (const dir of pathEnv.split(";")) {
+        if (!dir) continue;
+        const low = dir.toLowerCase();
+        if (low.includes("system32") || low.includes("windowsapps") || low.includes("\\vendor\\")) continue;
+        for (const rel of ["bash.exe", "bin\\bash.exe", "usr\\bin\\bash.exe"]) {
+            const found = whichWindows(req, `${dir}\\${rel}`);
+            if (found) return found;
+        }
+    }
+    return null;
+}
+
 // 解析 shell → {cmd, args}
 // 注意:PowerShell 必须带 -NoExit,否则 -Command 执行完立刻退出(实测确认);
 // 且不能只加 -Command 不加 -NoExit。
@@ -142,6 +212,19 @@ function resolveWindowsShell(shell: string, req: (m: string) => any): { cmd: str
                 };
             }
         }
+        return null;
+    }
+    if (lower === "bash" || lower === "bash.exe" || lower === "git-bash" || lower === "gitbash") {
+        const bash = findGitBash(req);
+        if (bash) {
+            return {
+                cmd: bash,
+                // --login 加载 /etc/profile(PATH 注入 git/mingw64 工具链),-i 强制交互
+                args: ["--login", "-i"],
+                name: "bash",
+            };
+        }
+        // 未装 Git for Windows:返回 null,由 resolveShell 落到 cmd 兜底(与 pwsh 未装行为一致)
         return null;
     }
     if (!shell || shell === "auto") return null; // 交给 auto 分支
@@ -557,6 +640,48 @@ export function isBuiltinTerminalAvailable(): boolean {
     } catch {
         return false;
     }
+}
+
+// 「新建终端」菜单的 shell 候选(带安装探测,未装的项调用方直接不显示)
+export interface TerminalShellOption {
+    id: string;          // 传给 resolveShell 的别名;"auto" 表示跟随全局配置
+    label: string;       // 菜单显示文案
+    available: boolean;
+}
+
+export function listTerminalShellOptions(): TerminalShellOption[] {
+    const req = getNativeRequire();
+    if (!req) return [];
+    const isWin = (window as any).process?.platform === "win32";
+    if (!isWin) {
+        const fs = req("fs") as typeof import("fs");
+        const exists = (f: string) => {
+            try {
+                return fs.existsSync(f);
+            } catch {
+                return false;
+            }
+        };
+        return [
+            {id: "auto", label: "默认(自动检测)", available: true},
+            {id: "bash", label: "bash", available: exists("/bin/bash")},
+            {id: "zsh", label: "zsh", available: exists("/bin/zsh")},
+            {id: "sh", label: "sh", available: exists("/bin/sh")},
+        ];
+    }
+    const env = (window as any).process?.env || {};
+    const pf = env.ProgramFiles || "C:\\Program Files";
+    return [
+        {id: "auto", label: "默认(自动检测)", available: true},
+        {id: "pwsh", label: "PowerShell 7", available: !!whichWindows(req, `${pf}\\PowerShell\\7\\pwsh.exe`)},
+        {
+            id: "powershell",
+            label: "Windows PowerShell",
+            available: !!whichWindows(req, `${sysRoot()}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`),
+        },
+        {id: "cmd", label: "命令提示符", available: true},
+        {id: "bash", label: "Git Bash", available: !!findGitBash(req)},
+    ];
 }
 
 // 真 PTY 是否可用:pty-helper 就位即可(helper 跑在纯 Node 进程里,不受渲染进程限制)

@@ -61,10 +61,11 @@ export function renderHabits(ctx: ViewCtx): void {
     const list = cb.checked ? all : active;
 
     if (list.length === 0) {
-        container.innerHTML += emptyState(
+        // 不能用 innerHTML += —— 会把容器(含已绑监听的工具栏按钮)整体重新解析,按钮变死
+        container.insertAdjacentHTML("beforeend", emptyState(
             "还没有习惯",
             "习惯是每天/每周重复的事;打卡记录会累积成连续天数",
-        );
+        ));
         return;
     }
     if (archived.length && !cb.checked) {

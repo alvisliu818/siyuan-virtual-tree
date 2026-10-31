@@ -20,9 +20,11 @@ export interface IPluginForTerminalTab {
 // 终端 Tab 实例上附加的字段
 interface TerminalTabInstance {
     element: HTMLElement;
-    data: { cwd?: string };
+    data: { cwd?: string; shell?: string };
     parent?: { updateTitle?: (t: string) => void; close?: () => void; headElement?: HTMLElement };
     _cwd?: string;
+    // 本终端的 shell 覆盖("":跟随全局设置);dock 加号菜单按 shell 新建时传入
+    _shellOverride?: string;
     _term?: Terminal;
     _fit?: FitAddon;
     // 服务模式
@@ -71,11 +73,12 @@ function setStatus(self: TerminalTabInstance, status: string, text: string): voi
     }
 }
 
-// 打开终端 Tab(同工作目录去重)
-export function openTerminalTab(plugin: IPluginForTerminalTab, cwd?: string): void {
+// 打开终端 Tab(同工作目录+同 shell 去重;shellOverride 非空时本页签固定用该 shell)
+export function openTerminalTab(plugin: IPluginForTerminalTab, cwd?: string, shellOverride?: string): void {
     const targetCwd = cwd || plugin.config.fileTreeRoot || "/data";
+    const targetShell = shellOverride || "";
     const opened = plugin.getOpenedTab()[TERMINAL_TAB_TYPE] || [];
-    const existing = opened.find((c: any) => c?.data?.cwd === targetCwd);
+    const existing = opened.find((c: any) => c?.data?.cwd === targetCwd && (c?.data?.shell || "") === targetShell);
     if (existing) {
         const tab = (existing as any).parent;
         if (tab?.headElement) {
@@ -88,8 +91,8 @@ export function openTerminalTab(plugin: IPluginForTerminalTab, cwd?: string): vo
         custom: {
             id: plugin.name + TERMINAL_TAB_TYPE,
             icon: "iconTerminal",
-            title: "终端",
-            data: {cwd: targetCwd},
+            title: targetShell ? `终端 · ${targetShell}` : "终端",
+            data: {cwd: targetCwd, shell: targetShell},
         },
     } as any);
 }
@@ -101,6 +104,7 @@ export function createTerminalTabConfig(plugin: IPluginForTerminalTab) {
         init(this: TerminalTabInstance) {
             const siyuanCwd = this.data?.cwd || "/data";
             this._cwd = siyuanCwd;
+            this._shellOverride = this.data?.shell || "";
             this._disposables = [];
             this._closed = false;
             this._plugin = plugin;
@@ -330,7 +334,8 @@ function connectBuiltin(self: TerminalTabInstance, restart: boolean): void {
     }
 
     const plugin = self._plugin;
-    const shell = plugin?.config?.terminalShell || "auto";
+    // shell 优先级:本终端覆盖(dock 菜单指定)> 全局设置 > auto
+    const shell = self._shellOverride || plugin?.config?.terminalShell || "auto";
     const workspacePath = plugin?.config?.siyuanWorkspacePath || "";
     const systemCwd = toSystemPath(self._cwd || "/data", workspacePath);
     const cols = self._term?.cols || 80;
@@ -435,7 +440,7 @@ function connectServer(self: TerminalTabInstance, restart: boolean): void {
         // 发送创建会话请求(带 shell 选择)
         const cols = self._term?.cols || 80;
         const rows = self._term?.rows || 24;
-        const shell = plugin?.config?.terminalShell || "auto";
+        const shell = self._shellOverride || plugin?.config?.terminalShell || "auto";
         ws.send(JSON.stringify({type: "create", cwd: systemCwd, cols, rows, shell}));
     };
 

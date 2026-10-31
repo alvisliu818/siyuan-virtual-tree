@@ -218,8 +218,10 @@ export class LspConnection {
     }
 
     private handleMessage(msg: any): void {
-        // 1) 有 id 且有 result/error → 对我们请求的响应
-        if (msg.id !== undefined && (msg.result !== undefined || msg.error !== undefined)) {
+        // 1) id 存在且无 method → 对我们请求的响应。判定式对齐 obsidian 侧
+        //    my-code-editor 的 LspClient(实测稳定):不依赖 result/error 键存在,
+        //    部分服务端的响应帧可能缺省 result 字段。
+        if (msg.id !== undefined && !msg.method) {
             const p = this.pending.get(msg.id);
             if (!p) return;
             this.pending.delete(msg.id);
@@ -231,7 +233,7 @@ export class LspConnection {
             }
             return;
         }
-        // 2) 有 id 无 result → 服务端请求,要回响应
+        // 2) 有 id 且有 method → 服务端请求,要回响应
         if (msg.id !== undefined && msg.method) {
             const handler = this.serverRequestHandlers.get(msg.method);
             if (!handler) {

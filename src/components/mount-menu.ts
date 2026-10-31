@@ -5,7 +5,7 @@
 // 注意:本文件**不要 import ./file-tree**(它 import 了本文件,会成环);
 // 需要「挂载思源文档…」选择器的地方(mount-tree-dock)直接引 file-tree 的 pickMountTargetDialog。
 import {Menu, Dialog, showMessage} from "siyuan";
-import {addMountItem, listMountTargets, hasMounted, getRoots, refreshBlockMountImages, MountItem, MountKind} from "../mount-tree";
+import {addMountItem, listMountTargets, hasMounted, getRoots, findMountItem, refreshBlockMountImages, MountItem, MountKind} from "../mount-tree";
 import {readDir, querySQL} from "../api/file";
 import {basename, dirname, normalizePath, SIYUAN_ROOT} from "../utils/path";
 import {showOpenDialog} from "../utils/open-dialog";
@@ -142,6 +142,63 @@ export async function ensureFileMountItem(
     if (exact) return {item: exact, created: false};
     const item = await addMountItem(plugin, {kind: "file", name, path, isDir: true}, owner ? owner.uid : null);
     return item ? {item, created: true} : null;
+}
+
+// 显示父链上的一步:挂载行(uid 锚点)或文件/文件夹行(按 path ensure)
+export interface MountChainStep {
+    kind: "mount" | "file";
+    uid?: string;      // kind=mount
+    path?: string;     // kind=file
+    name: string;
+    isDir?: boolean;   // kind=file
+}
+
+export interface EnsuredMountItem {
+    item: MountItem;
+    created: boolean;
+    createdItems: MountItem[];  // 链上本次新建的所有挂载项(调用方逐个自动展开)
+}
+
+// 沿右键行的**显示父链**逐级 ensure 挂载项,返回点击行对应的挂载项。
+//
+// 与 ensureFileMountItem 的差别:那个函数"同路径挂载(任意位置)直接复用、否则挂到最近
+// 祖先挂载目录"——右键深层虚拟文件夹时,新建的挂载行会出现在祖先挂载行下,而不是用户
+// 右键的那条显示链里,用户视角就是"没有挂载到右键的文件夹里"。本函数按显示位置逐级
+// 落位:链上每个文件/文件夹行都在**当前位置** ensure(addMountItem 同父同键自动复用,
+// 同一文件夹挂在多处是设计允许的,挂载行与虚拟行本就并存不去重)。
+//
+// 链首必须是挂载行(虚拟行只出现在挂载行子层);解析失败返回 null,调用方退回旧逻辑。
+export async function ensureFileMountItemInChain(
+    plugin: any,
+    chain: MountChainStep[],
+): Promise<EnsuredMountItem | null> {
+    const top = chain[0];
+    if (!top || top.kind !== "mount" || !top.uid) return null;
+    let cur = findMountItem(top.uid);
+    if (!cur) return null;   // 锚点行刚被取消挂载
+    const createdItems: MountItem[] = [];
+    for (let i = 1; i < chain.length; i++) {
+        const step = chain[i];
+        if (step.kind === "mount") {
+            // 挂载行锚点:行已是树上的挂载项,跟随它作为下一级的父(它可能嵌在
+            // 虚拟行链中间——挂载行的子层里还能再挂别的挂载行)
+            const m = step.uid ? findMountItem(step.uid) : null;
+            if (!m) return null;
+            cur = m;
+            continue;
+        }
+        if (!step.path) return null;
+        const existed = hasMounted(cur.uid, "file", step.path);
+        const item = await addMountItem(
+            plugin,
+            {kind: "file", name: step.name, path: step.path, isDir: step.isDir !== false},
+            cur.uid,
+        );
+        if (!item) return null;
+        if (!existed && !createdItems.some(it => it.uid === item.uid)) createdItems.push(item);
+        cur = item;
+    }
+    return {item: cur, created: createdItems.length > 0, createdItems};
 }
 
 // 独立弹出挂载位置选择菜单

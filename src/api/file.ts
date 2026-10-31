@@ -305,6 +305,12 @@ export async function getBlockAttrs(id: string): Promise<Record<string, string>>
     return await postJSON<Record<string, string>>("/api/attr/getBlockAttrs", {id});
 }
 
+// 写块属性(/api/attr/setBlockAttrs)。注意 alias 为逗号分隔的多值(内核 file_test.go:
+// Alias: "Algebra,Math,Geometry"),追加别名须读旧值拼接,不能整字段覆盖。
+export async function setBlockAttrs(id: string, attrs: Record<string, string>): Promise<void> {
+    await postJSON("/api/attr/setBlockAttrs", {id, attrs});
+}
+
 // 导出文档 Markdown(/api/export/exportMdContent → {hPath, content})
 export async function exportMdContent(id: string): Promise<{hPath: string; content: string}> {
     return await postJSON<{hPath: string; content: string}>("/api/export/exportMdContent", {id});

@@ -38,6 +38,8 @@ export interface SettingDef {
     skipMonaco?: boolean;
     /** true = 字符串输入框尾部带"+"按钮,弹出系统字体列表选中追加(字体族专用) */
     fontPicker?: boolean;
+    /** true = 字符串输入框尾部带「选择」按钮,弹出本机 Python 环境列表(解释器专用) */
+    envPicker?: boolean;
     /** 插件自有设置:从配置读 */
     get?: (cfg: EditorConfig) => any;
     /** 插件自有设置:写入配置 */
@@ -56,6 +58,7 @@ const G_SCROLL = "导航窗格与滚动";
 const G_EDIT = "编辑辅助";
 const G_SUGGEST = "建议与悬停";
 const G_LOOK = "外观细节";
+const G_PYTHON = "Python";
 
 const STRATEGY = ["always", "languageDefined", "beforeWhitespace", "never"];
 const STRATEGY_LABELS: Record<string, string> = {
@@ -753,6 +756,18 @@ export const EDITOR_DEFS: SettingDef[] = [
         description: "建议/悬停等浮层不随编辑区裁剪,允许溢出到编辑器外",
         default: false,
     },
+
+    // ---- Python(代码智能) ----
+    {
+        key: "python.pythonPath",
+        kind: "string",
+        group: G_PYTHON,
+        title: "Python 解释器",
+        description: "代码智能(补全/诊断/语义着色)使用的 Python 环境,支持 conda 环境;留空 = 自动检测 PATH 上的 Python",
+        default: "",
+        placeholder: "自动检测(PATH 上的 Python)",
+        envPicker: true,
+    },
 ];
 
 // ============ 插件自有设置(settings.json 里同样可写) ============
@@ -955,10 +970,10 @@ export const PLUGIN_DEFS: SettingDef[] = [
         kind: "enum",
         group: G_TERM,
         title: "终端 Shell",
-        description: "集成终端使用的 shell,需重开终端页签后生效",
+        description: "集成终端使用的 shell,需重开终端页签后生效;Git Bash 需已安装 Git for Windows",
         default: "auto",
-        enum: ["auto", "pwsh", "powershell", "cmd"],
-        enumLabels: {auto: "自动检测", pwsh: "PowerShell 7", powershell: "Windows PowerShell", cmd: "命令提示符"},
+        enum: ["auto", "pwsh", "powershell", "cmd", "bash"],
+        enumLabels: {auto: "自动检测", pwsh: "PowerShell 7", powershell: "Windows PowerShell", cmd: "命令提示符", bash: "Git Bash"},
         get: (c) => c.terminalShell,
         set: (c, v) => { c.terminalShell = String(v || "auto"); },
     },

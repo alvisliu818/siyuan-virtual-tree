@@ -45,6 +45,7 @@ import {
 import {
     colorSwatches,
     el,
+    elHTML,
     emojiPicker,
     numberField,
     selectField,
@@ -187,12 +188,12 @@ export function openHabitDialog(plugin: IPlannerPlugin, habit?: Habit, onDone?: 
     body.appendChild(formRow("名称", textField("syfe-habit-name", h.name, "如:每天读书 30 分钟")));
     const iconRow = el("div", "syfe-pl__formctrl");
     iconRow.appendChild(hiddenValue("icon", h.icon));
-    iconRow.appendChild(el("div", "syfe-pl__gridwrap", emojiPicker(h.icon, "icon")));
+    iconRow.appendChild(elHTML("div", "syfe-pl__gridwrap", emojiPicker(h.icon, "icon")));
     body.appendChild(formRow("图标", iconRow));
 
     const colorRow = el("div", "syfe-pl__formctrl");
     colorRow.appendChild(hiddenValue("color", h.color));
-    colorRow.appendChild(el("div", "syfe-pl__gridwrap", colorSwatches(HABIT_COLORS, h.color, "color")));
+    colorRow.appendChild(elHTML("div", "syfe-pl__gridwrap", colorSwatches(HABIT_COLORS, h.color, "color")));
     body.appendChild(formRow("颜色", colorRow));
 
     const freqRow = el("div", "syfe-pl__formctrl");
@@ -329,12 +330,12 @@ export function openGoalDialog(plugin: IPlannerPlugin, goal?: Goal, onDone?: () 
 
     const iconRow = el("div", "syfe-pl__formctrl");
     iconRow.appendChild(hiddenValue("icon", g.icon));
-    iconRow.appendChild(el("div", "syfe-pl__gridwrap", emojiPicker(g.icon, "icon")));
+    iconRow.appendChild(elHTML("div", "syfe-pl__gridwrap", emojiPicker(g.icon, "icon")));
     body.appendChild(formRow("图标", iconRow));
 
     const colorRow = el("div", "syfe-pl__formctrl");
     colorRow.appendChild(hiddenValue("color", g.color));
-    colorRow.appendChild(el("div", "syfe-pl__gridwrap", colorSwatches(GOAL_COLORS, g.color, "color")));
+    colorRow.appendChild(elHTML("div", "syfe-pl__gridwrap", colorSwatches(GOAL_COLORS, g.color, "color")));
     body.appendChild(formRow("颜色", colorRow));
 
     const desc = el("textarea", "b3-text-field fn__block") as HTMLTextAreaElement;
@@ -634,12 +635,12 @@ export function openCountdownDialog(plugin: IPlannerPlugin, cd?: import("./types
 
     const iconRow = el("div", "syfe-pl__formctrl");
     iconRow.appendChild(hiddenValue("icon", c.icon));
-    iconRow.appendChild(el("div", "syfe-pl__gridwrap", emojiPicker(c.icon, "icon")));
+    iconRow.appendChild(elHTML("div", "syfe-pl__gridwrap", emojiPicker(c.icon, "icon")));
     body.appendChild(formRow("图标", iconRow));
 
     const colorRow = el("div", "syfe-pl__formctrl");
     colorRow.appendChild(hiddenValue("color", c.color));
-    colorRow.appendChild(el("div", "syfe-pl__gridwrap", colorSwatches(GOAL_COLORS, c.color, "color")));
+    colorRow.appendChild(elHTML("div", "syfe-pl__gridwrap", colorSwatches(GOAL_COLORS, c.color, "color")));
     body.appendChild(formRow("颜色", colorRow));
 
     body.appendChild(formRow("类型", selectField("syfe-cd-kind", [
@@ -722,12 +723,12 @@ export function openListDialog(plugin: IPlannerPlugin, list?: TaskList, onDone?:
 
     const iconRow = el("div", "syfe-pl__formctrl");
     iconRow.appendChild(hiddenValue("icon", l.icon));
-    iconRow.appendChild(el("div", "syfe-pl__gridwrap", emojiPicker(l.icon, "icon")));
+    iconRow.appendChild(elHTML("div", "syfe-pl__gridwrap", emojiPicker(l.icon, "icon")));
     body.appendChild(formRow("图标", iconRow));
 
     const colorRow = el("div", "syfe-pl__formctrl");
     colorRow.appendChild(hiddenValue("color", l.color));
-    colorRow.appendChild(el("div", "syfe-pl__gridwrap", colorSwatches(GOAL_COLORS, l.color, "color")));
+    colorRow.appendChild(elHTML("div", "syfe-pl__gridwrap", colorSwatches(GOAL_COLORS, l.color, "color")));
     body.appendChild(formRow("颜色", colorRow));
 
     formDialog({

@@ -36,7 +36,7 @@ import {BacklinkItem, findBacklinks, findDirBacklinks, findSiyuanRefBacklinks} f
 import {showDocMenu, showNotebookMenu, addPinFavEntries, DocMenuItem} from "../components/doc-menu";
 import {openSiyuanTagDialog} from "../components/siyuan-tag-dialog";
 import {openFileTab, syncOpenEditors} from "../tabs/editor-tab";
-import {mountPayload, promptMountPathDialog, pickBlockDialog, showMountTargetMenu, ensureTargetMountItem, ensureFileMountItem} from "../components/mount-menu";
+import {mountPayload, promptMountPathDialog, pickBlockDialog, showMountTargetMenu, ensureTargetMountItem, ensureFileMountItem, ensureFileMountItemInChain, MountChainStep} from "../components/mount-menu";
 import {
     getRoots,
     findMountItem,
@@ -1684,6 +1684,32 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 return Number.isFinite(idx) ? (self._rows![idx] || null) : null;
             };
 
+            // 右键行的**显示父链**(含点击行自身,链首=顶层挂载行):行列表是扁平数组,
+            // 父链按 depth 回溯——从点击行向上,每遇到更浅 depth 的最近一行就是该层祖先。
+            // 虚拟行不是挂载项(没有 uid),"挂到右键的文件夹里"必须沿这条链逐级落位,
+            // 见 ensureFileMountItemInChain;链首不是挂载行(关系树视图等)返回空链。
+            const chainOfRow = (el: HTMLElement | null): MountChainStep[] => {
+                if (!el) return [];
+                const idx = Number(el.dataset.idx);
+                const rows = self._rows || [];
+                const row = Number.isFinite(idx) ? rows[idx] : null;
+                if (!row) return [];
+                const chain: Row[] = [row];
+                let depth = row.depth;
+                for (let i = idx - 1; i >= 0 && depth > 0; i--) {
+                    const r = rows[i];
+                    if (!r || r.depth >= depth) continue;
+                    chain.unshift(r);
+                    depth = r.depth;
+                    if (depth === 0) break;
+                }
+                const top = chain[0];
+                if (top.kind !== "mount") return [];
+                return chain.map(r => r.kind === "mount"
+                    ? {kind: "mount" as const, uid: r.uid, name: r.item.name}
+                    : {kind: "file" as const, path: r.path, name: r.name, isDir: r.isDir});
+            };
+
             // 打开挂载项(文件→编辑器;笔记本→打开其中第一篇文档;文档/块→思源协议定位)
             // 必须传 plugin.app:openTab 在应用内直接打开;不传会走 siyuan:// 系统协议,
             // 协议未注册/唤起失败时静默失败(什么都不打开)。
@@ -1998,23 +2024,54 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                     const fPath = row.kind === "file" ? row.path : row.item.path!;
                     const fIsDir = row.kind === "file" ? row.isDir : !!row.item.isDir;
                     const rootEl = findTreeRootEl(fPath);
-                    // 文件夹行追加挂载入口(挂载思源文档/笔记本、思源块、文件/网盘到它下面):
-                    // 挂载行直接用自身 uid;子目录行先解析/补建对应挂载项(与虚拟文档行同款 ensure)。
-                    // 纯文件行不嵌套(思源文档挂不到文件下),保持原菜单。
+                    // 追加挂载入口(挂载思源文档/笔记本、思源块、文件/网盘到它下面):
+                    // 挂载行直接用自身 uid;虚拟行沿**显示父链**逐级落位(ensureFileMountItemInChain),
+                    // 文档真正落到右键的那条链里,而不是别处的同名挂载行/最近祖先。
+                    // 文件行按设置 fileMountTarget 决定落点:文件下(文件也成为挂载行)或所在文件夹下。
                     const mountUnder: DocMenuItem[] = [];
-                    if (fIsDir) {
-                        const where = `「${row.kind === "file" ? row.name : row.item.name}」下`;
-                        if (row.kind === "mount") {
-                            mountUnder.push(...mountMenuItems(row.uid, where));
-                        } else {
-                            mountUnder.push(...mountMenuItems(async () => {
-                                const r = await ensureFileMountItem(plugin, fPath, row.name);
-                                if (r?.created) {
-                                    self._expanded!.add(mountExpandKeyOf(r.item)); // 新建的挂载行自动展开
-                                }
-                                return r ? r.item.uid : null;
-                            }, where));
+                    const ensureAlongChain = async (steps: MountChainStep[], isDirRow: boolean): Promise<string | null> => {
+                        const r = steps.length ? await ensureFileMountItemInChain(plugin, steps) : null;
+                        if (r) {
+                            for (const it of r.createdItems) self._expanded!.add(mountExpandKeyOf(it)); // 新建的挂载行自动展开
+                            return r.item.uid;
                         }
+                        // 链解析失败(关系树视图等)才退回旧的"最近祖先"兜底;文件行不兜底
+                        // (ensureFileMountItem 固定按 isDir:true 建,会把文件挂成目录)
+                        if (!isDirRow) return null;
+                        const legacy = await ensureFileMountItem(plugin, fPath, row.kind === "file" ? row.name : row.item.name);
+                        if (legacy?.created) self._expanded!.add(mountExpandKeyOf(legacy.item));
+                        return legacy ? legacy.item.uid : null;
+                    };
+                    // 链在**右键时刻**捕获:新建文档对话框存续期间树可能重绘,dataset.idx
+                    // 会指错行;步进数据(路径/uid)是纯数据,捕获后与 DOM 解耦。
+                    const stepsAt = chainOfRow(el);
+                    // 统一落点解析(挂载菜单与「新建思源文档后自动挂载」共用):文件行按
+                    // 设置 fileMountTarget 决定挂文件下还是所在文件夹下;目录行挂自身。
+                    const ensureMountParentAt = async (isDirRow: boolean): Promise<string | null> => {
+                        const steps = (!isDirRow && plugin.config?.fileMountTarget === "folder")
+                            ? stepsAt.slice(0, -1)
+                            : stepsAt;
+                        return ensureAlongChain(steps, isDirRow);
+                    };
+                    // 新建文档成功后按同一落点挂载;挂到已有挂载行下时把它展开,让新文档可见
+                    const mountParentForNewDoc = row.kind === "mount"
+                        ? async () => row.uid
+                        : () => ensureMountParentAt(fIsDir);
+                    const onNewDocMounted = (parentUid: string) => {
+                        const it = findMountItem(parentUid);
+                        if (it) self._expanded!.add(mountExpandKeyOf(it));
+                    };
+                    const where = `「${row.kind === "file" ? row.name : row.item.name}」下`;
+                    if (row.kind === "mount") {
+                        mountUnder.push(...mountMenuItems(row.uid, where));
+                    } else if (fIsDir) {
+                        mountUnder.push(...mountMenuItems(async () => {
+                            return ensureMountParentAt(true);
+                        }, where));
+                    } else {
+                        mountUnder.push(...mountMenuItems(async () => {
+                            return ensureMountParentAt(false);
+                        }, where));
                     }
                     // 挂载行(而非子项行)要能取消挂载:行内 × 按钮已去掉,入口只留右键菜单
                     const fileExtra: DocMenuItem[] = row.kind === "mount"
@@ -2024,7 +2081,12 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                             click: () => unmountMountRow(row),
                         }]
                         : mountUnder;
-                    showFileTreeMenu(e, fPath, fIsDir, rootEl, rootEl?.dataset.path || "", fileTreeActions, undefined, fileExtra as any);
+                    showFileTreeMenu(e, fPath, fIsDir, rootEl, rootEl?.dataset.path || "", {
+                        ...fileTreeActions,
+                        createSiyuanDoc: (p, isDir) => {
+                            void plugin.openNewSiyuanDocDialog(p, isDir, mountParentForNewDoc, onNewDocMounted);
+                        },
+                    }, undefined, fileExtra as any);
                     return;
                 }
                 // 挂载的思源文档/笔记本 → 原生文档/笔记本菜单 + 标签/取消挂载/挂载子菜单

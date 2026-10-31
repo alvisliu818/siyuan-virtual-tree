@@ -4,7 +4,8 @@
 //   - 其余(文件夹 / 同名开关关闭)→ 留空由用户填。
 // 目标位置在设置里配置(「文件与打开」页:目标笔记本 + 子路径),对话框里只展示与填名。
 import {Dialog, showMessage} from "siyuan";
-import {createDocWithMd, lsNotebooks, querySQL} from "../api/file";
+import {createDocWithMd, lsNotebooks, querySQL, getBlockAttrs, setBlockAttrs} from "../api/file";
+import {addMountItem} from "../mount-tree";
 
 // 文件主名:去最后一个扩展名(".lock" 这类点开头隐藏文件整名保留)
 export function fileBaseName(p: string): string {
@@ -70,13 +71,56 @@ async function ensureParentChain(notebook: string, subPath: string): Promise<str
     return parentID;
 }
 
-export async function openCreateSiyuanDocDialog(plugin: any, defaultName: string): Promise<void> {
+// 来源路径 → 绝对路径:内核路径(/data/...、/conf 等)以工作空间根补全成真实文件系统
+// 绝对路径(Windows 反斜杠形态);盘符原生路径原样返回。取不到 workspaceDir 时退回原值。
+function toAbsoluteSourcePath(p: string): string {
+    const raw = String(p || "").trim();
+    if (!raw) return "";
+    if (/^[A-Za-z]:[\\/]/.test(raw)) return raw;
+    if (!raw.startsWith("/")) return raw;
+    const ws = String((window as any).siyuan?.config?.system?.workspaceDir || "").trim();
+    if (!ws) return raw;
+    const norm = (s: string) => s.replace(/[\\/]+$/, "");
+    return (norm(ws) + "/" + raw.replace(/^\/+/, "")).replace(/\//g, "\\");
+}
+
+// 把来源绝对路径追加为文档别名(alias 逗号分隔多值;已存在则不重复)。失败不抛:
+// 别名是附加信息,创建本身已成功,静默降级并返回是否写上。
+async function appendSourceAlias(docId: string, absPath: string): Promise<boolean> {
+    try {
+        const attrs = await getBlockAttrs(docId) || {};
+        const existing = String(attrs["alias"] || "");
+        const parts = existing.split(",").map(s => s.trim()).filter(Boolean);
+        if (parts.includes(absPath)) return true;
+        const merged = parts.concat(absPath).join(",");
+        await setBlockAttrs(docId, {alias: merged});
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+export async function openCreateSiyuanDocDialog(
+    plugin: any,
+    defaultName: string,
+    sourcePath?: string,
+    // 提供时,创建成功后把新文档挂载到该解析器给出的挂载项下(虚拟文档树右键场景,
+    // 落点语义与挂载菜单一致:目录行=该文件夹下,文件行=fileMountTarget 设置决定)。
+    // 解析失败/返回 null 时不挂载,创建本身不受影响。
+    mountParent?: () => Promise<string | null>,
+    // 挂载成功后回调(展开父挂载行让新文档可见;由面板注入)
+    onMounted?: (parentUid: string) => void,
+): Promise<void> {
     const target = await resolveNewDocTarget(plugin.config);
     if (!target) {
         showMessage("没有已打开的笔记本,无法新建思源文档", 3500, "error");
         return;
     }
     const locText = joinHPath(target.subPath, defaultName || "未命名文档");
+    const absPath = toAbsoluteSourcePath(sourcePath || "");
+    // 别名 = 绝对路径\文档名:文档名按路径段接在来源路径后(形如文档是它下面的文件),
+    // 路径前缀稳定可 LIKE 反查;尾部文档名区分同源多文档
+    const aliasHint = absPath ? `${absPath}\\${defaultName || "文档名"}` : "";
     const dialog = new Dialog({
         title: "新建思源文档",
         content: `
@@ -85,6 +129,7 @@ export async function openCreateSiyuanDocDialog(plugin: any, defaultName: string
                 <input class="b3-text-field fn__block" id="syfe-newdoc-name" placeholder="未命名文档" value="${defaultName.replace(/"/g, "&quot;")}" />
                 <div style="margin-top:8px;font-size:12px;opacity:.7;">创建到:${target.notebookName} ${target.subPath ? "/ " + target.subPath : ""}(目标位置可在设置 →「文件与打开」→「新建思源文档」中修改)</div>
                 <div class="syfe-newdoc__preview" style="margin-top:4px;font-size:12px;opacity:.55;">${locText}</div>
+                ${aliasHint ? `<div class="syfe-newdoc__alias" style="margin-top:4px;font-size:12px;opacity:.55;">创建后设置别名:${aliasHint.replace(/"/g, "&quot;")}</div>` : ""}
             </div>
             <div class="b3-dialog__action">
                 <button class="b3-button b3-button--cancel" id="syfe-newdoc-cancel">取消</button>
@@ -112,7 +157,27 @@ export async function openCreateSiyuanDocDialog(plugin: any, defaultName: string
                 showMessage(`创建失败:内核未返回文档 id(${hpath})`, 3500, "error");
                 return;
             }
-            showMessage(`已创建思源文档:${hpath}`, 3000, "info");
+            // 别名 = 绝对路径\文档名(文件/文件夹与思源文档的双向映射);写失败不影响创建结果
+            let aliasNote = "";
+            if (absPath) {
+                const aliasValue = absPath.replace(/[\\/]+$/, "") + "\\" + name;
+                aliasNote = (await appendSourceAlias(String(id), aliasValue)) ? ",别名=路径\\文档名" : "(别名写入失败)";
+            }
+            // 自动挂载到虚拟文档树(落点由右键行的显示父链 + 落点设置决定);失败不影响创建
+            let mountNote = "";
+            if (mountParent) {
+                try {
+                    const uid = await mountParent();
+                    if (uid) {
+                        const added = await addMountItem(plugin, {kind: "doc", name, targetId: String(id)}, uid);
+                        if (added) {
+                            mountNote = ",已挂载到虚拟文档树";
+                            onMounted?.(uid);
+                        }
+                    }
+                } catch {}
+            }
+            showMessage(`已创建思源文档:${hpath}${aliasNote}${mountNote}`, 3000, "info");
         } catch (e) {
             showMessage(`创建思源文档失败: ${e}`, 3500, "error");
         }

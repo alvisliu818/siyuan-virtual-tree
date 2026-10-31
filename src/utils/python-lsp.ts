@@ -18,6 +18,20 @@ import {
     LspSymbol, LspHover, LspSignatureHelp, LspLocation, pathToUri, uriToPath,
 } from "./lsp-client";
 import {getNativeRequire} from "./native-require";
+import {getResolved} from "../settings/user-settings";
+
+/**
+ * 设置里配置的 Python 解释器(settings.json → python.pythonPath)。
+ * 形如 D:\programs\anaconda3\envs\ai\python.exe;空串 = 未配置(自动检测)。
+ * 每次调用现读 —— 配置可能在 server 启动之后才被 initUserSettings 载入。
+ */
+function configuredPythonPath(): string {
+    try {
+        return String(getResolved("python.pythonPath") || "").trim();
+    } catch {
+        return "";
+    }
+}
 
 /** pyright 语言服务器状态 */
 export type LspStatus = "stopped" | "starting" | "ready" | "error";
@@ -144,8 +158,13 @@ export class PythonLanguageServer {
     /** 关闭时的等待者(exit / shutdown 完成后兑现) */
     private shutdownWaiters: Array<() => void> = [];
     private intentionalShutdown = false;
+    /** 本次 server 进程实际应用的解释器配置(doStart 时快照;空串 = 自动检测)。
+     *  解释器设置变更后与现值比对,不同才重启 —— settings.json 的保存广播是不分项的。 */
+    private appliedPythonPath = "";
+    /** server 重启完成(新进程已就绪并重新打开文档)后的回调 */
+    private restartedListeners = new Set<() => void>();
 
-    constructor(private readonly workspaceRoot = "") {
+    constructor(private workspaceRoot = "") {
     }
 
     get currentStatus(): LspStatus {
@@ -175,6 +194,12 @@ export class PythonLanguageServer {
     onLog(cb: LogListener): () => void {
         this.logListeners.add(cb);
         return () => this.logListeners.delete(cb);
+    }
+
+    /** 订阅 server 重启完成事件(bridge 用它让 monaco 重拉语义 token) */
+    onRestarted(cb: () => void): () => void {
+        this.restartedListeners.add(cb);
+        return () => this.restartedListeners.delete(cb);
     }
 
     private log(text: string): void {
@@ -225,8 +250,27 @@ export class PythonLanguageServer {
         // 声明的客户端能力:pyright 会按它裁剪返回内容(比如不带 insertText 的
         // 补全、没有 documentation 的 hover),字段名必须与 LSP spec 完全一致。
         const caps = JSON.parse(JSON.stringify(CLIENT_CAPABILITIES));
-        // 让 pyright 输出结构化日志到 window/logMessage
-        (caps as any).initializationOptions = {diagnosticMode: "openFilesOnly"};
+        // 让 pyright 输出结构化日志到 window/logMessage。
+        // pythonPath 必须同时进 initializationOptions:obsidian 侧 my-code-editor
+        // 的同款集成实测,initialize 时就要给;workspace/configuration 动态注入
+        // 在部分场景(首次分析/索引)不生效。
+        const pyPath = configuredPythonPath();
+        // initializationOptions 只给 pythonPath(对齐 obsidian my-code-editor 实测:
+        // diagnosticMode 在这里传会与 workspace/configuration 的 pyright 段
+        // openFilesOnly:false 互相矛盾)
+        (caps as any).initializationOptions = pyPath ? {pythonPath: pyPath} : {};
+
+        // PATH 前置选定环境的目录:pyright 内部还会按 PATH 找 python 来解析
+        // site-packages(obsidian my-code-editor 同款实测结论),渲染进程 PATH
+        // 上的可能是别的 python,必须把选定环境覆盖到最前。
+        const lspEnv: Record<string, string> = {...process.env, ELECTRON_RUN_AS_NODE: "1"};
+        if (pyPath) {
+            const req0 = getNativeRequire();
+            const pathMod = req0 ? (req0("path") as typeof import("path")) : null;
+            if (pathMod) {
+                lspEnv.PATH = pathMod.dirname(pyPath) + pathMod.delimiter + (lspEnv.PATH || "");
+            }
+        }
 
         let child: any;
         try {
@@ -238,7 +282,7 @@ export class PythonLanguageServer {
                     // ELECTRON_RUN_AS_NODE:让思源 exe 以纯 Node 模式运行。
                     // pyright 是个 Node 程序,而思源 exe 默认是 Electron,
                     // 不加这个环境变量会用 Electron 的参数解析启动、直接退出。
-                    env: {...process.env, ELECTRON_RUN_AS_NODE: "1"},
+                    env: lspEnv,
                     windowsHide: true,
                     stdio: ["pipe", "pipe", "pipe"],
                 },
@@ -266,6 +310,12 @@ export class PythonLanguageServer {
         // publishDiagnostics/workspace/configuration 全部没人接 —— 症状是
         // 补全/hover(请求-响应,不依赖这些 handlers)正常、诊断永远不来。
         this.handlersRegistered = false;
+        // 快照本次进程应用的解释器:变更检测以此为基线(而非设置注册时的值)
+        this.appliedPythonPath = configuredPythonPath();
+        // handlers 必须在 initialize **之前**挂好:pyright 握完手立刻发
+        // workspace/configuration 问 python.pythonPath,等 didOpen 再挂的话
+        // 第一轮请求已经落空(回 -32601 → 配置走默认值)。
+        this.registerHandlers();
 
         child.stdout.on("data", (chunk: Buffer) => {
             try {
@@ -277,7 +327,10 @@ export class PythonLanguageServer {
         // pyright 把诊断日志写到 stderr;只在非预期退出时打印,避免刷屏
         let stderrTail = "";
         child.stderr.on("data", (chunk: Buffer) => {
-            stderrTail = (stderrTail + chunk.toString()).slice(-2000);
+            const s = chunk.toString();
+            // 实时转发关键 stderr(排查 initialize 响应缺失时需要看 pyright 侧异常)
+            if (/error|exception|warn/i.test(s)) console.info(`[syfe-semantic][stderr] ${s.slice(0, 200)}`);
+            stderrTail = (stderrTail + s).slice(-2000);
         });
         child.on("error", (e: any) => {
             this.log(`进程错误: ${e?.message || e}`);
@@ -396,6 +449,34 @@ export class PythonLanguageServer {
         }
     }
 
+    /**
+     * 用当前配置重启(解释器设置变更后调用)。
+     *
+     * 为什么不复用 stop()+start():stop 会清空 openDocs,重启后已打开的 .py
+     * 在 server 侧变成"未登记"—— 语义 token/hover 全部失效,要等用户下一次
+     * 输入触发 didChange→didOpen 才恢复。这里先把文档清单取出来,新进程就绪后
+     * 逐个重发 didOpen,编辑器无感切换。
+     */
+    async restart(): Promise<boolean> {
+        const docs = Array.from(this.openDocs.values()).map((d) => ({...d}));
+        await this.stop();
+        const ok = await this.start();
+        if (ok) {
+            for (const d of docs) {
+                await this.didOpen(d.fsPath, d.languageId, d.text);
+            }
+            this.restartedListeners.forEach((cb) => {
+                try {
+                    cb();
+                } catch {
+                    // ignore
+                }
+            });
+            this.log(`已按解释器配置重启: ${this.appliedPythonPath || "(自动检测)"}`);
+        }
+        return ok;
+    }
+
     // ===== 文档同步 =====
 
     /**
@@ -406,19 +487,33 @@ export class PythonLanguageServer {
      */
     async didOpen(fsPath: string, languageId: string, text: string): Promise<void> {
         if (!fsPath) return;
+        // 首个打开文件的目录作为 workspace root(对齐 obsidian my-code-editor):
+        // rootUri=null 会让 pyright 用 "\<default workspace root>" 占位并刷
+        // "does not exist" 警告;指向文件目录则扫描范围小且消灭警告。
+        // (lesson 15 的定案是别指向思源工作区根 —— 文件目录不违背)
+        if (!this.workspaceRoot) {
+            const req0 = getNativeRequire();
+            const pathMod = req0 ? (req0("path") as typeof import("path")) : null;
+            if (pathMod) this.workspaceRoot = pathMod.dirname(fsPath);
+        }
         const uri = pathToUri(fsPath);
-        const existing = this.openDocs.get(uri);
+        // openDocs 的 key 一律小写:didOpen 与 semanticTokensFull/completion 等的
+        // fsPath 来自不同源头(标签页 vs 编辑器 entry),盘符大小写可能不同,
+        // 直接 has/get 会 miss → 语义 token 恒返回空(诊断是回传方向,已在
+        // 1361f1d 修过归一化;这里是出站方向,同款病)
+        const key = uri.toLowerCase();
+        const existing = this.openDocs.get(key);
         if (existing) {
             // 已打开:走 change 而不是重复 open(重复 open server 会报错)
             this.didChange(fsPath, text);
             return;
         }
         // 先登记再发 —— 这样握手失败重连后能自动重开
-        this.openDocs.set(uri, {uri, fsPath, languageId, version: 1, text});
+        this.openDocs.set(key, {uri, fsPath, languageId, version: 1, text});
         if (!this.isReady) {
             const ok = await this.start();
             if (!ok) return;
-            if (!this.openDocs.has(uri)) return; // start() 里已重开过
+            if (!this.openDocs.has(key)) return; // start() 里已重开过
         }
         const conn = this.conn;
         if (!conn) return;
@@ -435,8 +530,8 @@ export class PythonLanguageServer {
      * 全量发完全在可接受范围,省掉自己算 edit range 的一堆边界情况。
      */
     didChange(fsPath: string, text: string): void {
-        const uri = pathToUri(fsPath);
-        const doc = this.openDocs.get(uri);
+        const key = pathToUri(fsPath).toLowerCase();
+        const doc = this.openDocs.get(key);
         if (!doc) {
             // 还没 open(可能是 server 重启后 openDocs 被清空)→ 补一次 open
             void this.didOpen(fsPath, "python", text);
@@ -447,7 +542,7 @@ export class PythonLanguageServer {
         doc.version += 1;
         if (!this.isReady) return;
         this.conn?.notify("textDocument/didChange", {
-            textDocument: {uri, version: doc.version},
+            textDocument: {uri: doc.uri, version: doc.version},
             contentChanges: [{text}],  // 全量替换
         });
     }
@@ -455,14 +550,14 @@ export class PythonLanguageServer {
     didSave(fsPath: string, text: string): void {
         this.didChange(fsPath, text);
         const uri = pathToUri(fsPath);
-        if (this.isReady && this.openDocs.has(uri)) {
+        if (this.isReady && this.openDocs.has(uri.toLowerCase())) {
             this.conn?.notify("textDocument/didSave", {textDocument: {uri}});
         }
     }
 
     didClose(fsPath: string): void {
         const uri = pathToUri(fsPath);
-        this.openDocs.delete(uri);
+        this.openDocs.delete(uri.toLowerCase());
         if (this.isReady) {
             this.conn?.notify("textDocument/didClose", {textDocument: {uri}});
         }
@@ -492,10 +587,29 @@ export class PythonLanguageServer {
 
         // 服务端主动请求:必须响应,否则 pyright 一直等
         conn.onServerRequest("workspace/configuration", (params: any) => {
-            // pyright 会问 python.analysis.* 一堆配置项。全部回 null = 用默认值,
-            // 少一项它就退化成默认值,不会因为拿不到配置而报错。
+            // pyright 会问 python.* / python.analysis.* 一堆配置项。
+            // "python" 段注入用户配置的解释器(python.pythonPath),pyright 据此
+            // 去对应环境的 site-packages 找第三方库;没配置时回 null 走自动检测,
+            // 与旧行为一致。其余段(诊断模式等)全部回 null = 用默认值。
             const items = params?.items;
-            return Array.isArray(items) ? items.map(() => null) : null;
+            if (!Array.isArray(items)) return null;
+            const pyPath = configuredPythonPath();
+            return items.map((item: any) => {
+                const section = String(item?.section || "");
+                if (section === "python") {
+                    return pyPath ? {pythonPath: pyPath} : null;
+                }
+                // pyright 自己的段:openFilesOnly=false + 提取库代码类型。
+                // useLibraryCodeForTypes 是解析第三方库 API(如 langgraph 的
+                // StateGraph.add_node)语义 token 的关键 —— 缺它 pyright 对
+                // 纯 Python 库经常推不出成员类型(obsidian 侧同款实测配置)。
+                if (section === "pyright") {
+                    return pyPath
+                        ? {pythonPath: pyPath, openFilesOnly: false, useLibraryCodeForTypes: true}
+                        : null;
+                }
+                return null;
+            });
         });
         conn.onServerRequest("client/registerCapability", () => null);
         conn.onServerRequest("client/unregisterCapability", () => null);
@@ -528,7 +642,7 @@ export class PythonLanguageServer {
         const conn = this.requireConn();
         if (!conn) return null;
         const uri = pathToUri(fsPath);
-        const doc = this.openDocs.get(uri);
+        const doc = this.openDocs.get(uri.toLowerCase());
         if (!doc) return null;
         try {
             const result = await conn.request<any>("textDocument/completion", {
@@ -622,9 +736,14 @@ export class PythonLanguageServer {
      *  与 Monaco 期望的编码完全一致,bridge 层直接转 Uint32Array 即可。 */
     async semanticTokensFull(fsPath: string): Promise<number[] | null> {
         const conn = this.requireConn();
-        if (!conn || !this.semanticLegend) return null;
+        if (!conn || !this.semanticLegend) {
+            return null;
+        }
         const uri = pathToUri(fsPath);
-        if (!this.openDocs.has(uri)) return null;
+        // key 与 didOpen 同规范(小写),见 didOpen 注释
+        if (!this.openDocs.has(uri.toLowerCase())) {
+            return null;
+        }
         try {
             const res = await conn.request<{data?: number[]}>(
                 "textDocument/semanticTokens/full",
@@ -731,6 +850,26 @@ export async function stopPythonLanguageServer(): Promise<void> {
     if (!globalServer) return;
     await globalServer.stop();
     globalServer = null;
+}
+
+/**
+ * 解释器设置可能变了:与当前 server 进程实际应用的值比对,不同才重启。
+ *
+ * 以「进程已应用的值」为基线而不是"上次事件时的值",三个触发源都安全:
+ *   - 设置面板改解释器(GUI change 事件)
+ *   - settings.json 被保存(广播不分项,值没变时零开销)
+ *   - initUserSettings 晚于 server 启动(布局恢复的 .py 先开、settings.json
+ *     后读到 → 启动时 applied 为空,载入后这里补一次重启)
+ * server 尚未创建时直接返回 —— 下次 start 现读配置,天然是新值。
+ */
+export async function maybeRestartForInterpreterChange(): Promise<void> {
+    if (!globalServer) return;
+    const cur = configuredPythonPath();
+    if (cur === globalServer.appliedPythonPath) return;
+    const ok = await globalServer.restart();
+    if (!ok) {
+        console.warn("[siyuan-file-editor] 切换 Python 解释器后语言服务器重启失败");
+    }
 }
 
 /** pyright 是否可用:入口文件存在即可(不启动进程,只读文件,代价极小)。

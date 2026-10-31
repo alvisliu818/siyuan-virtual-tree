@@ -15,6 +15,15 @@ export function el<K extends keyof HTMLElementTagNameMap>(
     return node;
 }
 
+/** 与 el 相同,但第三参按 HTML 解析(用于 ringHTML/emojiPicker 这类返回 HTML 字符串的片段) */
+export function elHTML<K extends keyof HTMLElementTagNameMap>(
+    tag: K, className: string | undefined, html: string,
+): HTMLElementTagNameMap[K] {
+    const node = el(tag, className);
+    node.innerHTML = html;
+    return node;
+}
+
 /** `<input class="b3-text-field">` 助手 */
 export function textField(id: string, value = "", placeholder = ""): HTMLElement {
     const input = el("input", "b3-text-field fn__block");

@@ -132,10 +132,11 @@ export function renderTasks(ctx: ViewCtx, mode: TasksMode): void {
     container2.appendChild(quick);
 
     if (rows.length === 0) {
-        container2.innerHTML += emptyState(
+        // 同 habits:innerHTML += 会洗掉快速录入框/工具栏的监听
+        container2.insertAdjacentHTML("beforeend", emptyState(
             openCount === 0 ? "清单是空的" : "当前筛选下没有任务",
             openCount === 0 ? "" : "试试放宽筛选条件",
-        );
+        ));
         return;
     }
 
