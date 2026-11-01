@@ -209,6 +209,58 @@ const syfeCmTheme = EditorView.theme({
         backgroundColor: "var(--b3-border-color)",
         margin: "8px 0",
     },
+
+    // ===== 列表层(块内 WYSIWYM) =====
+    // 无序标记:原字符隐藏(font-size:0),用 ::before 显示圆点
+    ".syfe-cm-md-listmark-bullet": {
+        fontSize: "0",
+    },
+    ".syfe-cm-md-listmark-bullet::before": {
+        content: "'•'",
+        fontSize: "15px",
+        color: "var(--b3-theme-on-surface)",
+    },
+    // 有序标记:数字保留,样式化
+    ".syfe-cm-md-listmark-ordered": {
+        color: "var(--b3-theme-on-surface)",
+        fontVariantNumeric: "tabular-nums",
+    },
+
+    // ===== Callout(> [!type] 标题,Obsidian 同款语义) =====
+    // 行级:左侧类型色条 + 轻底色;类型色经 --syfe-co 注入
+    ".syfe-cm-callout": {
+        boxShadow: "inset 3px 0 0 var(--syfe-co, var(--b3-border-color))",
+        backgroundColor: "rgba(127, 127, 127, .06)",
+    },
+    // 标题:类型色加粗 + 前置图标
+    ".syfe-cm-callout-title": {
+        fontWeight: "600",
+        color: "var(--syfe-co, var(--b3-theme-primary))",
+    },
+    ".syfe-cm-callout-title::before": {
+        marginRight: "4px",
+    },
+    // 类型配色 + 图标(色值取自 Obsidian 默认调色板)
+    ".syfe-cm-callout-info": {"--syfe-co": "#086ddd"},
+    ".syfe-cm-callout-note": {"--syfe-co": "#086ddd"},
+    ".syfe-cm-callout-abstract": {"--syfe-co": "#00bfbc"},
+    ".syfe-cm-callout-tip": {"--syfe-co": "#00bfa5"},
+    ".syfe-cm-callout-success": {"--syfe-co": "#08b94e"},
+    ".syfe-cm-callout-question": {"--syfe-co": "#ec7500"},
+    ".syfe-cm-callout-warning": {"--syfe-co": "#e0ac00"},
+    ".syfe-cm-callout-danger": {"--syfe-co": "#e93147"},
+    ".syfe-cm-callout-example": {"--syfe-co": "#7852ee"},
+    ".syfe-cm-callout-quote": {"--syfe-co": "var(--b3-theme-on-surface)"},
+    ".syfe-cm-callout-title.syfe-cm-callout-note::before": {content: "'✏️ '"},
+    ".syfe-cm-callout-title.syfe-cm-callout-abstract::before": {content: "'📃 '"},
+    ".syfe-cm-callout-title.syfe-cm-callout-info::before": {content: "'ℹ️ '"},
+    ".syfe-cm-callout-title.syfe-cm-callout-tip::before": {content: "'🔥 '"},
+    ".syfe-cm-callout-title.syfe-cm-callout-success::before": {content: "'✅ '"},
+    ".syfe-cm-callout-title.syfe-cm-callout-question::before": {content: "'❓ '"},
+    ".syfe-cm-callout-title.syfe-cm-callout-warning::before": {content: "'⚠️ '"},
+    ".syfe-cm-callout-title.syfe-cm-callout-danger::before": {content: "'⚡ '"},
+    ".syfe-cm-callout-title.syfe-cm-callout-example::before": {content: "'📋 '"},
+    ".syfe-cm-callout-title.syfe-cm-callout-quote::before": {content: "'❝ '"},
 });
 
 // ===== 语法高亮(Markdown 结构,色值走思源变量) =====

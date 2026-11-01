@@ -378,6 +378,27 @@ const mdLinkDeco = Decoration.mark({class: "syfe-cm-md-link"});
 const mdHighlightDeco = Decoration.mark({class: "syfe-cm-md-highlight"});
 const mdInlineCodeDeco = Decoration.mark({class: "syfe-cm-md-inline-code"});
 const mdQuoteLineDeco = Decoration.line({class: "syfe-cm-md-quote-line"});
+const mdBulletMarkDeco = Decoration.mark({class: "syfe-cm-md-listmark-bullet"});
+const mdOrderedMarkDeco = Decoration.mark({class: "syfe-cm-md-listmark-ordered"});
+
+// Callout:> [!type] 标题 —— 两库都没有,按 Obsidian 语义自研(类型映射见 CSS)
+const RE_CALLOUT = /\[!(\w+)\]([+-]?)/;
+
+/** Obsidian callout 类型 → 语义类名(颜色/图标在 CSS 侧) */
+function calloutTypeClass(rawType: string): string | null {
+    const t = rawType.toLowerCase();
+    const map: Record<string, string> = {
+        note: "note", abstract: "abstract", summary: "abstract", tldr: "abstract",
+        info: "info", todo: "info",
+        tip: "tip", hint: "tip", important: "tip",
+        success: "success", check: "success", done: "success",
+        question: "question", help: "question", faq: "question",
+        warning: "warning", caution: "warning", attention: "warning",
+        danger: "danger", error: "danger", bug: "danger",
+        example: "example", quote: "quote", cite: "quote",
+    };
+    return map[t] ? `syfe-cm-callout-${map[t]}` : null;
+}
 
 interface InlineDecoSet {
     decorations: DecorationSet;
@@ -467,11 +488,43 @@ function buildInlineDecorations(state: EditorState, opts: Cm6InlineOptions): Inl
             }
 
             // --- 引用块:整段行样式 + 按行隐藏 ">"(该行有选区则还原) ---
+            // Callout(> [!type] 标题)是引用块的超集:行样式换成类型配色,
+            // 并隐藏 [!type] 标记、给标题加图标
             if (name === "Blockquote") {
                 const fromLine = doc.lineAt(node.from).number;
                 const toLine = doc.lineAt(node.to).number;
+                const firstLine = doc.lineAt(node.from);
+                const cm = RE_CALLOUT.exec(firstLine.text);
+                let coClass: string | null = null;
+                if (cm && /^[\s>]*$/.test(firstLine.text.slice(0, cm.index))) {
+                    coClass = calloutTypeClass(cm[1]);
+                }
                 for (let ln = fromLine; ln <= toLine; ln++) {
-                    deco.push(mdQuoteLineDeco.range(doc.line(ln).from));
+                    if (coClass) {
+                        deco.push(Decoration.line({
+                            class: `syfe-cm-callout ${coClass}`,
+                        }).range(doc.line(ln).from));
+                    } else {
+                        deco.push(mdQuoteLineDeco.range(doc.line(ln).from));
+                    }
+                }
+                if (coClass && cm) {
+                    // 隐藏 [!type]+/- 标记(与普通标记同款:选区触到即还原)
+                    const markFrom = firstLine.from + cm.index;
+                    const markTo = markFrom + cm[0].length;
+                    if (!selectionTouches(state, markFrom, markTo)) {
+                        hideRange(markFrom, markTo);
+                    }
+                    // 标题:标记后的非空文本加粗 + 类型图标(CSS ::before)
+                    const titleFrom = markTo;
+                    const titleText = firstLine.text.slice(cm.index + cm[0].length);
+                    const lead = titleText.length - titleText.trimStart().length;
+                    const tFrom = titleFrom + lead;
+                    if (titleText.trim() && !selectionTouches(state, tFrom, firstLine.to)) {
+                        deco.push(Decoration.mark({
+                            class: `syfe-cm-callout-title ${coClass}`,
+                        }).range(tFrom, firstLine.to));
+                    }
                 }
                 iterSubNodes(node.node, "QuoteMark", (m) => {
                     if (!selectionTouchesLine(state, m.from)) hideRange(m.from, m.to);
@@ -479,16 +532,39 @@ function buildInlineDecorations(state: EditorState, opts: Cm6InlineOptions): Inl
                 return;
             }
 
-            // --- 任务清单:真实复选框([x]/[ ] 直接改写文档) ---
+            // --- 列表标记:无序 → 隐藏原字符显示圆点;有序 → 数字样式化 ---
+            // 结构判断借鉴 PurrMD list.ts(ListMark 的父是 ListItem,祖父是
+            // BulletList/OrderedList;ListItem 的下一个子是 Task 即任务项,
+            // 任务项交给 TaskMarker 分支整体替换,这里跳过)
+            if (name === "ListMark") {
+                const listItem = node.node.parent;
+                const root = listItem && listItem.name === "ListItem" ? listItem.parent : null;
+                if (!listItem || !root) return;
+                if (selectionTouches(state, node.from, node.to)) return;
+                const after = listItem.node.firstChild === node.node ? node.node.nextSibling : null;
+                if (after && after.name === "Task") return;   // 任务项:另一分支处理
+                if (root.name === "BulletList") {
+                    // 原子化:方向键直接跳过原字符,与 Obsidian 一致
+                    push(mdBulletMarkDeco.range(node.from, node.to), true);
+                } else if (root.name === "OrderedList") {
+                    push(mdOrderedMarkDeco.range(node.from, node.to), false);
+                }
+                return;
+            }
+
+            // --- 任务清单:复选框直接替换 "- [ ]"(ListMark+空格+TaskMarker,
+            //     复选框本身就是项目符号,PurrMD list.ts 同思路) ---
             if (name === "TaskMarker") {
                 const parent = node.node.parent;
                 const item = parent && parent.name === "Task" ? parent.parent : null;
                 if (!item || item.name !== "ListItem") return;
-                if (selectionTouches(state, node.from, node.to)) return;
+                const listMark = parent!.prevSibling;
+                const from = listMark && listMark.name === "ListMark" ? listMark.from : node.from;
+                if (selectionTouches(state, from, node.to)) return;
                 const checked = doc.sliceString(node.from + 1, node.to - 1).toLowerCase() === "x";
                 const d = Decoration.replace({
                     widget: new TaskCheckboxWidget(checked, node.from),
-                }).range(node.from, node.to);
+                }).range(from, node.to);
                 push(d, true);
                 return;
             }
