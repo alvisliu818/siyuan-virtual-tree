@@ -273,13 +273,18 @@ export function cm6MarkdownRender(opts: Cm6RenderOptions): Extension {
     const renderField = StateField.define<DecorationSet>({
         create: (st) => buildDecorations(st, opts),
         update: (value, tr) => {
-            if (!tr.docChanged && !tr.selection) return value;
+            // doc/selection 变化重建;语法树异步解析完成(树实例变化)也重建,
+            // 否则大文档首次渲染时 FencedCode 装饰会缺失(PurrMD 同款坑)
+            if (!tr.docChanged && !tr.selection && syntaxTree(tr.startState) === syntaxTree(tr.state)) {
+                return value;
+            }
             return buildDecorations(tr.state, opts);
         },
         provide: (f) => [
             EditorView.decorations.from(f),
             // 块替换区域原子化:光标不会落在渲染物中间(点击进入即回源码)
-            EditorView.atomicRanges.from(f),
+            // atomicRanges 是「函数值」型 facet,须用 .of(view => ...) 供值
+            EditorView.atomicRanges.of((view) => view.state.field(f)),
         ],
     });
 

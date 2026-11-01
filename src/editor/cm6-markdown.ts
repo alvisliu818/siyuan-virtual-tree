@@ -6,9 +6,9 @@
 // 查找全部走标准机制,没有私有结构要兼容。
 //
 // 主题:全部用思源 CSS 变量(--b3-*),明暗切换零成本跟随,无需重建实例。
-// 范围(v1,刻意克制):源码编辑体验 —— 语法高亮、行号、撤销历史、查找面板、
-// 行链接/图片粘贴由宿主(md-tab)接线;不做 live preview 的块级渲染
-// (那是 Obsidian 级别的自研工作量,后续按需渐进)。
+// 范围:源码编辑体验 —— 语法高亮、行号、撤销历史、查找面板、行链接/图片粘贴
+// 由宿主(md-tab)接线;块级富渲染(代码块/图片/公式/表格)在 cm6-render.ts,
+// 行内 WYSIWYM(标记隐藏/复选框/列表延续/格式化快捷键)在 cm6-inline.ts。
 
 import {EditorState, Prec} from "@codemirror/state";
 import {
@@ -22,6 +22,7 @@ import {markdown, markdownLanguage} from "@codemirror/lang-markdown";
 import {languages} from "@codemirror/language-data";
 import {tags} from "@lezer/highlight";
 import {cm6MarkdownRender, preloadCm6Katex} from "./cm6-render";
+import {cm6InlineWysiwyg, mdParserExtensions} from "./cm6-inline";
 
 export interface Cm6MarkdownOptions {
     /** 初始内容(Markdown 全文) */
@@ -34,6 +35,8 @@ export interface Cm6MarkdownOptions {
     onCursor?(): void;
     /** Ctrl+F 打开内置查找面板(宿主查找按钮转发用) */
     onFind?(): void;
+    /** Ctrl/Cmd+点击渲染态链接时打开(宿主可接 shell.openExternal;缺省 window.open) */
+    onOpenLink?(url: string): void;
     /**
      * 图片地址解析:相对路径 → blob URL 等;返回 null 表示无法加载(渲染占位失败态)。
      * 不传则图片语法只保留源码高亮。
@@ -164,6 +167,48 @@ const syfeCmTheme = EditorView.theme({
         backgroundColor: "var(--b3-theme-surface)",
         fontWeight: "600",
     },
+
+    // ===== 行内 WYSIWYM(cm6-inline.ts 的装饰,配色全走思源变量) =====
+    // 渲染态链接:主色 + 可点击提示(plain 点击落光标还原源码,Ctrl/Cmd+点击打开)
+    ".syfe-cm-md-link": {
+        color: "var(--b3-theme-primary)",
+        cursor: "pointer",
+        textDecoration: "none",
+    },
+    // 行内码:代码字体 + 底色圆角
+    ".syfe-cm-md-inline-code": {
+        fontFamily: "var(--b3-font-family-code, monospace)",
+        fontSize: ".9em",
+        backgroundColor: "var(--b3-theme-surface)",
+        borderRadius: "3px",
+        padding: "1px 4px",
+    },
+    // ==高亮==:淡主色底
+    ".syfe-cm-md-highlight": {
+        backgroundColor: "var(--b3-theme-primary-lightest, rgba(255, 213, 0, .35))",
+        borderRadius: "2px",
+    },
+    // 引用块:行级左侧竖条 + 缩进
+    ".syfe-cm-md-quote-line": {
+        boxShadow: "inset 3px 0 0 var(--b3-border-color)",
+        opacity: ".88",
+    },
+    // 任务清单复选框
+    ".syfe-cm-md-checkbox": {
+        accentColor: "var(--b3-theme-primary)",
+        verticalAlign: "middle",
+        margin: "0 4px 0 0",
+        cursor: "pointer",
+    },
+    // 分隔线 --- 渲染成横线
+    ".syfe-cm-md-hr": {
+        display: "inline-block",
+        width: "100%",
+        height: "1px",
+        verticalAlign: "middle",
+        backgroundColor: "var(--b3-border-color)",
+        margin: "8px 0",
+    },
 });
 
 // ===== 语法高亮(Markdown 结构,色值走思源变量) =====
@@ -207,8 +252,9 @@ export function createCm6MarkdownEditor(
             syntaxHighlighting(syfeMdHighlight, {fallback: true}),
             search({top: true}),
             highlightSelectionMatches(),
-            markdown({base: markdownLanguage, codeLanguages: languages}),
+            markdown({base: markdownLanguage, codeLanguages: languages, extensions: mdParserExtensions}),
             cm6MarkdownRender({resolveImageSrc: opts.resolveImageSrc}),
+            cm6InlineWysiwyg({onOpenLink: opts.onOpenLink}),
             EditorView.lineWrapping,
             syfeCmTheme,
             // Ctrl/Cmd+S:默认键位不含保存,最高优先级拦给宿主
