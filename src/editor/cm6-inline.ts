@@ -554,8 +554,8 @@ function buildInlineDecorations(state: EditorState, opts: Cm6InlineOptions): Inl
                 const listItem = node.node.parent;
                 const root = listItem && listItem.name === "ListItem" ? listItem.parent : null;
                 if (!listItem || !root) return;
-                // 圆点装饰性显示:光标碰边缘不还原,只有选区圈住才露出原字符(Obsidian 同)
-                if (cursorRevealsInline(state, node.from, node.to)) return;
+                // 圆点:点到圆点/行首附近露出原字符可编辑,行内其他位置不触发
+                if (selectionTouches(state, node.from, node.to)) return;
                 const after = listItem.node.firstChild === node.node ? node.node.nextSibling : null;
                 if (after && after.name === "Task") return;   // 任务项:另一分支处理
                 if (root.name === "BulletList") {
@@ -575,8 +575,9 @@ function buildInlineDecorations(state: EditorState, opts: Cm6InlineOptions): Inl
                 if (!item || item.name !== "ListItem") return;
                 const listMark = parent!.prevSibling;
                 const from = listMark && listMark.name === "ListMark" ? listMark.from : node.from;
-                // 复选框点击即勾选,不因光标贴近而露出源码;选区圈住才还原
-                if (cursorRevealsInline(state, from, node.to)) return;
+                // 复选框:点击复选框本体即勾选(widget 自行处理);点到其附近/
+                // 行首露出原字符可编辑,行内其他位置不触发
+                if (selectionTouches(state, from, node.to)) return;
                 const checked = doc.sliceString(node.from + 1, node.to - 1).toLowerCase() === "x";
                 const d = Decoration.replace({
                     widget: new TaskCheckboxWidget(checked, node.from),
