@@ -116,22 +116,12 @@ interface BaseRange {
 const rangeTouchesRange = (a: BaseRange, b: BaseRange): boolean =>
     a.from <= b.to && b.from <= a.to;
 
-/** 选区(光标)触到 [from,to] 即还原源码;失焦时一律视为未触到(重新隐藏) */
+/** 选区(光标)触到 [from,to] 即还原源码;失焦时一律视为未触到(重新隐藏)。
+ *  与 ProseMark/PurrMD/Obsidian 对齐:节点外缘(紧贴标记左右一格)也算"在内",
+ *  光标停在格式文本旁源码即显示;离开节点才隐藏。 */
 const selectionTouches = (state: EditorState, from: number, to: number): boolean => {
     if (!hasFocus(state)) return false;
     return state.selection.ranges.some((r) => rangeTouchesRange({from, to}, r));
-};
-
-/**
- * 行内节点的揭示规则(Obsidian 同款):空选区须**严格落在节点内部**才还原源码,
- * 光标在节点外缘(紧邻格式文本左右/行尾空白)不再触发;非空选区跨到节点仍还原。
- * 副作用约束:方向键从外部进入格式文本时,原子跳变落在内容起点(内部)→ 正常揭示;
- * 从内部退出则落在外缘 → 立即隐藏,符合进出直觉。
- */
-const cursorRevealsInline = (state: EditorState, from: number, to: number): boolean => {
-    if (!hasFocus(state)) return false;
-    return state.selection.ranges.some((r) =>
-        r.empty ? (from < r.from && r.to < to) : rangeTouchesRange({from, to}, r));
 };
 
 /** 选区是否覆盖 [from,to] 所在的行(引用块 > 标记按行还原用) */
@@ -441,7 +431,7 @@ function buildInlineDecorations(state: EditorState, opts: Cm6InlineOptions): Inl
             // --- 加粗 / 斜体 / 删除线 / 高亮:隐藏两侧标记 ---
             if (name === "StrongEmphasis" || name === "Emphasis" ||
                 name === "Strikethrough" || name === "Highlight") {
-                if (cursorRevealsInline(state, node.from, node.to)) return;
+                if (selectionTouches(state, node.from, node.to)) return;
                 const markName = name === "Strikethrough"
                     ? "StrikethroughMark"
                     : name === "Highlight" ? "HighlightMark" : "EmphasisMark";
@@ -453,7 +443,7 @@ function buildInlineDecorations(state: EditorState, opts: Cm6InlineOptions): Inl
             // --- 行内码:底色样式 + 隐藏反引号(围栏代码块内不处理) ---
             if (name === "InlineCode") {
                 if (isInsideFencedCode(state, node.from)) return;
-                if (!cursorRevealsInline(state, node.from, node.to)) {
+                if (!selectionTouches(state, node.from, node.to)) {
                     iterSubNodes(node.node, "CodeMark", (m) => hideRange(m.from, m.to));
                 }
                 push(mdInlineCodeDeco.range(node.from, node.to), false);
@@ -464,7 +454,7 @@ function buildInlineDecorations(state: EditorState, opts: Cm6InlineOptions): Inl
             if (name.startsWith("ATXHeading")) {
                 const header = node.node.firstChild;
                 if (!header || header.name !== "HeaderMark") return;
-                if (cursorRevealsInline(state, node.from, node.to)) return;
+                if (selectionTouches(state, node.from, node.to)) return;
                 hideRange(header.from, Math.min(header.to + 1, node.to));
                 return;
             }
@@ -485,7 +475,7 @@ function buildInlineDecorations(state: EditorState, opts: Cm6InlineOptions): Inl
             // ProseMark 的修正:URL 只在 "]" 之后隐藏,否则
             // [http://…](http://…) 这类纯地址链接会被整个吞掉
             if (name === "Link" || name === "Image") {
-                const reveal = cursorRevealsInline(state, node.from, node.to);
+                const reveal = selectionTouches(state, node.from, node.to);
                 let pastLabel = false;
                 for (let child = node.node.firstChild; child; child = child.nextSibling) {
                     if (child.name === "LinkMark") {
