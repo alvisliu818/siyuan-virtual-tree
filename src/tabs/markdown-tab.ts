@@ -50,7 +50,7 @@ export interface IPluginForMarkdownTab {
 }
 
 // Tab 实例上附加的字段
-interface MarkdownTabInstance {
+export interface MarkdownTabInstance {
     element: HTMLElement;
     data: { path?: string; mode?: MarkdownMode };
     parent?: { updateTitle?: (t: string) => void; close?: () => void; headElement?: HTMLElement };
@@ -91,6 +91,8 @@ interface MarkdownTabInstance {
     _clipboard?: MdClipboardHandle;
     // 外部(媒体页签 Shift+K 打时间戳)把 Markdown 片段插入光标处
     _insertMarkdown?: (md: string) => boolean;
+    // 配置加载完成后按当前配置重进当前模式(布局恢复时序补偿;引擎没挂错是 no-op)
+    _resyncEngineForConfig?: () => void;
 }
 
 // Vditor 静态资源目录(webpack 已复制 vditor/dist 到插件目录)
@@ -1231,6 +1233,24 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                     const ref = consumePendingRef(path);
                     if (ref) applyFileRef(self, ref);
                 }, 300);
+            };
+
+            // 配置就位后的引擎重进(布局恢复时序补偿,由 index.ts onLayoutReady 调用):
+            // 布局恢复的页签创建于 onLayoutReady loadConfig 之前,挂引擎时 mdEditorKind()
+            // 读到的是 DEFAULT_CONFIG(vditor),设置 cm6 的用户恢复出来的 live/reading
+            // 页签会挂错引擎。这里按当前配置重进当前模式 —— 挂对的页签是 no-op。
+            self._resyncEngineForConfig = () => {
+                if (self._mode === "source" || !self._model) return;   // 源码态引擎无关;模型未载完时初始进入会按新配置挂
+                if (!self._cm6 && !self._vditor) return;               // 编辑面还没挂出来:同上,交给初始进入
+                const kind = mdEditorKind();
+                if (self._mode === "live") {
+                    if (kind === "cm6" && !self._cm6) enterLive();
+                    else if (kind === "vditor" && !self._vditor) enterLive();
+                } else if (self._mode === "reading") {
+                    // vditor 阅读态挂 _vditor(wysiwyg);cm6 阅读态走 Vditor.preview(两者皆无)
+                    if (kind === "cm6" && self._vditor) enterReading();
+                    else if (kind === "vditor" && !self._vditor) enterReading();
+                }
             };
 
             // 实时预览(类 Obsidian Live Preview):引擎按设置选择

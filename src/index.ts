@@ -3,6 +3,7 @@ import {
     WORKSPACE_ROOT,
     DEFAULT_TERMINAL_SERVER_URL,
     DOCK_TYPE,
+    MARKDOWN_TAB_TYPE,
     RECENT_DOCK_TYPE,
     TAG_DOCK_TYPE,
     MOUNT_TREE_DOCK_TYPE,
@@ -14,7 +15,7 @@ import {disposeAll} from "./editor/model-manager";
 import {createEditorTabConfig, openFileTab} from "./tabs/editor-tab";
 import {createImageTabConfig, openImageTab} from "./tabs/image-tab";
 import {createOfficeTabConfig, openOfficeTab} from "./tabs/office-tab";
-import {createMarkdownTabConfig, openMarkdownTab, MarkdownMode} from "./tabs/markdown-tab";
+import {createMarkdownTabConfig, openMarkdownTab, MarkdownMode, MarkdownTabInstance} from "./tabs/markdown-tab";
 import {createMediaTabConfig, openMediaTab} from "./tabs/media-tab";
 import {createNotebookTabConfig} from "./tabs/notebook-tab";
 import {createDiffTabConfig} from "./tabs/diff-tab";
@@ -541,6 +542,18 @@ export default class FileEditorPlugin extends Plugin {
             registerSettingsJsonSchema();
         } catch (e) {
             console.error("[siyuan-file-editor] 加载 settings.json 失败:", e);
+        }
+        // 布局恢复的 Markdown 页签创建于上面的 loadConfig 之前:挂引擎时读到的还是
+        // DEFAULT_CONFIG(vditor),设置 cm6 的用户恢复出来的 live/reading 页签会挂错
+        // 引擎(实测:重启后 live 页签全变 vditor)。现在配置与 settings.json 都已就位,
+        // 统一重进一遍 —— 引擎挂对的页签是 no-op。
+        const mdTabs = ((this.getOpenedTab?.() ?? {})[MARKDOWN_TAB_TYPE] || []) as unknown as MarkdownTabInstance[];
+        for (const mdInst of mdTabs) {
+            try {
+                mdInst._resyncEngineForConfig?.();
+            } catch {
+                // 单页签重进失败不影响其余页签
+            }
         }
         // 顶栏「扩展市场」图标显隐跟随配置(默认显示,配置为 false 时在此收起)
         this.applyMarketTopBarIcon();
