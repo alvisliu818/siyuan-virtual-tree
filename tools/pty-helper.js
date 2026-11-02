@@ -93,6 +93,67 @@ function resolveShell(shell) {
     const ps51 = `${sysRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`;
     const pwsh7 = `${pf}\\PowerShell\\7\\pwsh.exe`;
 
+    // Git Bash 三级探测(与插件 builtin-terminal.ts、scripts/terminal-server.js 保持一致):
+    //   1) 注册表 GitForWindows\InstallPath(官方安装器写入,覆盖自定义目录)
+    //   2) 标准安装位置(ProgramFiles 64/32位、用户级 LocalAppData)
+    //   3) PATH 扫描(排除 System32/WindowsApps —— 那两处的 bash.exe 是 WSL 存根)
+    // 找的是 bin\bash.exe,不是 git-bash.exe(那是 mintty 启动器,不能当 PTY shell)
+    const lad = process.env.LocalAppData || "";
+    const findGitBash = () => {
+        const exists2 = (f) => {
+            try {
+                return fs.existsSync(f) && fs.statSync(f).isFile();
+            } catch {
+                return false;
+            }
+        };
+        // 注册表
+        const regKeys = [
+            "HKLM\\SOFTWARE\\GitForWindows",
+            "HKLM\\SOFTWARE\\WOW6432Node\\GitForWindows",
+            "HKCU\\SOFTWARE\\GitForWindows",
+        ];
+        for (const k of regKeys) {
+            try {
+                const out = require("child_process").execSync(`reg query "${k}" /v InstallPath`, {
+                    stdio: ["ignore", "pipe", "ignore"],
+                    timeout: 3000,
+                    windowsHide: true,
+                }).toString();
+                const m = out.match(/InstallPath\s+REG_SZ\s+(.+)/i);
+                if (m) {
+                    const p = path.join(m[1].trim(), "bin", "bash.exe");
+                    if (exists2(p)) return p;
+                }
+            } catch {
+                // 键不存在,试下一个
+            }
+        }
+        // 标准位置
+        const candidates = [
+            path.join(pf, "Git", "bin", "bash.exe"),
+            path.join(process.env.ProgramW6432 || pf, "Git", "bin", "bash.exe"),
+            path.join(process.env["ProgramFiles(x86)"] || pf, "Git", "bin", "bash.exe"),
+        ];
+        if (lad) candidates.push(path.join(lad, "Programs", "Git", "bin", "bash.exe"));
+        for (const c of candidates) {
+            if (exists2(c)) return c;
+        }
+        // PATH 扫描:条目可能是 bash 所在目录(...\Git\bin)或 Git 根目录,两种形态都试;
+        // 排除 system32/windowsapps(WSL 存根)与 \vendor\(应用内嵌的 PortableGit)
+        const pathEnv = process.env.PATH || process.env.Path || "";
+        for (const dir of pathEnv.split(";")) {
+            if (!dir) continue;
+            const low = dir.toLowerCase();
+            if (low.includes("system32") || low.includes("windowsapps") || low.includes("\\vendor\\")) continue;
+            for (const rel of ["bash.exe", "bin\\bash.exe", "usr\\bin\\bash.exe"]) {
+                const p = path.join(dir, rel);
+                if (exists2(p)) return p;
+            }
+        }
+        return null;
+    };
+
     if (!lower || lower === "auto") {
         if (exists(pwsh7)) return {file: pwsh7, args: ["-NoLogo", "-NoExit"]};
         if (exists(ps51)) return {file: ps51, args: ["-NoLogo", "-NoExit"]};
@@ -111,6 +172,18 @@ function resolveShell(shell) {
         return exists(pwsh7)
             ? {file: pwsh7, args: ["-NoLogo", "-NoExit"]}
             : {file: ps51, args: ["-NoLogo", "-NoExit"]};
+    }
+    if (lower === "bash" || lower === "bash.exe" || lower === "git-bash" || lower === "gitbash") {
+        const bash = findGitBash();
+        if (bash) {
+            return {
+                file: bash,
+                // --login 加载 /etc/profile(PATH 注入 git/mingw64 工具链),-i 强制交互
+                args: ["--login", "-i"],
+            };
+        }
+        // 未装 Git for Windows:落 cmd 兜底(与插件侧行为一致)
+        return {file: process.env.ComSpec || `${sysRoot}\\System32\\cmd.exe`, args: ["/Q", "/K"]};
     }
     return {file: shell, args: []};
 }
