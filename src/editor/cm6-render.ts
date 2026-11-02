@@ -1,7 +1,9 @@
 // CM6 Markdown 富渲染扩展:在源码态编辑器里做「轻 live」渲染。
 //
 // 范围(与 cm6-markdown.ts 的语法高亮互补):
-//  - 围栏代码块:整块行底色 + 左侧色条(语言高亮由 lang-markdown 的 codeLanguages 提供)
+//  - 围栏代码块:整块行底色 + 首尾行圆角 + 首行「语言标签/复制按钮」widget
+//    (代码保持可编辑源码,语言高亮由 lang-markdown 的 codeLanguages 提供;
+//    交互模型参考 ProseMark codeFenceExtension / PurrMD codeBlock)
 //  - 图片:整行就是一张图片语法 ![alt](src) 或 <img src="..."> 时,替换为真实 <img>
 //    (光标落在该行时还原源码,方便编辑;地址经宿主 resolveImageSrc → blob URL)
 //  - 公式:$$...$$ 块用 KaTeX 渲染(资源来自 vditor 自带的 katex,懒加载),
@@ -66,6 +68,118 @@ function loadKatex(): Promise<any> {
 
 // ===== Widgets =====
 
+/** 复制代码的兼容实现:Clipboard API 被拒(Electron WebView 常见)时退回 execCommand(PurrMD 同款兜底) */
+async function copyTextCompat(text: string): Promise<void> {
+    if (window.navigator.clipboard) {
+        try {
+            await window.navigator.clipboard.writeText(text);
+            return;
+        } catch {
+            // 继续 execCommand 兜底
+        }
+    }
+    const selection = window.getSelection();
+    if (!selection) throw new Error("selection unavailable");
+    // 本模块已从 @codemirror/state 导入 Range(遮蔽 DOM 同名类型),用 ReturnType 指代 DOM Range
+    const prev: Array<ReturnType<Selection["getRangeAt"]>> = [];
+    for (let i = 0; i < selection.rangeCount; i++) prev.push(selection.getRangeAt(i).cloneRange());
+    const holder = document.createElement("span");
+    holder.textContent = text;
+    holder.style.cssText = "position:fixed;left:-10000px;top:0;opacity:0;white-space:pre;user-select:text;";
+    document.body.appendChild(holder);
+    const range = document.createRange();
+    range.selectNodeContents(holder);
+    let copied = false;
+    try {
+        selection.removeAllRanges();
+        selection.addRange(range);
+        copied = document.execCommand("copy");
+    } finally {
+        selection.removeAllRanges();
+        holder.remove();
+        for (const r of prev) selection.addRange(r);
+    }
+    if (!copied) throw new Error("copy failed");
+}
+
+/**
+ * 围栏代码块首行的「语言标签 + 复制按钮」(ProseMark CodeBlockInfoWidget / PurrMD 同款交互)。
+ * 代码本体保持源码可编辑,widget 只悬浮在首行右端;点击整块区域即复制。
+ */
+class CodeBlockInfoWidget extends WidgetType {
+    private copiedTimer: number | undefined;
+
+    constructor(readonly lang: string, readonly code: string) {
+        super();
+    }
+
+    eq(other: CodeBlockInfoWidget): boolean {
+        return other.lang === this.lang && other.code === this.code;
+    }
+
+    private renderLabel(dom: HTMLElement, copied: boolean): void {
+        dom.replaceChildren();
+        if (copied) {
+            const ok = document.createElement("span");
+            ok.className = "syfe-cm-codeblock-info__copied";
+            ok.textContent = "已复制";
+            dom.appendChild(ok);
+        }
+        if (this.lang) dom.appendChild(document.createTextNode(this.lang));
+    }
+
+    toDOM(): HTMLElement {
+        const dom = document.createElement("div");
+        dom.className = "syfe-cm-codeblock-info";
+        dom.setAttribute("contenteditable", "false");
+        this.renderLabel(dom, false);
+
+        const btn = document.createElement("button");
+        btn.className = "syfe-cm-codeblock-info__copy";
+        btn.title = "复制代码";
+        btn.innerHTML =
+            '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"' +
+            ' fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+            '<rect width="14" height="14" x="8" y="8" rx="2" ry="2"/>' +
+            '<path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>';
+        dom.appendChild(btn);
+
+        // 抢在 CM 之前消费鼠标事件:点 widget 不移动光标、不触发移动端键盘
+        dom.onmousedown = (e) => {
+            e.stopPropagation();
+            e.preventDefault();
+        };
+        dom.onclick = (e) => {
+            e.stopPropagation();
+            e.preventDefault();
+            void copyTextCompat(this.code)
+                .then(() => {
+                    if (!dom.isConnected) return;
+                    dom.classList.add("is-copied");
+                    this.renderLabel(dom, true);
+                    if (this.copiedTimer) window.clearTimeout(this.copiedTimer);
+                    this.copiedTimer = window.setTimeout(() => {
+                        this.copiedTimer = undefined;
+                        if (!dom.isConnected) return;
+                        dom.classList.remove("is-copied");
+                        this.renderLabel(dom, false);
+                    }, 1600);
+                })
+                .catch(() => undefined);
+        };
+        return dom;
+    }
+
+    destroy(): void {
+        if (this.copiedTimer) window.clearTimeout(this.copiedTimer);
+        this.copiedTimer = undefined;
+    }
+
+    ignoreEvent(): boolean {
+        return false;
+    }
+}
+
 /** 行内图片:整行图片语法 → <img>(async 解析 blob URL) */
 class ImageWidget extends WidgetType {
     constructor(readonly src: string, readonly alt: string, readonly opts: Cm6RenderOptions) {
@@ -111,7 +225,9 @@ class ImageWidget extends WidgetType {
     }
 }
 
-/** 公式块:KaTeX display 渲染;失败回退为等宽样式 */
+/** 公式块:KaTeX display 渲染;失败回退为等宽样式并给出错误提示 */
+const mathWidgetObservers = new WeakMap<HTMLElement, ResizeObserver>();
+
 class MathWidget extends WidgetType {
     constructor(readonly tex: string, readonly katex: any) {
         super();
@@ -121,9 +237,18 @@ class MathWidget extends WidgetType {
         return other.tex === this.tex;
     }
 
-    toDOM(): HTMLElement {
+    toDOM(view: EditorView): HTMLElement {
         const wrap = document.createElement("div");
         wrap.className = "syfe-cm-math";
+        // KaTeX 异步渲染完成会改变块高,主动通知 CM 重新测量(ProseMark 同款;
+        // 否则长公式首屏可能出现滚动/光标定位偏差)
+        let ro: ResizeObserver | undefined;
+        if (typeof ResizeObserver !== "undefined") {
+            ro = new ResizeObserver(() => view.requestMeasure());
+            ro.observe(wrap);
+            mathWidgetObservers.set(wrap, ro);
+        }
+        const requestRelayout = () => view.requestMeasure();
         const tryRender = (katex: any) => {
             try {
                 const holder = document.createElement("div");
@@ -132,10 +257,13 @@ class MathWidget extends WidgetType {
                 wrap.appendChild(holder);
                 wrap.classList.remove("is-error");
                 wrap.classList.add("is-rendered");
+                requestRelayout();
                 return true;
-            } catch {
+            } catch (err) {
                 wrap.textContent = this.tex;
                 wrap.classList.add("is-error");
+                wrap.setAttribute("title", err instanceof Error ? err.message : String(err));
+                requestRelayout();
                 return false;
             }
         };
@@ -151,6 +279,11 @@ class MathWidget extends WidgetType {
             });
         }
         return wrap;
+    }
+
+    destroy(dom: HTMLElement): void {
+        mathWidgetObservers.get(dom)?.disconnect();
+        mathWidgetObservers.delete(dom);
     }
 
     ignoreEvent(): boolean {
@@ -250,14 +383,32 @@ const RE_IMG_TAG_LINE = /^\s*<img\b[^>]*\bsrc\s*=\s*("([^"]*)"|'([^']*)')[^>]*>\
 const RE_TABLE_ROW = /^\s{0,3}\|.*\|\s*$/;
 const RE_TABLE_SEP = /^\s{0,3}\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|?\s*$/;
 
-/** 收集围栏代码块的行区间(借 lang-markdown 的语法树,FencedCode 节点) */
-function fencedCodeRanges(state: EditorState): Array<{from: number; to: number}> {
-    const out: Array<{from: number; to: number}> = [];
+/** 围栏代码块信息(借 lang-markdown 的语法树,FencedCode 节点) */
+interface FencedCodeInfo {
+    from: number;
+    to: number;
+    /** CodeInfo 节点文本(``` 后的语言名) */
+    lang: string;
+    /** 围栏之间的代码内容(复制按钮用) */
+    code: string;
+}
+
+function fencedCodeInfos(state: EditorState): FencedCodeInfo[] {
+    const doc = state.doc;
+    const out: FencedCodeInfo[] = [];
     syntaxTree(state).iterate({
         enter: (node) => {
-            if (node.name === "FencedCode") {
-                out.push({from: node.from, to: node.to});
-            }
+            if (node.name !== "FencedCode") return;
+            const infoNode = node.node.getChild("CodeInfo");
+            const lang = infoNode ? doc.sliceString(infoNode.from, infoNode.to).trim() : "";
+            const first = doc.lineAt(node.from);
+            const last = doc.lineAt(Math.max(node.from, node.to - 1));
+            // 最后一行是闭合围栏(``` / ~~~)时,代码内容 = 首尾围栏行之间
+            const lastIsFence = last.number > first.number && /^\s*(`{3,}|~{3,})\s*$/.test(last.text);
+            const contentFrom = first.to + 1;
+            const contentTo = lastIsFence ? doc.line(last.number - 1).to : last.to;
+            const code = contentTo >= contentFrom ? doc.sliceString(contentFrom, contentTo) : "";
+            out.push({from: node.from, to: node.to, lang, code});
         },
     });
     return out;
@@ -266,6 +417,11 @@ function fencedCodeRanges(state: EditorState): Array<{from: number; to: number}>
 // ===== 主插件 =====
 
 const codeLineDeco = Decoration.line({class: "syfe-cm-codeblock-line"});
+const codeLineFirstDeco = Decoration.line({class: "syfe-cm-codeblock-line syfe-cm-codeblock-first"});
+const codeLineLastDeco = Decoration.line({class: "syfe-cm-codeblock-line syfe-cm-codeblock-last"});
+const codeLineOnlyDeco = Decoration.line({
+    class: "syfe-cm-codeblock-line syfe-cm-codeblock-first syfe-cm-codeblock-last",
+});
 const tableSrcLineDeco = Decoration.line({class: "syfe-cm-tablesrc-line"});
 const mathSrcLineDeco = Decoration.line({class: "syfe-cm-mathsrc-line"});
 
@@ -325,15 +481,23 @@ function buildDecorations(state: EditorState, opts: Cm6RenderOptions): Decoratio
             const overlapsUsed = (from: number, to: number) => usedRanges.some(r => from < r.to && to > r.from);
             const cursorInRange = (from: number, to: number) => cursor >= from && cursor <= to;
 
-            // 1) 围栏代码块行底色
-            for (const range of fencedCodeRanges(state)) {
-                const first = doc.lineAt(range.from).number;
-                const last = doc.lineAt(range.to).number;
+            // 1) 围栏代码块:行底色(首尾行圆角)+ 首行「语言/复制」widget
+            for (const info of fencedCodeInfos(state)) {
+                const first = doc.lineAt(info.from).number;
+                const last = doc.lineAt(Math.max(info.from, info.to - 1)).number;
                 for (let ln = first; ln <= last; ln++) {
-                    lineDecos.push(codeLineDeco.range(doc.line(ln).from));
+                    const deco =
+                        ln === first
+                            ? (ln === last ? codeLineOnlyDeco : codeLineFirstDeco)
+                            : (ln === last ? codeLineLastDeco : codeLineDeco);
+                    lineDecos.push(deco.range(doc.line(ln).from));
                 }
-                void range;
-                usedRanges.push(range);
+                // 语言标签 + 复制按钮悬浮在首行右端;代码保持可编辑源码,不参与 atomicRanges
+                lineDecos.push(
+                    Decoration.widget({widget: new CodeBlockInfoWidget(info.lang, info.code)})
+                        .range(doc.line(first).from),
+                );
+                usedRanges.push({from: info.from, to: info.to});
             }
 
             // 2) 数学块 $$...$$(光标在块内时只加底色,便于编辑)

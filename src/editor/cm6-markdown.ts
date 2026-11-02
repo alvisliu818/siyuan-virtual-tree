@@ -109,6 +109,54 @@ const syfeCmTheme = EditorView.theme({
     ".syfe-cm-codeblock-line": {
         backgroundColor: "var(--b3-theme-surface)",
         boxShadow: "inset 2px 0 0 var(--b3-theme-primary-lighter, var(--b3-border-color))",
+        fontVariantLigatures: "none",
+    },
+    // 首尾行圆角(ProseMark/PurrMD 同款视觉)
+    ".syfe-cm-codeblock-first": {
+        borderTopLeftRadius: "6px",
+        borderTopRightRadius: "6px",
+    },
+    ".syfe-cm-codeblock-last": {
+        borderBottomLeftRadius: "6px",
+        borderBottomRightRadius: "6px",
+    },
+    // 活动行不高亮出代码块底色之外
+    ".cm-activeLine.syfe-cm-codeblock-line": {
+        backgroundColor: "var(--b3-theme-surface)",
+    },
+    // 首行「语言标签 + 复制按钮」(点击整块区域即复制,光标不动)
+    ".syfe-cm-codeblock-info": {
+        float: "right",
+        display: "flex",
+        alignItems: "center",
+        gap: "4px",
+        padding: "0 4px",
+        fontSize: "12px",
+        color: "var(--b3-theme-on-surface)",
+        opacity: ".75",
+        cursor: "pointer",
+        userSelect: "none",
+    },
+    ".syfe-cm-codeblock-info:hover": {
+        opacity: "1",
+    },
+    ".syfe-cm-codeblock-info__copy": {
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        border: "none",
+        padding: "2px",
+        borderRadius: "3px",
+        cursor: "pointer",
+        backgroundColor: "transparent",
+        color: "var(--b3-theme-on-surface)",
+    },
+    ".syfe-cm-codeblock-info__copy:hover": {
+        backgroundColor: "var(--b3-list-hover, rgba(127,127,127,.15))",
+    },
+    ".syfe-cm-codeblock-info__copied": {
+        color: "var(--b3-theme-primary)",
+        fontWeight: "600",
     },
     ".syfe-cm-tablesrc-line": {backgroundColor: "var(--b3-theme-surface)"},
     ".syfe-cm-mathsrc-line": {backgroundColor: "var(--b3-theme-surface)"},
