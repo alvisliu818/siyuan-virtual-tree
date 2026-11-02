@@ -168,7 +168,7 @@ class CodeBlockWidget extends WidgetType {
         const head = document.createElement("div");
         head.className = "syfe-cm-codeblock-head";
         const lang = document.createElement("span");
-        lang.className = "syfe-cm-codeblock-lang";
+        lang.className = "syfe-cm-codeblock-lang" + (this.lang ? "" : " is-empty");
         lang.textContent = this.lang || "text";
         head.appendChild(lang);
         const btn = document.createElement("button");

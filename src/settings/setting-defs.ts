@@ -36,6 +36,11 @@ export interface SettingDef {
     monacoKey?: string;
     /** true = 不写入 Monaco(本项目自己实现的编辑器行为) */
     skipMonaco?: boolean;
+    /** true = 块内代码卡片的 Monaco 单例锁死此键(行号/换行/括号色等与阅读态
+     *  对齐的形态键):applyEditorOptions 刷新所有编辑器时,块内单例跳过这些键 ——
+     *  否则全局默认值(如 editor.lineNumbers 默认 on)会覆盖 create 时传的块内
+     *  形态,卡片编辑态与阅读态不一致(my-logseq 同款「锁死键不在覆盖表」设计) */
+    blockLocked?: boolean;
     /** true = 字符串输入框尾部带"+"按钮,弹出系统字体列表选中追加(字体族专用) */
     fontPicker?: boolean;
     /** true = 字符串输入框尾部带「选择」按钮,弹出本机 Python 环境列表(解释器专用) */
@@ -79,6 +84,7 @@ export const EDITOR_DEFS: SettingDef[] = [
         default: 14,
         min: 8,
         max: 32,
+        blockLocked: true,
     },
     {
         key: "editor.fontFamily",
@@ -89,6 +95,7 @@ export const EDITOR_DEFS: SettingDef[] = [
         default: "",
         placeholder: "Consolas, 'Courier New', monospace",
         fontPicker: true,
+        blockLocked: true,
     },
     {
         key: "editor.fontLigatures",
@@ -107,6 +114,7 @@ export const EDITOR_DEFS: SettingDef[] = [
         default: 0,
         min: 0,
         max: 64,
+        blockLocked: true,
     },
     {
         key: "editor.letterSpacing",
@@ -131,6 +139,7 @@ export const EDITOR_DEFS: SettingDef[] = [
         enumLabels: {off: "关闭", on: "按视口宽度", column: "按指定列", bounded: "取较小值(bounded)"},
         // VS Code 用 "column",Monaco 用 "wordWrapColumn"
         toMonaco: (v) => (v === "column" ? "wordWrapColumn" : v),
+        blockLocked: true,
     },
     {
         key: "editor.wordWrapColumn",
@@ -317,6 +326,7 @@ export const EDITOR_DEFS: SettingDef[] = [
         default: "on",
         enum: ["on", "off", "relative", "interval"],
         enumLabels: {on: "显示", off: "隐藏", relative: "相对行号", interval: "每隔 10 行"},
+        blockLocked: true,
     },
     {
         key: "editor.guides.indentation",
@@ -355,6 +365,7 @@ export const EDITOR_DEFS: SettingDef[] = [
         title: "括号对着色",
         description: "给配对的括号按层级上色",
         default: true,
+        blockLocked: true,
     },
     {
         key: "editor.matchBrackets",
@@ -395,6 +406,7 @@ export const EDITOR_DEFS: SettingDef[] = [
         title: "代码折叠",
         description: "启用代码块的折叠/展开",
         default: true,
+        blockLocked: true,
     },
     {
         key: "editor.showFoldingControls",
@@ -543,6 +555,7 @@ export const EDITOR_DEFS: SettingDef[] = [
         default: 14,
         min: 8,
         max: 30,
+        blockLocked: true,
     },
     {
         key: "editor.scrollbar.useShadows",

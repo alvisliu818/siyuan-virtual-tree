@@ -526,8 +526,13 @@ async function restyleReadingCodeBlocks(host: HTMLElement): Promise<void> {
             code.style.lineHeight = "1.6";
             code.style.fontVariantLigatures = "none";
             code.style.tabSize = "4";
+            // 不折行(lgp 同款 Logseq parity):长行横向滚;滚动容器是 PRE
+            // (code 是行内元素,overflow 不生效),条带常驻与代码卡片编辑态等高
+            code.style.whiteSpace = "pre";
             if (code.parentElement && code.parentElement.tagName === "PRE") {
                 code.parentElement.style.backgroundColor = bg;
+                code.parentElement.style.overflowX = "scroll";
+                code.parentElement.style.overflowY = "hidden";
             }
         } catch {
             // 单块失败保留 hljs 原样

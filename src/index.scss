@@ -5223,3 +5223,47 @@ button.syfe-editor__arrow--exp:hover {
     color: var(--b3-theme-on-surface);
     opacity: 0.7;
 }
+
+/* ===== 代码块卡片内 Monaco(cm6-markdown 编辑态,样式对齐 my-logseq) ===== */
+.syfe-cm-codeblock {
+    .monaco-editor,
+    .monaco-editor-background,
+    .monaco-editor .margin {
+        // Monaco 主题的 editor.background 是全局的(--b3-theme-background,
+        // 代码文件在用);卡片内按容器覆盖成 surface —— 与阅读态(colorize
+        // 卡片正文)同底,编辑态打开不再"盒子换了色"。
+        background: var(--b3-theme-surface) !important;
+    }
+
+    .monaco-editor {
+        // 顶部无需圆角(工具栏在上方),底部圆角与正文一致
+        border-radius: 0 0 var(--b3-border-radius, 6px) var(--b3-border-radius, 6px) !important;
+        overflow: hidden;
+    }
+
+    // 滚动条细条半透明(悬停恢复):monaco.css 异步注入且排在后面,
+    // 特异性相同的规则会被它盖回去,这里用 :has 锚点抬高特异性
+    .monaco-scrollable-element > .scrollbar > .slider {
+        border-radius: 4px;
+        opacity: 0.45;
+    }
+
+    .monaco-scrollable-element > .scrollbar:hover > .slider,
+    .monaco-scrollable-element > .scrollbar > .slider.active {
+        opacity: 1;
+    }
+}
+
+/* 阅读态横向条带定高(与编辑态 Monaco 横条 10px 等高) */
+.syfe-cm-codeblock-body::-webkit-scrollbar {
+    height: 10px;
+}
+
+.syfe-cm-codeblock-body::-webkit-scrollbar-thumb {
+    background: var(--b3-border-color);
+    border-radius: 5px;
+}
+
+.syfe-cm-codeblock-body::-webkit-scrollbar-track {
+    background: transparent;
+}

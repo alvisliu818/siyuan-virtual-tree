@@ -25,6 +25,9 @@ import {
     setNested,
 } from "./setting-defs";
 
+/** 带 blockLocked 的定义类型(运行时探测,不强转) */
+type BlockLockableDef = SettingDef & {blockLocked?: boolean};
+
 /** 存储文件名(插件存储目录内) */
 export const SETTINGS_FILE = "settings.json";
 
@@ -341,10 +344,14 @@ function isSameValue(a: unknown, b: unknown): boolean {
 
 // ---------- 应用到编辑器 ----------
 
-/** 把 editor.* 的生效值转成 Monaco 的编辑器选项(嵌套对象) */
-export function buildEditorOptions(): Record<string, any> {
+/** 把 editor.* 的生效值转成 Monaco 的编辑器选项(嵌套对象)。
+ *  scope="block":跳过 blockLocked 键 —— 块内代码卡片的单例锁死行号/换行/
+ *  折叠/括号色等形态键(与阅读态 colorize 对齐),全局刷新不得穿透。
+ */
+export function buildEditorOptions(scope?: "block"): Record<string, any> {
     const out: Record<string, any> = {};
     for (const d of EDITOR_DEFS) {
+        if (scope === "block" && (d as BlockLockableDef).blockLocked) continue;
         const dotted = monacoKeyOf(d);
         if (!dotted) continue;
         const value = getResolved(d.key);
@@ -354,11 +361,26 @@ export function buildEditorOptions(): Record<string, any> {
     return out;
 }
 
-/** 对当前所有打开的编辑器立即生效(含 notebook 单元格等 monaco 实例) */
+/** 判定编辑器是否块内代码卡片单例(domNode 挂在 __syfeMonacoBlock 注册表下) */
+function isBlockSingletonEditor(ed: monaco.editor.IStandaloneCodeEditor): boolean {
+    try {
+        const G = (window as any).__syfeMonacoBlock;
+        const dom = (ed as any).getDomNode?.() ?? null;
+        return !!(G?.domNode && dom && G.domNode.contains(dom));
+    } catch {
+        return false;
+    }
+}
+/** 对当前所有打开的编辑器立即生效(含 notebook 单元格等 monaco 实例;
+ *  块内代码卡片单例用锁定作用域,形态键不被全局默认值穿透) */
 export function applyEditorOptions(): void {
     try {
         const opts = buildEditorOptions();
-        monaco.editor.getEditors().forEach(ed => ed.updateOptions(opts as any));
+        const blockOpts = buildEditorOptions("block");
+        monaco.editor.getEditors().forEach(ed => {
+            const o = isBlockSingletonEditor(ed as monaco.editor.IStandaloneCodeEditor) ? blockOpts : opts;
+            ed.updateOptions(o as any);
+        });
     } catch (e) {
         console.warn("[siyuan-file-editor] 应用编辑器设置失败:", e);
     }

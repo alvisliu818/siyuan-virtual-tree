@@ -106,40 +106,38 @@ const syfeCmTheme = EditorView.theme({
     ".cm-searchMatch-selected": {backgroundColor: "var(--b3-theme-primary-lighter, rgba(53,118,144,.45))"},
 
     // ===== 富渲染(cm6-render.ts 的装饰与 widget) =====
-    ".syfe-cm-codeblock-editorhost": {display: "none"},
-    ".syfe-cm-codeblock-body.is-editing .syfe-cm-codeblock-colorize": {display: "none"},
-    ".syfe-cm-codeblock-body.is-editing .syfe-cm-codeblock-editorhost": {display: "block", padding: "4px 8px", minHeight: "21px"},
+    // ===== 代码块卡片:样式对齐 my-logseq .lgp-code-block(2026-11-02) =====
+    // 结构同款:顶部工具栏(1px 边框、无下边、上圆角)+ 正文(无边框、下圆角、
+    // surface 底)—— 工具栏框住上沿,正文以底色为界,卡片本身不画框。
+    // 正文不折行(Logseq parity)+ 常驻 10px 横向条带;编辑态 Monaco 横条同为
+    // 10px(monaco-block.ts),两态任何情况下等高。
     ".syfe-cm-codeblock": {
-        margin: "6px 0",
-        border: "1px solid var(--b3-border-color)",
-        borderRadius: "6px",
-        backgroundColor: "var(--b3-theme-surface)",
-        overflow: "hidden",
+        margin: "4px 0",
     },
     ".syfe-cm-codeblock-head": {
         display: "flex",
         alignItems: "center",
-        justifyContent: "space-between",
-        padding: "3px 10px",
-        borderBottom: "1px solid var(--b3-border-color)",
+        justifyContent: "flex-end",
+        gap: "2px",
+        boxSizing: "border-box",
+        height: "22px",
+        padding: "0 6px",
         fontSize: "12px",
-        color: "var(--b3-theme-on-surface)",
+        color: "var(--b3-theme-on-surface-light, var(--b3-theme-on-surface))",
+        background: "var(--b3-theme-surface)",
+        border: "1px solid var(--b3-border-color)",
+        borderBottom: "none",
+        borderRadius: "var(--b3-border-radius, 6px) var(--b3-border-radius, 6px) 0 0",
         userSelect: "none",
     },
-    ".syfe-cm-codeblock-body": {
-        margin: "0",
-        padding: "8px 12px",
-        overflowX: "auto",
-        fontFamily: "var(--b3-font-family-code, monospace)",
-        fontSize: "13px",
-        lineHeight: "1.6",
-        fontVariantLigatures: "none",
-        whiteSpace: "pre-wrap",
-        overflowWrap: "anywhere",
-        tabSize: 4,
-    },
     ".syfe-cm-codeblock-lang": {
-        opacity: ".75",
+        marginRight: "auto",        // 语言居左、按钮组贴右;只留这一个 auto
+        textTransform: "lowercase",
+        cursor: "default",
+    },
+    ".syfe-cm-codeblock-lang.is-empty": {
+        opacity: ".55",             // 无语言围栏:读作「未设置」而非叫 text 的语言
+        fontStyle: "italic",
     },
     ".syfe-cm-codeblock-copy": {
         display: "flex",
@@ -147,19 +145,50 @@ const syfeCmTheme = EditorView.theme({
         justifyContent: "center",
         border: "none",
         padding: "2px",
-        borderRadius: "3px",
+        borderRadius: "4px",
         cursor: "pointer",
         backgroundColor: "transparent",
-        color: "var(--b3-theme-on-surface)",
+        color: "inherit",
+        opacity: ".65",
         fontSize: "12px",
     },
     ".syfe-cm-codeblock-copy:hover": {
+        opacity: "1",
         backgroundColor: "var(--b3-list-hover, rgba(127,127,127,.15))",
     },
     ".syfe-cm-codeblock-copy.is-copied": {
         color: "var(--b3-theme-primary)",
         fontWeight: "600",
+        opacity: "1",
     },
+    ".syfe-cm-codeblock-body": {
+        margin: "0",
+        padding: "8px 0.9em",      // 固定 px:与编辑态(padding 8×2 + 横条 10)逐像素等高
+        overflowX: "scroll",        // scroll 非 auto:条带常驻,短块也留 10px 底带
+        overflowY: "hidden",
+        whiteSpace: "pre",          // 不折行(Logseq parity),长行横向滚
+        backgroundColor: "var(--b3-theme-surface)",
+        borderRadius: "0 0 var(--b3-border-radius, 6px) var(--b3-border-radius, 6px)",
+        fontFamily: "var(--b3-font-family-code, monospace)",
+        fontSize: "13px",
+        lineHeight: "21px",         // 与编辑态 monaco lineHeight 21 严格一致
+        fontVariantLigatures: "none",
+        tabSize: 4,
+    },
+    // 编辑态:body 不再当滚动容器(条带由 Monaco 横条提供),内边距清零 ——
+    // 水平 0.9em 挂在 editorhost 上(左与阅读态对齐;右 0,滚动条贴右缘,
+    // 与工具条右缘对齐 —— 右内边距会把滚动条右侧挤出一条空白,lgp 同款论证)
+    ".syfe-cm-codeblock-body.is-editing": {
+        padding: "0",
+        overflow: "hidden",
+    },
+    ".syfe-cm-codeblock-body.is-editing .syfe-cm-codeblock-colorize": {display: "none"},
+    ".syfe-cm-codeblock-body.is-editing .syfe-cm-codeblock-editorhost": {
+        display: "block",
+        padding: "0 0 0 0.9em",
+        minHeight: "21px",
+    },
+    ".syfe-cm-codeblock-editorhost": {display: "none"},
     ".syfe-cm-tablesrc-line": {backgroundColor: "var(--b3-theme-surface)"},
     ".syfe-cm-mathsrc-line": {backgroundColor: "var(--b3-theme-surface)"},
     ".syfe-cm-img": {

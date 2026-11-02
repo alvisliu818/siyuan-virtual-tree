@@ -13,8 +13,9 @@
 //   2. 挂载/重绑绝不能在 widget.toDOM 里做 —— CM6 重建/测量会克隆、销毁 widget
 //      DOM;编辑器只能由 ViewPlugin 在**真实视图 DOM**上挂载(cm6-render 的
 //      editMounter),toDOM 永远只渲染壳。
-//   3. monaco 0.50 运行时 getDomNode() 返回 undefined(类型却声明存在),自抓
-//      .monaco-editor 根节点搬运 DOM。
+//   3. monaco 0.50 运行时 getDomNode() 返回 undefined(类型却声明存在):
+//      create 挂在随行 root 上,S.domNode = root 本体(.monaco-editor 是其子节点,
+//      随行搬运);同时 automaticLayout 观察的就是 root —— 搬到哪量到哪。
 import * as monaco from "monaco-editor";
 
 interface BlockState {
@@ -39,6 +40,8 @@ interface BlockState {
     relayoutListener: monaco.IDisposable | null;
     blockModel: monaco.editor.ITextModel | null;
     colorizeCache: Map<string, Promise<string>>;
+    settleTimer: number | null;
+    hostObserver: {ro: ResizeObserver; poll: number; startedAt: number; lastW: number} | null;
 }
 
 export interface BlockEditorHandle {
@@ -65,36 +68,57 @@ const S: BlockState = G.__syfeMonacoBlock || (G.__syfeMonacoBlock = {
     relayoutListener: null,
     blockModel: null,
     colorizeCache: new Map<string, Promise<string>>(),
+    settleTimer: null,
+    hostObserver: null,
 });
 
-// 懒建全局单例(隐藏 stash 容器;编辑态把它 mount 进代码块,离开后归还 stash)。
+// 懒建全局单例(隐藏 stash 容器;编辑态把**随行 root** mount 进代码块,离开后归还 stash)。
 // 首次创建同时把当前主题的主题 CSS 注册进文档(colorize 产物的 mtk* 类才有着色)。
+// ⚠ 不用 automaticLayout(关掉):monaco 自带的 ElementSizeObserver 在搬运窗口
+//   (CM6 重建 → root 瞬时 0 宽/脱离文档)会把 0/2^24 脏值烙进 lines-content 内联
+//   宽且不再自愈(0→0 恒稳 RO 不触发;实测反复复根)。改自管 ResizeObserver 观察
+//   host(见 startHostObserver),发现尺寸变化就双维齐传 layout() 钉回正确值。
 function ensureEditor(): monaco.editor.IStandaloneCodeEditor {
     if (S.editor) return S.editor;
     S.stash = document.createElement("div");
     S.stash.style.cssText = "position:fixed;left:-99999px;top:0;width:600px;height:200px;overflow:hidden;";
     document.body.appendChild(S.stash);
+    const root = document.createElement("div");
+    root.style.cssText = "width:100%;";
+    S.stash.appendChild(root);
     // 注意不能传 theme:构造时的 theme 参数会全局覆盖 setTheme,导致扩展主题失效
     // (与 monaco.ts createEditor 同款坑)。省略即跟随全局当前主题。
-    // 字号/字体/换行与卡片正文一致,行高 21 ≈ 13px × 1.6
-    S.editor = monaco.editor.create(S.stash, {
+    // 字号/字体/行高与卡片正文一致(21px);其余与 my-logseq 块内形态同套:
+    // 无行号、折叠槽清零、无 minimap、不折行(Logseq parity:长行横向滚)、
+    // 关括号彩虹(阅读态 colorize 产物没有括号彩色,编辑态开着会跳色)、
+    // 横向滚动条 10px = 阅读态常驻条带高度 —— 两态任何情况下等高。
+    S.editor = monaco.editor.create(root, {
         value: "",
-        automaticLayout: true,
-        lineNumbers: "on",
+        automaticLayout: false,
+        lineNumbers: "off",
+        lineDecorationsWidth: 0,
         folding: false,
         renderLineHighlight: "none",
         scrollBeyondLastLine: false,
-        wordWrap: "on",
+        scrollBeyondLastColumn: 0,
+        wordWrap: "off",
+        bracketPairColorization: {enabled: false},
+        overviewRulerLanes: 0,
+        hideCursorInOverviewRuler: true,
         minimap: {enabled: false},
-        scrollbar: {vertical: "hidden", horizontal: "hidden", alwaysConsumeMouseWheel: false},
+        scrollbar: {
+            vertical: "hidden",
+            horizontal: "auto",            // 需要时出现,落在 10px 条带里(与阅读态条带等高)
+            horizontalScrollbarSize: 10,
+            alwaysConsumeMouseWheel: false,
+        },
+        padding: {top: 8, bottom: 8},
         fontSize: 13,
         lineHeight: 21,
         fontFamily: "var(--b3-font-family-code, monospace)",
     });
-    S.domNode = (S.stash.querySelector(":scope > .monaco-editor") as HTMLElement | null);
-    if (!S.domNode) {
-        console.error("[monaco-block] create: .monaco-editor 根节点未找到");
-    }
+    // 搬运的就是 root 本体(.monaco-editor 是它的子节点,随行)
+    S.domNode = root;
     return S.editor;
 }
 
@@ -248,10 +272,102 @@ function unbindBlockListeners(): void {
     setActiveBlock(null);
 }
 
-// 高度自适应内容(行数 × 行高),宽随容器;内容变化时也要重算
-function relayoutTo(container: HTMLElement, ed: monaco.editor.IStandaloneCodeEditor): void {
+// 高度自适应内容:行数×行高 + 上下 padding(8×2)+ 横条带 10 —— 与阅读态
+// (padding 8×2 + ::-webkit-scrollbar 高 10)逐像素等高。
+// ⚠ 绝不调 ed.layout(dimension):automaticLayout 模式下 layout() 是「钉成固定尺寸」,
+//   部分维度({height})会把 width 钉成 0px 内联,ResizeObserver 从此看不到变化(0→0)
+//   永久卡死(实测坐实:meInline width:0px、手动 layout({width,height}) 双维齐传才活)。
+//   只写容器 CSS(width:100% 由 ensureEditor 设好,height 在这里显式写),me 作为
+//   100% 子元素跟随,RO 全程接管 —— my-logseq 同款(updateHeight 只写 root 高度)。
+const BLOCK_LINE_HEIGHT = 21;
+const BLOCK_V_PAD = 16;
+const BLOCK_HSCROLL_STRIP = 10;
+function relayoutTo(_container: HTMLElement, ed: monaco.editor.IStandaloneCodeEditor): void {
     const lines = ed.getModel()?.getLineCount() ?? 1;
-    ed.layout({width: container.clientWidth || 600, height: Math.min(lines * 21 + 6, 800)});
+    const h = lines * BLOCK_LINE_HEIGHT + BLOCK_V_PAD + BLOCK_HSCROLL_STRIP;
+    if (S.domNode) S.domNode.style.height = `${h}px`;
+}
+
+// 挂载后自愈守卫(替换 monaco 自带 automaticLayout):
+// 双通道—— ① ResizeObserver 观察 host(root 的宿主),尺寸变化即双维齐传
+// layout() 钉回正确值;② setInterval 巡检 2.2s,兜住 RO 不报的脏内联宽
+// (lines-content 被焙进 2^24)与 cm6 重建窗口的漏网案例。
+// 实测依据:partial-dim layout({height}) 会把 width 钉成 0px;双维齐传
+// layout({width,height}) 一次救活(width-fix 实验);自动 RO 在搬运窗口
+// 会把 0/2^24 焙死不再自愈。
+interface HostObserver {
+    ro: ResizeObserver;
+    poll: number;
+    startedAt: number;
+    lastW: number;
+}
+
+function stopHostObserver(): void {
+    const h = S.hostObserver as HostObserver | null;
+    if (!h) return;
+    S.hostObserver = null;
+    try { h.ro.disconnect(); } catch { /* 忽略 */ }
+    window.clearInterval(h.poll);
+}
+
+function startHostObserver(container: HTMLElement): void {
+    stopHostObserver();
+    const applyLayout = () => {
+        if (!S.editor || !S.domNode || !S.domNode.isConnected) return;
+        const w = S.domNode.clientWidth;
+        const lines = S.editor.getModel()?.getLineCount() ?? 1;
+        const h = lines * BLOCK_LINE_HEIGHT + BLOCK_V_PAD + BLOCK_HSCROLL_STRIP;
+        // 双维齐传:部分维度会把另一维钉成 0(实测);宽 <50 视为重建窗口中的
+        // 无布局态,跳过等下一拍
+        if (w > 50) S.editor.layout({width: w, height: h});
+    };
+    const ro = new ResizeObserver(() => {
+        if (!S.hostObserver) return;
+        // rAF 延一拍:host 尺寸刚变时 clientWidth 可能还是旧值
+        requestAnimationFrame(applyLayout);
+    });
+    ro.observe(container);
+    const h: HostObserver = {ro, poll: 0, startedAt: Date.now(), lastW: 0};
+    // 巡检通道:每 150ms 共 2.2s,覆盖重建窗口+脏值写入窗口;
+    // 终点后停止(用户交互路径由 RO 接管)
+    h.poll = window.setInterval(() => {
+        const elapsed = Date.now() - h.startedAt;
+        if (elapsed > 2200 || !S.domNode || !S.domNode.isConnected) {
+            stopHostObserver();
+            return;
+        }
+        applyLayout();
+        // 脏内联尺寸巡检:lines-content 的内联 width/height 被焙进 2^24 脏值
+        // (0 宽窗口遗留)或被清空后 monaco 布局缓存认为「没变」不再重写 → 0×0
+        // 合成层被 Chromium 光栅化跳过 = 空白盒子。两种坏态都直接写成
+        // layoutInfo 的正确值(monaco 自己会写的同一对值)。链路有
+        // overflow-guard 中间层,必须用后代选择器(直子女链匹配不上空转)
+        if (S.domNode && S.editor) {
+            const vs = S.domNode.querySelector(".monaco-editor .monaco-scrollable-element > .lines-content") as HTMLElement | null;
+            const w = S.domNode.clientWidth;
+            if (vs && w > 50) {
+                const li = S.editor.getLayoutInfo();
+                const vsW = parseFloat(vs.style.width) || 0;
+                const vsH = parseFloat(vs.style.height) || 0;
+                const badW = vsW > w * 4 + 200 || vsW === 0;
+                const badH = vsH > 100000 || vsH === 0;
+                if (badW || badH) {
+                    vs.style.width = `${li.contentWidth}px`;
+                    vs.style.height = `${S.editor.getContentHeight()}px`;
+                }
+            }
+            if (w > 50) {
+                const lines = S.editor.getModel()?.getLineCount() ?? 1;
+                S.editor.layout({
+                    width: w,
+                    height: lines * BLOCK_LINE_HEIGHT + BLOCK_V_PAD + BLOCK_HSCROLL_STRIP,
+                });
+            }
+        }
+    }, 150);
+    S.hostObserver = h;
+    // 首拍立即铺一次(不等 RO)
+    applyLayout();
 }
 
 // 把单例编辑器挂进卡片正文:换 model、搬 DOM、监听内容/Esc/点击外部
@@ -267,6 +383,7 @@ export function mountBlockEditor(o: MountBlockOptions): void {
     S.mountedLanguage = o.language;
     S.domNode && o.container.appendChild(S.domNode);
     bindBlockListeners(o, ed);
+    startHostObserver(o.container);
     // 点击卡片外 → 退出编辑态。不能只靠 blur:点击目标(如正文行)可能不抢焦点,
     // monaco 根本没失焦过;捕获阶段拦,卡片内/编辑器内点击不算外部
     S.outsideListener = (e: MouseEvent) => {
@@ -297,6 +414,7 @@ export function remountBlockEditor(o: MountBlockOptions): void {
     S.mountedContainer = o.container;
     S.domNode && o.container.appendChild(S.domNode);
     bindBlockListeners(o, ed);
+    startHostObserver(o.container);
     relayoutTo(o.container, ed);
 }
 
@@ -306,6 +424,7 @@ export function unmountBlockEditor(): void {
         document.removeEventListener("mousedown", S.outsideListener, true);
         S.outsideListener = null;
     }
+    stopHostObserver();
     S.contentListener?.dispose();
     S.contentListener = null;
     S.keyListener?.dispose();
