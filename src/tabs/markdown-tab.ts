@@ -30,7 +30,7 @@ import {installMarkdownClipboard, getVditorLute, type MdClipboardHandle} from ".
 import {createCm6MarkdownEditor, type Cm6MarkdownHandle} from "../editor/cm6-markdown";
 // vditor 与思源共用 window.Lute,且 vditor 那份缺 SetTabs —— 详见 utils/lute-guard 的说明
 import {ensureSiyuanLute} from "../utils/lute-guard";
-import {tmHighlightToHtml} from "../editor/tm-highlight";
+import {colorizeCached, flushActiveBlock, onMonacoThemeChanged, setEditingKey, unmountBlockEditor} from "../editor/monaco-block";
 
 // Markdown 编辑 Tab:对齐 Obsidian 的三态编辑器
 // - live    实时预览:Vditor ir(即时渲染),光标所在行显示源码、其余实时渲染,可编辑
@@ -94,6 +94,8 @@ export interface MarkdownTabInstance {
     _insertMarkdown?: (md: string) => boolean;
     // 配置加载完成后按当前配置重进当前模式(布局恢复时序补偿;引擎没挂错是 no-op)
     _resyncEngineForConfig?: () => void;
+    // Monaco 主题切换订阅(cm6 阅读态重取色);卸载时 dispose
+    _monacoThemeOff?: {dispose(): void};
 }
 
 // Vditor 静态资源目录(webpack 已复制 vditor/dist 到插件目录)
@@ -491,10 +493,10 @@ function applyFileRef(tab: MarkdownTabInstance, ref: FileRef): void {
     tryAt(8);
 }
 
-// 阅读态(cm6 引擎)代码块高亮对齐:Vditor.preview 默认走 hljs,与编辑态/代码卡片的
-// TextMate 主题色不是一套 —— 预览完成后把 hljs 产物替换成 tm-highlight 的内联色 HTML。
+// 阅读态(cm6 引擎)代码块高亮对齐:Vditor.preview 默认走 hljs,与 Monaco 代码文件
+// 渲染不是一套 —— 预览完成后把 hljs 产物替换成 monaco.editor.colorize 的同主题 HTML。
 // 语言不支持的块保留 hljs;幂等(处理后打 data 标记,after 回调与兑底定时器重复触发跳过)。
-// 明暗切换由主题观察器清标记后重跑本函数(tm-highlight 缓存键含主题签名,自动换配色)。
+// 明暗切换由主题观察器清标记后重跑本函数(colorize 缓存键含主题签名,自动换配色)。
 async function restyleReadingCodeBlocks(host: HTMLElement): Promise<void> {
     // 等 hljs 着色完成(一次性等任意块出现 hljs 类;hljs 懒加载通常几百 ms,3 秒兑底);
     // 若在我们的替换之后才跑会把着色打回去,这个等待 + dataset.highlighted 标记双保险
@@ -509,12 +511,11 @@ async function restyleReadingCodeBlocks(host: HTMLElement): Promise<void> {
         const text = code.textContent ?? "";
         if (!text) continue;
         try {
-            const res = await tmHighlightToHtml(m ? m[1] : "", text);
-            if (!res) continue;   // 语言不支持 → 保留 hljs
+            const html = await colorizeCached(m ? m[1] : "", text);
             code.dataset.syfeTm = "1";
             code.dataset.highlighted = "yes";   // hljs v11 见此标记跳过,防晚到重写
             code.classList.add("syfe-tm-code");
-            code.innerHTML = res.html;
+            code.innerHTML = html;
             // 背景与默认文字色对齐代码卡片(hljs 主题自带配色与 TextMate 色板不搭);
             // 彩色 token 由内联 style 覆盖,无色 token 走 inherit 与正文一致
             const bg = "var(--b3-theme-surface)";
@@ -825,6 +826,7 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
             // 把 live 态当前编辑面(Vditor 走 lute 序列化 + blob 还原;CM6 直取文档)同步回 model
             const syncLiveToModel = (): void => {
                 if (self._mode !== "live" || !self._model) return;
+                flushActiveBlock();   // 编辑态代码块的最新内容先同步回 cm6 文档
                 if (self._cm6) {
                     self._model.setValue(self._cm6.getValue());
                 } else if (self._vditor) {
@@ -859,6 +861,8 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                 if (self._saving) return;
                 self._saving = true;
                 try {
+                    // 编辑态代码块的最新内容还在内嵌 Monaco 里,先同步回 cm6 文档
+                    flushActiveBlock();
                     // live 模式先把编辑面内容同步回 model;source 模式 Monaco 直接改
                     // model、reading 模式不可编辑,都无需同步
                     if (self._mode === "live" && self._model) {
@@ -1368,7 +1372,7 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                         // 忽略
                     }
                 } else if (self._mode === "reading") {
-                    // cm6 阅读态:清标记重跑 TextMate 着色(缓存键含主题签名,自动换明暗色板)
+                    // cm6 阅读态:清标记重取 colorize 着色(缓存键含主题名,自动换明暗色板)
                     const host = self._contentEl?.querySelector(".syfe-md__cmread");
                     if (host) {
                         host.querySelectorAll<HTMLElement>("code[data-syfe-tm]").forEach(c => {
@@ -1381,6 +1385,15 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
             this._themeObserver.observe(document.documentElement, {
                 attributes: true,
                 attributeFilter: ["data-theme"],
+            });
+            // Monaco 主题切换(扩展主题装卸/切换;data-theme 明暗切换在上面观察器里,
+            // 这里补齐 monaco 自己的主题事件)→ 阅读态代码块重取色
+            this._monacoThemeOff = onMonacoThemeChanged(() => {
+                if (self._mode !== "reading") return;
+                const host = self._contentEl?.querySelector(".syfe-md__cmread");
+                if (!host) return;
+                host.querySelectorAll<HTMLElement>("code[data-syfe-tm]").forEach(c => c.removeAttribute("data-syfe-tm"));
+                void restyleReadingCodeBlocks(host as HTMLElement);
             });
 
             // ===== 反链刷新联动 =====
@@ -1524,6 +1537,7 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
         const saveThenClose = () => {
             // 保存后关闭(仅 live 模式需把编辑面内容同步到 model;syncLiveToModel
             // 定义在 init 作用域,这里等价内联)
+            flushActiveBlock();   // 编辑态代码块的最新内容先同步回 cm6 文档
             if (self._mode === "live" && self._model) {
                 if (self._cm6) self._model.setValue(self._cm6.getValue());
                 else if (self._vditor) self._model.setValue(getVditorValue(self));
@@ -1543,6 +1557,11 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
             return guardUnsavedClose(basename(path), saveThenClose, discardThenClose);
         },
         destroy(this: MarkdownTabInstance) {
+            this._monacoThemeOff?.dispose();
+            this._monacoThemeOff = undefined;
+            // 页签关闭时若代码块编辑器还挂着,归还全局单例并清编辑态
+            setEditingKey(null);
+            unmountBlockEditor();
             destroyVditor(this);
             destroyMonaco(this);
             destroyCm6(this);

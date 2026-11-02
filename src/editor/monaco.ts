@@ -3,6 +3,7 @@ import {Menu, showMessage} from "siyuan";
 import {extname, basename} from "../utils/path";
 import {EditorConfig} from "../types";
 import {getActiveThemeName} from "../extensions/theme-loader";
+import {setGlobalCodeTheme} from "./monaco-block";
 import {buildEditorOptions} from "../settings/user-settings";
 // 带行号的文件链接(Markdown 源码态与代码文件的「复制当前行链接」共用)
 import {buildFileRefMd} from "../utils/file-ref";
@@ -154,7 +155,8 @@ export function applyTheme(mode: 0 | 1): void {
             "editor.foreground": fg,
         },
     });
-    monaco.editor.setTheme(themeName);
+    // 全局主题切换统一走 monaco-block 的入口(记账主题名 + colorize 缓存失效 + 通知)
+    setGlobalCodeTheme(themeName);
 }
 
 // 创建编辑器实例

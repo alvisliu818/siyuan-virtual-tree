@@ -3,8 +3,8 @@
 // 范围(与 cm6-markdown.ts 的语法高亮互补):
 //  - 围栏代码块:唯一一套渲染 —— 代码行永远以「行底色 + TextMate token 着色」呈现,
 //    两态唯一差别是围栏显隐:光标在块外(渲染态)围栏行 block replace 隐藏,开头围栏
-//    换成头部工具条(语言/复制);光标在块内(编辑态)围栏原样显示。高亮用 Monaco 代码
-//    文件那套 vscode-textmate 语法 + VS Code 主题 tokenColors(见 tm-highlight.ts)。//    (交互模型参考 ProseMark codeFenceExtension / PurrMD codeBlock)
+//    换成头部工具条(语言/复制);光标在块内(编辑态)围栏原样显示。高亮与代码文件
+//    同源:Monaco TextMate 分词 + 全局主题(colorize 出静态 HTML,编辑态挂单例)。
 //    (交互模型参考 ProseMark codeFenceExtension / PurrMD codeBlock)
 //  - 图片:整行就是一张图片语法 ![alt](src) 或 <img src="..."> 时,替换为真实 <img>
 //    (光标落在该行时还原源码,方便编辑;地址经宿主 resolveImageSrc → blob URL)
@@ -17,19 +17,32 @@
 // 装饰("Block decorations may not be specified via plugins")。
 // 块级替换配合 atomicRanges 让光标不落在渲染物中间;
 // 光标进入块内即回源码,这是 Obsidian 同款的编辑模型。
-// 代码主题切换(Monaco 扩展主题)经 onCodeThemeChanged → StateEffect 强制重建。
+// 全局主题切换(Monaco 扩展主题)经 onCodeThemeChanged → StateEffect 强制重建。
 import {EditorState, Extension, Range, StateEffect, StateField} from "@codemirror/state";
 import {
     Decoration,
     DecorationSet,
     EditorView,
     ViewPlugin,
-    ViewUpdate,
     WidgetType,
 } from "@codemirror/view";
 import {syntaxTree} from "@codemirror/language";
-import {getCachedTmTokens, tmTokenize, tmTokenizeSync} from "./tm-highlight";
-import {onCodeThemeChanged} from "../extensions/theme-loader";
+import {resolveFenceLanguageId} from "../extensions/grammar-loader";
+import {
+    colorizeCached,
+    flushActiveBlock,
+    getActiveBlockValue,
+    getEditingKey,
+    getMonacoThemeName,
+    getMountedBlockKey,
+    getMountedContainer,
+    getMountedLanguage,
+    mountBlockEditor,
+    onMonacoThemeChanged,
+    remountBlockEditor,
+    setEditingKey,
+    unmountBlockEditor,
+} from "./monaco-block";
 
 export interface Cm6RenderOptions {
     /** 解析图片地址 → 可加载 URL(blob URL / 绝对路径);返回 null 表示不处理 */
@@ -116,19 +129,26 @@ const COPY_ICON_SVG =
     '<path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>';
 
 /**
- * 围栏代码块渲染态头部工具条(光标在块外时替换开头围栏行):语言标签 + 复制按钮。
- * 正文不再走 widget —— 两态共用同一套代码行渲染(行底色 + TextMate mark),
- * 头部只是渲染态多出的一个块级装饰。点击头部把光标送进块(clickHandler)。
+ * 围栏代码块卡片(整块 replace):头部(语言标签 + 复制按钮)+ 正文。
+ * 渲染态正文 = Monaco colorize(与代码文件同一主题服务/分词);
+ * 编辑态正文 = 全局单例 Monaco 编辑器 —— 点击卡片后由 editMounter 在真实视图
+ * DOM 上挂载(monaco-block.ts),Esc/点击块外退出。toDOM 永远只渲染壳:
+ * CM6 重建/测量会克隆销毁 widget DOM,在 toDOM 里挂载会被抽走或克隆出死体。
  */
-class CodeHeadWidget extends WidgetType {
+class CodeBlockWidget extends WidgetType {
     private copiedTimer: number | undefined;
+    private readonly themeSig = getMonacoThemeName();
+    // 构建时本卡片是否处于编辑态(参与 eq:进入/退出编辑态都要重建换正文)
+    private readonly editingFlag = getEditingKey() === this.key;
 
-    constructor(readonly lang: string, readonly code: string) {
+    constructor(readonly lang: string, readonly code: string, readonly key: string) {
         super();
     }
 
-    eq(other: CodeHeadWidget): boolean {
-        return other.lang === this.lang && other.code === this.code;
+    eq(other: CodeBlockWidget): boolean {
+        // 编辑中内容变化不重建(Monaco 自持最新内容);渲染态主题变了要重建重取色
+        if (other.key !== this.key || other.lang !== this.lang || other.editingFlag !== this.editingFlag) return false;
+        return this.editingFlag || other.themeSig === this.themeSig;
     }
 
     private markCopied(btn: HTMLButtonElement): void {
@@ -144,10 +164,9 @@ class CodeHeadWidget extends WidgetType {
         }, 1600);
     }
 
-    toDOM(view: EditorView): HTMLElement {
+    private buildHead(): HTMLElement {
         const head = document.createElement("div");
         head.className = "syfe-cm-codeblock-head";
-        head.setAttribute("contenteditable", "false");
         const lang = document.createElement("span");
         lang.className = "syfe-cm-codeblock-lang";
         lang.textContent = this.lang || "text";
@@ -164,7 +183,8 @@ class CodeHeadWidget extends WidgetType {
         btn.onclick = (e) => {
             e.stopPropagation();
             e.preventDefault();
-            void copyTextCompat(this.code)
+            // 编辑中的卡片复制最新内容(挂载中取 Monaco 实时值,否则取快照)
+            void copyTextCompat(getActiveBlockValue() ?? this.code)
                 .then(() => this.markCopied(btn))
                 .catch(() => undefined);
         };
@@ -172,15 +192,45 @@ class CodeHeadWidget extends WidgetType {
         return head;
     }
 
+    toDOM(view: EditorView): HTMLElement {
+        const wrap = document.createElement("div");
+        wrap.className = "syfe-cm-codeblock";
+        wrap.dataset.blockKey = this.key;
+        wrap.setAttribute("contenteditable", "false");
+        wrap.appendChild(this.buildHead());
+        const body = document.createElement("div");
+        body.className = "syfe-cm-codeblock-body";
+        wrap.appendChild(body);
+        // 渲染正文:Monaco colorize(异步,先纯文本占位)。编辑态由 CSS 隐藏此层。
+        const colorizeDiv = document.createElement("div");
+        colorizeDiv.className = "syfe-cm-codeblock-colorize";
+        body.appendChild(colorizeDiv);
+        colorizeDiv.textContent = this.code;
+        void colorizeCached(this.lang, this.code).then(html => {
+            if (!colorizeDiv.isConnected) return;
+            colorizeDiv.innerHTML = html;
+            view.requestMeasure();
+        });
+        // 编辑态宿主:点击卡片后由 editMounter 把全局单例 Monaco 安置进来
+        const host = document.createElement("div");
+        host.className = "syfe-cm-codeblock-editorhost";
+        body.appendChild(host);
+        if (this.editingFlag) body.classList.add("is-editing");
+        return wrap;
+    }
+
     destroy(): void {
         if (this.copiedTimer) window.clearTimeout(this.copiedTimer);
         this.copiedTimer = undefined;
+        // 不在此处卸载单例:同 key 的继任 widget 可能在本实例销毁后才挂载,
+        // 顺序不定。退出由 onExit 显式卸载;页签关闭由 markdown-tab destroy 兜底。
     }
 
     ignoreEvent(): boolean {
         return false;
     }
 }
+
 
 /** 行内图片:整行图片语法 → <img>(async 解析 blob URL) */
 class ImageWidget extends WidgetType {
@@ -418,55 +468,16 @@ function fencedCodeInfos(state: EditorState): FencedCodeInfo[] {
 
 // ===== 主插件 =====
 
-// 编辑态 TextMate 着色的字符上限:巨型块同步分词会卡键击,超限回退纯文本
-const EDIT_MARK_MAX_CHARS = 20000;
+// 外部事件(主题切换/进入编辑态)→ 强制重建装饰。模块级:编辑态退出等 widget 回调也
+// 需要派发,而 widget 实例拿不到闭包内的 effect。
+const forceRenderEffect = StateEffect.define<null>();
+// 编辑态同步状态:块 key + 最近一次同步进文档的内容(monaco ↔ cm6 回写定位用)
+let activeSync: {key: string; lastValue: string} | null = null;
 
-// 围栏代码块 token 着色装饰(两态共用,唯一一套渲染的高亮来源):
-// 围栏行之间的整行内容 → Decoration.mark 内联 color(vscode-textmate 语法 + 主题色)。
-// 只吃同步通道(缓存命中或语法已就绪);无色返回空数组,由 grammarSync 异步补。
-function codeTokenMarks(
-    info: FencedCodeInfo,
-    doc: EditorState["doc"],
-    first: number,
-    last: number,
-): Array<Range<Decoration>> {
-    const out: Array<Range<Decoration>> = [];
-    if (!info.code || info.code.length > EDIT_MARK_MAX_CHARS) return out;
-    const cached = getCachedTmTokens(info.lang, info.code);
-    const toks = cached !== undefined ? cached : tmTokenizeSync(info.lang, info.code);
-    if (!toks) return out;
-    const innerLast = /^\s*(`{3,}|~{3,})\s*$/.test(doc.line(last).text) ? last - 1 : last;
-    for (let li = 0; li < toks.lines.length; li++) {
-        const ln = first + 1 + li;
-        if (ln > innerLast) break;
-        const line = doc.line(ln);
-        for (const span of toks.lines[li]) {
-            if (!span.css || span.end <= span.start) continue;
-            const from = Math.min(line.from + span.start, line.to);
-            const to = Math.min(line.from + span.end, line.to);
-            if (to > from) out.push(Decoration.mark({attributes: {style: span.css}}).range(from, to));
-        }
-    }
-    return out;
-}
-
-const codeLineDeco = Decoration.line({class: "syfe-cm-codeblock-line"});
-const codeLineFirstDeco = Decoration.line({class: "syfe-cm-codeblock-line syfe-cm-codeblock-first"});
-const codeLineLastDeco = Decoration.line({class: "syfe-cm-codeblock-line syfe-cm-codeblock-last"});
-const codeLineOnlyDeco = Decoration.line({
-    class: "syfe-cm-codeblock-line syfe-cm-codeblock-first syfe-cm-codeblock-last",
-});
-// 渲染态修饰类:画出旧卡片的壳(左右/底部边线;编辑态不用,保留左侧强调条)
-const codeLineOutDeco = Decoration.line({class: "syfe-cm-codeblock-line syfe-cm-codeblock-out"});
-const codeLineOutLastDeco = Decoration.line({
-    class: "syfe-cm-codeblock-line syfe-cm-codeblock-out syfe-cm-codeblock-last",
-});
 const tableSrcLineDeco = Decoration.line({class: "syfe-cm-tablesrc-line"});
 const mathSrcLineDeco = Decoration.line({class: "syfe-cm-mathsrc-line"});
 
 export function cm6MarkdownRender(opts: Cm6RenderOptions): Extension {
-    // 代码主题切换等外部事件 → 强制重建装饰(widget eq 带主题签名,重建才会重渲)
-    const forceRenderEffect = StateEffect.define<null>();
     const renderField = StateField.define<DecorationSet>({
         create: (st) => buildDecorations(st, opts),
         update: (value, tr) => {
@@ -497,10 +508,24 @@ export function cm6MarkdownRender(opts: Cm6RenderOptions): Extension {
         eventHandlers: {
             mousedown(event, view) {
                 const target = event.target as HTMLElement;
-                // 头部工具条里的复制按钮是独立交互区,不进入源码
+                // 复制按钮是独立交互区
                 if (target.closest(".syfe-cm-codeblock-copy")) return false;
-                const wrap = target.closest(".syfe-cm-codeblock-head, .syfe-cm-table, .syfe-cm-math") as HTMLElement | null;
+                const wrap = target.closest(".syfe-cm-codeblock, .syfe-cm-table, .syfe-cm-math") as HTMLElement | null;
                 if (!wrap) return false;
+                if (wrap.classList.contains("syfe-cm-codeblock")) {
+                    // 代码块:声明进入编辑态,由 editMounter 在重建后的真实视图 DOM 上
+                    // 安置单例(不能在此处直接挂载 —— 本 wrap 可能即将被重建/克隆替换)
+                    const key = wrap.dataset.blockKey ?? null;
+                    if (key !== null && getEditingKey() !== key) {
+                        const info = fencedCodeInfos(view.state).find(i => i.from === parseInt(key, 10));
+                        if (info) {
+                            activeSync = {key, lastValue: info.code};
+                            setEditingKey(key);
+                            view.dispatch({effects: forceRenderEffect.of(null)});
+                        }
+                    }
+                    return true;   // 已挂载:事件交给 Monaco 自行处理
+                }
                 const pos = view.posAtDOM(wrap);
                 const line = view.state.doc.lineAt(pos);
                 view.dispatch({selection: {anchor: Math.min(line.from + 1, line.to)}});
@@ -510,56 +535,85 @@ export function cm6MarkdownRender(opts: Cm6RenderOptions): Extension {
         },
     });
 
-    // 代码主题切换(Monaco 扩展主题 applyTheme)→ 通知本编辑器重建代码块高亮
+    // 主题切换(monaco 全局事件:扩展主题/思源配色/明暗切换全覆盖)→
+    // 强制重建代码块卡片(colorize 缓存按主题名失效,重取即新色)
     const themeSync = ViewPlugin.fromClass(class {
-        private off: () => void = () => undefined;
+        private off: {dispose(): void} = {dispose: () => undefined};
         constructor(readonly view: EditorView) {
-            this.off = onCodeThemeChanged(() => {
+            this.off = onMonacoThemeChanged(() => {
                 view.dispatch({effects: forceRenderEffect.of(null)});
             });
         }
         destroy() {
-            this.off();
+            this.off.dispose();
         }
     });
 
-    // TextMate 语法异步就绪回调:任一代码块缓存未命中且语法未就绪时先无色,
-    // 这里触发加载并在就绪后强制重建补色(两态同一管线,无色也一致);
-    // null = 语言不支持,缓存 null 后不再重试不重建
-    const grammarSync = ViewPlugin.fromClass(class {
-        private inflight = new Set<string>();
-        private dispatchQueued = false;
-        constructor(readonly view: EditorView) {
-            // 初次挂载也要调度:ViewPlugin 的 update 在视图创建时不触发,
-            // 不在构造函数里扫一遍的话首帧(渲染态)会一直无色
-            this.schedule();
-        }
-        update(u: ViewUpdate) {
-            if (!u.docChanged && !u.selectionSet) return;
-            this.schedule();
-        }
-        private schedule() {
-            for (const info of fencedCodeInfos(this.view.state)) {
-                if (getCachedTmTokens(info.lang, info.code) !== undefined) continue;
-                const key = `${info.lang}\u0000${info.code}`;
-                if (this.inflight.has(key)) continue;
-                this.inflight.add(key);
-                void tmTokenize(info.lang, info.code).then(res => {
-                    this.inflight.delete(key);
-                    // 合并派发:同批多个块就绪只重建一次
-                    if (res && !this.dispatchQueued) {
-                        this.dispatchQueued = true;
-                        Promise.resolve().then(() => {
-                            this.dispatchQueued = false;
-                            this.view.dispatch({effects: forceRenderEffect.of(null)});
-                        });
-                    }
-                }).catch(() => this.inflight.delete(key));
+    // Monaco 内容变更 → 单事务写回 cm6 文档(定位:块首围栏行尾 + 上次同步长度)
+    const syncFromMonaco = (view: EditorView) => (v: string) => {
+        if (!activeSync) return;
+        const nv = v.replace(/\r\n/g, "\n");
+        const from = parseInt(activeSync.key, 10);
+        if (Number.isNaN(from) || from >= view.state.doc.length) return;
+        const firstLine = view.state.doc.lineAt(from);
+        const innerFrom = firstLine.to + 1;
+        const innerTo = Math.min(innerFrom + activeSync.lastValue.length, view.state.doc.length);
+        activeSync.lastValue = nv;
+        view.dispatch({changes: {from: innerFrom, to: innerTo, insert: nv}});
+    };
+    // 退出编辑态:flush 最终内容 → 卸载单例 → 重建回渲染卡片
+    const exitEditing = (view: EditorView) => () => {
+        flushActiveBlock();
+        unmountBlockEditor();
+        setEditingKey(null);
+        activeSync = null;
+        view.dispatch({effects: forceRenderEffect.of(null)});
+        view.focus();
+    };
+
+    // 编辑态挂载器:CM6 重建会销毁/克隆 widget DOM,编辑器绝不在 toDOM 里挂载。
+    // 每次更新后把单例编辑器安置进「当前编辑块」的真实宿主(过滤测量克隆):
+    //   - 未挂载 → 全量挂载(点击卡片后的第一次重建)
+    //   - 已挂载同块但容器变了(重建换了 widget DOM)→ 搬 DOM + 重绑监听
+    const editMounter = ViewPlugin.fromClass(class {
+        constructor(readonly view: EditorView) {}
+        update() {
+            const key = getEditingKey();
+            if (!key) return;
+            const hosts: HTMLElement[] = [];
+            this.view.dom.querySelectorAll(`.syfe-cm-codeblock[data-block-key="${key}"] .syfe-cm-codeblock-editorhost`)
+                .forEach(h => {
+                    if (!(h as HTMLElement).closest(".cm-measurement")) hosts.push(h as HTMLElement);
+                });
+            if (!hosts.length) return;
+            const host = hosts[0];
+            if (getMountedBlockKey() === key) {
+                if (getMountedContainer() !== host) {
+                    remountBlockEditor({
+                        container: host,
+                        key,
+                        language: getMountedLanguage(),
+                        value: activeSync?.lastValue ?? "",
+                        onContentChange: syncFromMonaco(this.view),
+                        onExit: exitEditing(this.view),
+                    });
+                }
+                return;
             }
+            const wrap = host.closest(".syfe-cm-codeblock") as HTMLElement | null;
+            const langLabel = wrap ? (wrap.querySelector(".syfe-cm-codeblock-lang")?.textContent ?? "text") : "text";
+            mountBlockEditor({
+                container: host,
+                key,
+                language: resolveFenceLanguageId(langLabel),
+                value: activeSync?.lastValue ?? "",
+                onContentChange: syncFromMonaco(this.view),
+                onExit: exitEditing(this.view),
+            });
         }
     });
 
-    return [renderField, clickHandler, themeSync, grammarSync];
+    return [renderField, clickHandler, themeSync, editMounter];
 }
 
 function buildDecorations(state: EditorState, opts: Cm6RenderOptions): DecorationSet {
@@ -576,49 +630,15 @@ function buildDecorations(state: EditorState, opts: Cm6RenderOptions): Decoratio
             const overlapsUsed = (from: number, to: number) => usedRanges.some(r => from < r.to && to > r.from);
             const cursorInRange = (from: number, to: number) => cursor >= from && cursor <= to;
 
-            // 1) 围栏代码块 —— 唯一一套渲染:代码行永远以「行底色 + TextMate mark」呈现,
-            //    两态唯一差别是围栏显隐:
-            //      光标在块内(编辑态)→ 围栏显示,首尾围栏行圆角底色;
-            //      光标在块外(渲染态)→ 围栏行 block replace 隐藏,开头围栏换成头部工具条。
+            // 1) 围栏代码块:一律整块替换为卡片 —— 渲染态正文 = Monaco colorize;
+            //    编辑态(点击卡片)正文 = 全局单例 Monaco 编辑器(monaco-block.ts),
+            //    失焦/Esc/点击块外退出回渲染态
             for (const info of fencedCodeInfos(state)) {
-                const first = doc.lineAt(info.from).number;
-                const last = doc.lineAt(Math.max(info.from, info.to - 1)).number;
-                const lastIsFence = /^\s*(`{3,}|~{3,})\s*$/.test(doc.line(last).text);
-                const innerLast = lastIsFence && last > first ? last - 1 : last;
                 usedRanges.push({from: info.from, to: info.to});
-                const renderedState = !cursorInRange(info.from, info.to);
-                // 代码行:两态同一套渲染(行底色 + token mark);渲染态附旧卡片壳修饰类
-                for (let ln = first + 1; ln <= innerLast; ln++) {
-                    let deco: Decoration;
-                    if (renderedState) {
-                        deco = ln === innerLast ? codeLineOutLastDeco : codeLineOutDeco;
-                    } else {
-                        // 编辑态底圆角只给视觉末行:闭合块是闭合围栏行(下方单独上底圆角),
-                        // 代码行全平 —— 否则末代码行与闭合围栏各圆一次,围栏看起来从块里分离
-                        deco = !lastIsFence && ln === innerLast ? codeLineLastDeco : codeLineDeco;
-                    }
-                    lineDecos.push(deco.range(doc.line(ln).from));
-                }
-                for (const m of codeTokenMarks(info, doc, first, last)) {
-                    ranges.push(m);
-                }
-                if (!renderedState) {
-                    // 编辑态:围栏原样显示(首围栏行顶圆角,闭合围栏行底圆角)
-                    lineDecos.push((first === last ? codeLineOnlyDeco : codeLineFirstDeco).range(doc.line(first).from));
-                    if (lastIsFence && last > first) {
-                        lineDecos.push(codeLineLastDeco.range(doc.line(last).from));
-                    }
-                } else {
-                    // 渲染态:围栏隐藏;开头围栏行 → 头部工具条(语言/复制),闭合围栏行整行隐藏
-                    const headReplace = Decoration.replace({widget: new CodeHeadWidget(info.lang, info.code), block: true});
-                    ranges.push(headReplace.range(info.from, doc.line(first).to));
-                    atomicRanges.push(headReplace.range(info.from, doc.line(first).to));
-                    if (lastIsFence && last > first) {
-                        const tailReplace = Decoration.replace({block: true});
-                        ranges.push(tailReplace.range(doc.line(last).from, info.to));
-                        atomicRanges.push(tailReplace.range(doc.line(last).from, info.to));
-                    }
-                }
+                const widget = new CodeBlockWidget(info.lang, info.code, String(info.from));
+                const replace = Decoration.replace({widget, block: true});
+                ranges.push(replace.range(info.from, info.to));
+                atomicRanges.push(replace.range(info.from, info.to));
             }
 
             // 2) 数学块 $$...$$(光标在块内时只加底色,便于编辑)

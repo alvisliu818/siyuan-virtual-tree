@@ -9,6 +9,7 @@
 //   }
 import * as monaco from "monaco-editor";
 import {InstalledExtension, ThemeContribution} from "./types";
+import {setGlobalCodeTheme} from "../editor/monaco-block";
 
 // 已加载的主题列表(供 UI 选择)
 export interface LoadedTheme {
@@ -47,6 +48,12 @@ function notifyThemeChanged(): void {
             // 单个监听器异常不影响其他监听器
         }
     }
+}
+
+// 思源配色回退主题切换(siyuan-light ↔ siyuan-dark,monaco.ts applyTheme)后由其调用,
+// 让 CM6 代码块重取主题(回退签名随明暗变化)。扩展主题路径走 safeSetTheme 内部通知。
+export function notifyCodeThemeChanged(): void {
+    notifyThemeChanged();
 }
 
 /** CM6 代码块 TextMate 高亮用的 token 规则(选择器按点分段) */
@@ -119,7 +126,8 @@ export function loadThemes(extension: InstalledExtension): number {
 function safeSetTheme(themeName: string): boolean {
     const prev = activeThemeName;
     try {
-        monaco.editor.setTheme(themeName);
+        // 全局主题切换统一走 monaco-block 的入口(记账 + colorize 缓存失效 + 通知)
+        setGlobalCodeTheme(themeName);
         activeThemeName = themeName;
         if (activeThemeName !== prev) notifyThemeChanged();
         return true;
@@ -129,7 +137,7 @@ function safeSetTheme(themeName: string): boolean {
         activeThemeName = null;
         if (activeThemeName !== prev) notifyThemeChanged();
         try {
-            monaco.editor.setTheme("vs-dark");
+            setGlobalCodeTheme("vs-dark");
         } catch {
             // 忽略
         }
