@@ -589,9 +589,14 @@ function buildDecorations(state: EditorState, opts: Cm6RenderOptions): Decoratio
                 const renderedState = !cursorInRange(info.from, info.to);
                 // 代码行:两态同一套渲染(行底色 + token mark);渲染态附旧卡片壳修饰类
                 for (let ln = first + 1; ln <= innerLast; ln++) {
-                    const deco = renderedState
-                        ? (ln === innerLast ? codeLineOutLastDeco : codeLineOutDeco)
-                        : (ln === innerLast ? codeLineLastDeco : codeLineDeco);
+                    let deco: Decoration;
+                    if (renderedState) {
+                        deco = ln === innerLast ? codeLineOutLastDeco : codeLineOutDeco;
+                    } else {
+                        // 编辑态底圆角只给视觉末行:闭合块是闭合围栏行(下方单独上底圆角),
+                        // 代码行全平 —— 否则末代码行与闭合围栏各圆一次,围栏看起来从块里分离
+                        deco = !lastIsFence && ln === innerLast ? codeLineLastDeco : codeLineDeco;
+                    }
                     lineDecos.push(deco.range(doc.line(ln).from));
                 }
                 for (const m of codeTokenMarks(info, doc, first, last)) {
