@@ -1,55 +1,57 @@
-# TODO：CM6 编辑器代码卡片渲染（2026-11-02 收尾 ✅ 全部完成）
+# TODO：CM6 代码块 Monaco 化（2026-11-02 ✅ 全部完成并部署验证）
 
-## 已完成
+> 诉求：「代码块使用 Monaco 编辑和 Monaco 渲染，全局单一 Monaco 实例」。
+> 参考 my-logseq 模块的代码块实现（colorize 静态渲染 + 单例按需挂载，两态同源）。
+> 历史：曾用 tm-highlight（vscode-textmate 自分词）做统一管线，本轮整体退役——
+> 高亮完全交给 Monaco（colorize + 单例编辑器），不再维护第二条分词路径。
 
-| 项 | 文件 | 说明 |
-|---|---|---|
-| **统一渲染管线**（终态） | `cm6-render.ts` | 代码块两态唯一一套渲染：代码行永远以「行底色 + TextMate token mark」呈现；渲染态（光标在块外）围栏行 block replace 隐藏 + 头部工具条 widget（语言/复制）+ `-out` 修饰类画旧卡片壳描边；编辑态（光标在块内）只是围栏原样显示。两态色板/字体/字号/行高/换行由构造保证一致 |
-| TextMate 高亮 | `src/editor/tm-highlight.ts`（新） | vscode-textmate 语法 + VS Code 主题 tokenColors；token 级缓存（键=主题签名+lang+code），HTML 由 token 派生（阅读态用）；无扩展主题回退内置 Dark+/Light+ |
-| **语法加载竞态修复**（本轮） | `grammar-loader.ts` | `getTmGrammar` 等待 `builtinGrammarsReady`（内置清单加载完成信号），消除「wasm 就绪但语法清单未到 → 永久缓存 null → 代码块永远无色」；cm6-render 的 grammarSync 在构造函数即调度（ViewPlugin 的 update 在视图创建时不触发） |
-| **编辑态 token 着色**（本轮新增） | `cm6-render.ts` | 光标入块后按 token 打 `Decoration.mark` 内联 color（与卡片同源语法/主题）；同步分词（`tmTokenizeSync`，2 万字符上限），语法未就绪由 `grammarSync` ViewPlugin 异步加载后 dispatch `forceRenderEffect` 补色 |
-| 主题数据保留 | `src/extensions/theme-loader.ts` | 原始主题 JSON（`themeDataByName`）、`getActiveCodeTheme()` / `onCodeThemeChanged()` |
-| 语法入口 | `src/extensions/grammar-loader.ts` | `getTmGrammar(lang)` + **`getTmGrammarSync(lang)`**（就绪语法同步表，编辑态分词用） |
-| 主题切换重建 | `cm6-render.ts` | `onCodeThemeChanged` → `forceRenderEffect` 强制重建；widget eq 带主题签名 |
-| 单横线表格 | `cm6-render.ts` | `RE_TABLE_SEP` 放宽为 `-{1,}`（`| - | - |` 可渲染） |
-| **布局恢复引擎挂错修复**（本轮新增） | `markdown-tab.ts` + `index.ts` | 布局恢复的 md 页签创建早于 `onLayoutReady` 的 `loadConfig`，挂引擎时读到默认 vditor；修复 = 页签暴露 `_resyncEngineForConfig()`（引擎挂错才重进当前模式），配置就位后统一调用 |
-| **阅读态高亮对齐**（本轮新增） | `markdown-tab.ts` | `enterCm6Reading` 的 Vditor.preview 产物：代码块 hljs → tm-highlight 同源 TextMate 色（`after` 回调 + 1500ms 兑底，幂等 data 标记 + `dataset.highlighted` 防 hljs 晚到重写；背景/字体对齐卡片；明暗切换清标记重刷） |
-| 样式 | `src/editor/cm6-markdown.ts` | `.syfe-cm-codeblock` 系卡片样式，删旧悬浮条样式 |
+## 终态架构
 
-## 实机验证（CDP 9222，全部通过）
+- **渲染态（阅读态同源）**：`monaco.editor.colorize()` 用当前全局主题产出 mtk* HTML；
+  colorize 缓存键 = 主题名+lang+code，主题切换统一走 `setGlobalCodeTheme`（记账+清缓存+通知）。
+- **编辑态**：全局唯一 Monaco 编辑器实例（window 注册表 `__syfeMonacoBlock`），
+  点击卡片由 `editMounter`（ViewPlugin）安置进真实视图 DOM 的宿主容器；
+  Esc / 点击块外退出 → 归还 stash → 卡片 colorize 重渲。
+- **内容同步**：Monaco `onDidChangeModelContent` → 单事务写回 cm6 文档（块 key 定位）；
+  保存前 `flushActiveBlock()` 落最终值；model 强制 LF（monaco 在 Windows 默认 CRLF 会污染行尾）。
+- **主题切换**：`setGlobalCodeTheme` → `onMonacoThemeChanged` 订阅 → `forceRenderEffect` 重建卡片。
 
-- `step-cm6-unified.js`（主探针）：渲染态首帧 18 span 有色（竞态修复验证）✓、头部/复制/围栏隐藏/2 代码行 ✓、点头部→编辑态围栏现形 4 行同样 18 span ✓、点块外回渲染态同色 ✓
-- 截图目检（step-cm6-shot.js）：渲染态卡片壳（头部+边框+圆角+着色正文）与编辑态（围栏+同样色行）两图对照一致 ✓
-- `step-cm6-read-tm.js`：阅读态 `syfe-tm-code` 替换 hljs，def 色 rgb(215,58,73) 与卡片采样一致，背景 = --b3-theme-surface ✓
-- `step-cm6-restore-verify.js`：reload 后恢复页签终态 cm6（修复前是 vditor 且不切）✓
-- tsc：改动文件零新增错误（存量错误在别处，如 `markdown-tab.ts:1146` resolveImageSrc 签名，committed 状态就有）
-- `yarn build` 通过，自动部署到 `E:\HOME\SiYuan\data\plugins\siyuan-virtual-tree`
+## monaco-block.ts 三条实测铁律（违反即翻车）
 
-## 本轮结论（原待办两条已定论）
+1. **全部状态挂 window 注册表**：webpack 分块会把模块求值两份，模块级变量各自为政
+   会出现两个编辑器实例、主题记账错乱（totalMonaco=2 且焦点落在 stash 那份的实锤）。
+2. **挂载/重绑绝不在 widget.toDOM 里做**：CM6 重建/测量会克隆销毁 widget DOM；
+   编辑器只能由 ViewPlugin 在真实视图 DOM 上安置，toDOM 永远只渲染壳。
+   同块重建后由 `remountBlockEditor` 搬 DOM + 重绑（测量克隆 `.cm-measurement` 已过滤）。
+3. **monaco 0.50 运行时 `getDomNode()` 返回 undefined**（类型却声明存在）：
+   创建时自己 `querySelector(":scope > .monaco-editor")` 抓根节点搬运 DOM。
+   旧 widget 销毁还会把单例搬回 stash —— destroy 延迟一拍检查继任（同 key 已重挂则跳过）。
 
-- 「实时渲染不是 cm6 是 vditor」≠ 配置未生效：新开页签 live 一直是 cm6；**挂错的是布局恢复的页签**（恢复早于配置加载）。修复见上表。
-- 「启动约 1 分钟自动退出」= 沙箱作业对象连坐杀 GUI（非崩溃）。本会话用 WMI `Win32_Process.Create` 拉起思源（PID 23248），存活 >1 小时，未再复现。
+## 文件清单
 
-## 提交计划（gl.sh 入口，分四个不混杂的提交）
+| 文件 | 说明 |
+|---|---|
+| `src/editor/monaco-block.ts`（新） | 单例基础设施：stash/挂载/重绑/退出、setGlobalCodeTheme、colorizeCached（剥尾 `<br/>`，两态盒子高度一致） |
+| `src/editor/cm6-render.ts` | CodeBlockWidget 纯壳渲染（头部工具条 + colorize 正文 + editorhost）；editMounter 声明式安置；主题/点击/同步/退出全链 |
+| `src/editor/cm6-markdown.ts` | `.syfe-cm-codeblock` 卡片样式 + is-editing 显隐规则 |
+| `src/editor/monaco.ts` | applyTheme 走统一入口 setGlobalCodeTheme |
+| `src/extensions/theme-loader.ts` | safeSetTheme 走统一入口；notifyCodeThemeChanged 供思源配色回退路径 |
+| `src/extensions/grammar-loader.ts` | 保留 TextMate→Monaco tokenizer 注册（代码文件与 colorize 共用）；`resolveFenceLanguageId`；删除 getTmGrammar(Sync) 及 readyGrammars/grammarInstanceCache/builtinGrammarsReady 死代码 |
+| `src/tabs/markdown-tab.ts` | 阅读态代码块 colorize 替换 hljs（restyleReadingCodeBlocks）+ 保存 flush |
+| `src/editor/tm-highlight.ts` | **已删除**（.trash 备份）：Markdown 侧自分词管线整体退役 |
 
-1. `tools/pty-helper.js` — 终端 Git Bash 三级探测（早前会话遗留）
-2. `.yarnrc.yml` — yarn 自动重写（approvedGitRepositories/npmMinimalAgeGate）
-3. `feat(editor-cm6)` 卡片+高亮：cm6-render.ts / cm6-markdown.ts / tm-highlight.ts / grammar-loader.ts / theme-loader.ts
-4. `fix(editor-cm6)` 恢复引擎重进 + 本文件：markdown-tab.ts / index.ts / TODO-cm6-render.md
+## 实机验证（CDP 9222 全部通过）
 
-## Lesson（已同步 project_memory.md）
+- `step-cm6-m2v.js`（回归主探针）：挂载（activeBlock.key 命中、单例进卡）→ 模型 API
+  编辑同步回 cm6 文档 ✓ → 点击外部退出卸载、卡片 colorize 重渲新内容（mtk 着色）✓ →
+  保存落盘 ✓（monacoCount=2 为 cm6 测量克隆静态副本，无害）
+- `step-cm6-m1.js`：卡片 colorize 渲染 + 运行时切主题 26→24 span 换色、还原逐字节一致 ✓
+- bundle 证据：tmTokenizeSync/getTmGrammar(Sync)/registry-init 日志/死 CSS 全部消失；
+  __syfeMonacoBlock 注册表、br 剥离、editorhost 钩子在
+- tsc 27 个错误全部为基线存量，改动文件零新增
 
-- **两态渲染想一致，就走同一套装饰**：曾有「widget HTML 卡片」与「mark 着色」两条并行管线，字体/行高/换行/首帧时序处处可漂；统一后（同一批行装饰+mark，围栏显隐是唯一差异）构造上不可能漂移。状态差异用修饰类（-out）表达，不另起渲染路径
-- **ViewPlugin 的 update 在视图创建时不触发**：需要初次调度的插件逻辑必须同时放构造函数
-- **异步初始化竞态要显式等信号**：getTmGrammar 曾在 wasm 就绪但语法清单未 fetch 完时返回 null 并被永久缓存（旧卡片路径靠 widget 自补掩盖）；加 builtinGrammarsReady 信号根治
-- CDP DOM 断言必须锁定目标页签作用域（多页签同类渲染物会污染 document.querySelector）
-- 布局恢复页签早于插件磁盘配置加载：任何「onload 默认值 ≠ 磁盘配置」的设置项，恢复页签都会拿到默认值，需在配置就位后补偿重进
-- 沙箱 Shell 启动的 GUI 进程被作业对象连坐杀掉（思源反复退出曾误判为崩溃）→ 长驻 GUI 用 WMI 拉起；沙箱内 node 连本机端口一律 ECONNREFUSED → CDP 探针沙箱外跑；CDP 验证必须 `Network.setCacheDisabled(true)` + reload（lesson 3d86a23）
+## 提交计划（gl.sh 入口）
 
-## 关键路径速查
-
-- 渲染核心：`src/editor/cm6-render.ts`（StateField 五段式；CodeBlockWidget/MathWidget/TableWidget/ImageWidget；editStateTokenMarks + grammarSync）
-- 高亮：`src/editor/tm-highlight.ts`（token 级缓存：tmTokenizeSync / tmTokenize / getCachedTmTokens；HTML 派生：tmHighlightToHtml / getCachedTmHighlight）
-- 语法 `src/extensions/grammar-loader.ts`（getTmGrammar / getTmGrammarSync）；主题 `src/extensions/theme-loader.ts`
-- 冷启动（沙箱外拉起）：`Invoke-CimMethod Win32_Process Create -Arguments @{CommandLine='"D:\programs\SiYuan\SiYuan.exe" --remote-debugging-port=9222'}`，等 ~20s
-- 探针目录：`e:\HOME\Local\sy-cdp`（puppeteer-core 已装，严禁写进插件源码路径）；回归探针保留 tm-verify / editmark / restore-verify 三个
+1. `feat(editor-cm6)` 代码块 Monaco 单例：monaco-block.ts（新）/ cm6-render.ts / cm6-markdown.ts / monaco.ts / theme-loader.ts / grammar-loader.ts / markdown-tab.ts
+2. `chore` 删 tm-highlight.ts（死代码）+ tools 临时文件清理
+3. 本文件 + project_memory.md 记忆更新
