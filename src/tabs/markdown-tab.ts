@@ -30,6 +30,7 @@ import {installMarkdownClipboard, getVditorLute, type MdClipboardHandle} from ".
 import {createCm6MarkdownEditor, type Cm6MarkdownHandle} from "../editor/cm6-markdown";
 // vditor 与思源共用 window.Lute,且 vditor 那份缺 SetTabs —— 详见 utils/lute-guard 的说明
 import {ensureSiyuanLute} from "../utils/lute-guard";
+import {tmHighlightToHtml} from "../editor/tm-highlight";
 
 // Markdown 编辑 Tab:对齐 Obsidian 的三态编辑器
 // - live    实时预览:Vditor ir(即时渲染),光标所在行显示源码、其余实时渲染,可编辑
@@ -488,6 +489,49 @@ function applyFileRef(tab: MarkdownTabInstance, ref: FileRef): void {
         setTimeout(() => tryAt(left - 1), 150);
     };
     tryAt(8);
+}
+
+// 阅读态(cm6 引擎)代码块高亮对齐:Vditor.preview 默认走 hljs,与编辑态/代码卡片的
+// TextMate 主题色不是一套 —— 预览完成后把 hljs 产物替换成 tm-highlight 的内联色 HTML。
+// 语言不支持的块保留 hljs;幂等(处理后打 data 标记,after 回调与兑底定时器重复触发跳过)。
+// 明暗切换由主题观察器清标记后重跑本函数(tm-highlight 缓存键含主题签名,自动换配色)。
+async function restyleReadingCodeBlocks(host: HTMLElement): Promise<void> {
+    // 等 hljs 着色完成(一次性等任意块出现 hljs 类;hljs 懒加载通常几百 ms,3 秒兑底);
+    // 若在我们的替换之后才跑会把着色打回去,这个等待 + dataset.highlighted 标记双保险
+    for (let i = 0; i < 12; i++) {
+        if (host.querySelector("pre > code.hljs")) break;
+        await new Promise(r => setTimeout(r, 250));
+    }
+    const codes = Array.from(host.querySelectorAll<HTMLElement>("pre > code"));
+    for (const code of codes) {
+        if (code.dataset.syfeTm === "1") continue;
+        const m = (code.className || "").match(/language-([\w+#.-]+)/);
+        const text = code.textContent ?? "";
+        if (!text) continue;
+        try {
+            const res = await tmHighlightToHtml(m ? m[1] : "", text);
+            if (!res) continue;   // 语言不支持 → 保留 hljs
+            code.dataset.syfeTm = "1";
+            code.dataset.highlighted = "yes";   // hljs v11 见此标记跳过,防晚到重写
+            code.classList.add("syfe-tm-code");
+            code.innerHTML = res.html;
+            // 背景与默认文字色对齐代码卡片(hljs 主题自带配色与 TextMate 色板不搭);
+            // 彩色 token 由内联 style 覆盖,无色 token 走 inherit 与正文一致
+            const bg = "var(--b3-theme-surface)";
+            code.style.backgroundColor = bg;
+            code.style.color = "inherit";
+            code.style.fontFamily = "var(--b3-font-family-code, monospace)";
+            code.style.fontSize = "13px";
+            code.style.lineHeight = "1.6";
+            code.style.fontVariantLigatures = "none";
+            code.style.tabSize = "4";
+            if (code.parentElement && code.parentElement.tagName === "PRE") {
+                code.parentElement.style.backgroundColor = bg;
+            }
+        } catch {
+            // 单块失败保留 hljs 原样
+        }
+    }
 }
 
 // 打开 Markdown Tab(同文件去重,聚焦已有 Tab;mode 指定初始模式)
@@ -1219,7 +1263,11 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                             current: isDark ? "dark" : "light",
                             path: `${VDITOR_CDN}/dist/css/content-theme`,
                         },
+                        // 渲染完成后把代码块从 hljs 换成 TextMate 主题色(与编辑态/卡片一致)
+                        after: () => void restyleReadingCodeBlocks(host),
                     });
+                    // 兑底:after 未触发(vditor 构建差异)时定时补一次;幂等,已处理块跳过
+                    setTimeout(() => void restyleReadingCodeBlocks(host), 1500);
                 } else {
                     host.textContent = self._model?.getValue() ?? "";
                 }
@@ -1318,6 +1366,15 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                         self._vditor.setTheme(isDark ? "dark" : "classic", isDark ? "dark" : "light");
                     } catch {
                         // 忽略
+                    }
+                } else if (self._mode === "reading") {
+                    // cm6 阅读态:清标记重跑 TextMate 着色(缓存键含主题签名,自动换明暗色板)
+                    const host = self._contentEl?.querySelector(".syfe-md__cmread");
+                    if (host) {
+                        host.querySelectorAll<HTMLElement>("code[data-syfe-tm]").forEach(c => {
+                            c.removeAttribute("data-syfe-tm");
+                        });
+                        void restyleReadingCodeBlocks(host as HTMLElement);
                     }
                 }
             });
