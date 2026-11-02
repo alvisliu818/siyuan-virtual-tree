@@ -124,23 +124,28 @@ const syfeCmTheme = EditorView.theme({
     ".cm-activeLine.syfe-cm-codeblock-line": {
         backgroundColor: "var(--b3-theme-surface)",
     },
-    // 首行「语言标签 + 复制按钮」(点击整块区域即复制,光标不动)
-    ".syfe-cm-codeblock-info": {
-        float: "right",
+    // 整块代码卡片(渲染态):头部(语言 + 复制)+ 高亮正文
+    ".syfe-cm-codeblock": {
+        margin: "6px 0",
+        border: "1px solid var(--b3-border-color)",
+        borderRadius: "6px",
+        backgroundColor: "var(--b3-theme-surface)",
+        overflow: "hidden",
+    },
+    ".syfe-cm-codeblock-head": {
         display: "flex",
         alignItems: "center",
-        gap: "4px",
-        padding: "0 4px",
+        justifyContent: "space-between",
+        padding: "3px 10px",
+        borderBottom: "1px solid var(--b3-border-color)",
         fontSize: "12px",
         color: "var(--b3-theme-on-surface)",
-        opacity: ".75",
-        cursor: "pointer",
         userSelect: "none",
     },
-    ".syfe-cm-codeblock-info:hover": {
-        opacity: "1",
+    ".syfe-cm-codeblock-lang": {
+        opacity: ".75",
     },
-    ".syfe-cm-codeblock-info__copy": {
+    ".syfe-cm-codeblock-copy": {
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
@@ -150,13 +155,25 @@ const syfeCmTheme = EditorView.theme({
         cursor: "pointer",
         backgroundColor: "transparent",
         color: "var(--b3-theme-on-surface)",
+        fontSize: "12px",
     },
-    ".syfe-cm-codeblock-info__copy:hover": {
+    ".syfe-cm-codeblock-copy:hover": {
         backgroundColor: "var(--b3-list-hover, rgba(127,127,127,.15))",
     },
-    ".syfe-cm-codeblock-info__copied": {
+    ".syfe-cm-codeblock-copy.is-copied": {
         color: "var(--b3-theme-primary)",
         fontWeight: "600",
+    },
+    ".syfe-cm-codeblock-body": {
+        margin: "0",
+        padding: "8px 12px",
+        overflowX: "auto",
+        fontFamily: "var(--b3-font-family-code, monospace)",
+        fontSize: "13px",
+        lineHeight: "1.6",
+        fontVariantLigatures: "none",
+        whiteSpace: "pre",
+        tabSize: 4,
     },
     ".syfe-cm-tablesrc-line": {backgroundColor: "var(--b3-theme-surface)"},
     ".syfe-cm-mathsrc-line": {backgroundColor: "var(--b3-theme-surface)"},

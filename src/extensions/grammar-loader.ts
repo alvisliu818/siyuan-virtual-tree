@@ -286,10 +286,73 @@ export function getLanguageIdByExtension(ext: string): string | null {
     return extToLanguage.get(ext.toLowerCase()) || null;
 }
 
+// ===== CM6 代码块高亮入口(Markdown 围栏语言 → TextMate IGrammar) =====
+
+// 围栏语言名 → grammar-loader 的 language id(languageToScope 查询用);
+// 不在表里的名字按原样作为 language id 查询(扩展注册的语言直接命中)
+const FENCE_LANG_ALIASES: Record<string, string> = {
+    py: "python", py3: "python", python3: "python",
+    js: "javascript", jsx: "javascript", node: "javascript", mjs: "javascript", cjs: "javascript",
+    ts: "typescript", tsx: "typescript",
+    jsonc: "json", json5: "json",
+    htm: "html", xhtml: "html",
+    less: "css", scss: "css", sass: "css",
+    md: "markdown", mdown: "markdown",
+    yml: "yaml",
+    svg: "xml", xsl: "xml",
+    sh: "shell", bash: "shell", zsh: "shell",
+    "c++": "cpp", cxx: "cpp", cc: "cpp", hpp: "cpp", hxx: "cpp",
+    golang: "go",
+};
+
+// scopeName → IGrammar 实例缓存(addGrammar 有解析开销,同一语法只建一次;
+// 并发调用共享同一个 promise,避免重复建语法)
+const grammarInstanceCache = new Map<string, Promise<IGrammar | null>>();
+
+// scopeName → 已就绪的 IGrammar(getTmGrammar resolve 后写入;同步探测用,
+// CM6 编辑态高亮需要免 await 的同步分词入口)
+const readyGrammars = new Map<string, IGrammar>();
+
+// 同步取已就绪的语法(未加载/语言未知返回 null;不会触发加载)
+export function getTmGrammarSync(lang: string): IGrammar | null {
+    const id = FENCE_LANG_ALIASES[lang.toLowerCase()] ?? lang.toLowerCase();
+    const scopeName = languageToScope.get(id);
+    return scopeName ? readyGrammars.get(scopeName) ?? null : null;
+}
+
+// 取指定围栏语言的 TextMate 语法(CM6 代码块高亮用)。
+// 与 Monaco 代码文件共用同一注册表与语法;语言未加载时返回 null(调用方回退纯文本)。
+export async function getTmGrammar(lang: string): Promise<IGrammar | null> {
+    const id = FENCE_LANG_ALIASES[lang.toLowerCase()] ?? lang.toLowerCase();
+    const scopeName = languageToScope.get(id);
+    if (!scopeName) return null;
+    let cached = grammarInstanceCache.get(scopeName);
+    if (!cached) {
+        cached = (async () => {
+            const reg = await ensureRegistry();
+            const raw = grammarMap.get(scopeName);
+            if (!raw) return null;
+            const g = await reg.addGrammar(raw);
+            readyGrammars.set(scopeName, g);
+            return g;
+        })();
+        grammarInstanceCache.set(scopeName, cached);
+    }
+    try {
+        return await cached;
+    } catch (e) {
+        // 失败不缓存,下次重试
+        grammarInstanceCache.delete(scopeName);
+        return null;
+    }
+}
+
 // 清理所有已注册的语法(卸载扩展时调用)
 export function clearAllGrammars(): void {
     grammarMap.clear();
     languageToScope.clear();
     extToLanguage.clear();
+    grammarInstanceCache.clear();
+    readyGrammars.clear();
     registry = null;
 }

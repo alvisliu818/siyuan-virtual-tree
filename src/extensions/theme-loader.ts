@@ -23,9 +23,62 @@ const loadedThemes: LoadedTheme[] = [];
 // 当前激活的主题名(供编辑器创建时使用,避免硬编码主题覆盖扩展主题)
 let activeThemeName: string | null = null;
 
+// themeName → 原始主题 JSON(供 CM6 代码块 TextMate 高亮取 tokenColors 用;
+// convertThemeToMonaco 只落成 Monaco 规则,原始数据从这里取)
+const themeDataByName = new Map<string, any>();
+// themeName → 解析后的 tokenColors 规则(惰性解析,结果缓存)
+const parsedRulesByName = new Map<string, TmTokenRule[]>();
+
+// 主题切换监听(CM6 编辑器收到通知后重建代码块高亮)
+const themeChangeListeners: Array<() => void> = [];
+export function onCodeThemeChanged(cb: () => void): () => void {
+    themeChangeListeners.push(cb);
+    return () => {
+        const i = themeChangeListeners.indexOf(cb);
+        if (i >= 0) themeChangeListeners.splice(i, 1);
+    };
+}
+
+function notifyThemeChanged(): void {
+    for (const cb of [...themeChangeListeners]) {
+        try {
+            cb();
+        } catch {
+            // 单个监听器异常不影响其他监听器
+        }
+    }
+}
+
+/** CM6 代码块 TextMate 高亮用的 token 规则(选择器按点分段) */
+export interface TmTokenRule {
+    segments: string[];
+    foreground: string;
+    fontStyle?: string;
+}
+
+/** 当前激活的代码主题(tokenColors 解析结果;CM6 代码块高亮取色用) */
+export interface ActiveCodeTheme {
+    /** 主题名(Monaco theme name;作签名/缓存键) */
+    name: string;
+    rules: TmTokenRule[];
+}
+
 // 获取当前激活的扩展主题名;无扩展主题时返回 null(调用方回退到思源配色主题)
 export function getActiveThemeName(): string | null {
     return activeThemeName;
+}
+
+// 当前激活主题的 tokenColors 解析结果;无扩展主题时返回 null(调用方回退内置配色)
+export function getActiveCodeTheme(): ActiveCodeTheme | null {
+    if (!activeThemeName) return null;
+    const themeData = themeDataByName.get(activeThemeName);
+    if (!themeData) return null;
+    let rules = parsedRulesByName.get(activeThemeName);
+    if (!rules) {
+        rules = parseTokenRules(themeData);
+        parsedRulesByName.set(activeThemeName, rules);
+    }
+    return {name: activeThemeName, rules};
 }
 
 // 加载扩展的主题贡献
@@ -46,6 +99,8 @@ export function loadThemes(extension: InstalledExtension): number {
             const base = (themeContribution.uiTheme === "vs" || themeData.type === "light") ? "vs" : "vs-dark";
 
             convertThemeToMonaco(themeData, themeName, base);
+            // 保留原始数据供 CM6 代码块高亮取 tokenColors(getActiveCodeTheme)
+            themeDataByName.set(themeName, themeData);
             loadedThemes.push({
                 extensionId: extension.id,
                 label: themeContribution.label,
@@ -62,14 +117,17 @@ export function loadThemes(extension: InstalledExtension): number {
 
 // 应用主题时的安全包装,捕获 Monaco 延迟校验颜色的错误
 function safeSetTheme(themeName: string): boolean {
+    const prev = activeThemeName;
     try {
         monaco.editor.setTheme(themeName);
         activeThemeName = themeName;
+        if (activeThemeName !== prev) notifyThemeChanged();
         return true;
     } catch (e) {
         console.error(`[siyuan-file-editor] 应用主题失败 ${themeName}:`, e);
         // 回退到内置主题
         activeThemeName = null;
+        if (activeThemeName !== prev) notifyThemeChanged();
         try {
             monaco.editor.setTheme("vs-dark");
         } catch {
@@ -141,11 +199,25 @@ const SEMANTIC_DEFAULT_RULES: Array<{selector: string; scopes: string[]}> = [
     {selector: "member.defaultLibrary", scopes: ["support.function"]},
 ];
 
-/** 主题 tokenColors 解析结果:scope 按点分段 + 颜色 */
-interface ParsedTokenRule {
-    segments: string[];
-    foreground: string;
-    fontStyle?: string;
+/** 主题 tokenColors 解析结果:scope 按点分段 + 颜色(TmTokenRule 的别名) */
+type ParsedTokenRule = TmTokenRule;
+
+/** 解析主题 tokenColors 为可探测的规则表(语义规则与 CM6 代码块高亮共用) */
+function parseTokenRules(themeData: any): TmTokenRule[] {
+    const parsed: TmTokenRule[] = [];
+    for (const tokenColor of themeData.tokenColors || []) {
+        const rawScopes = Array.isArray(tokenColor.scope) ? tokenColor.scope : [tokenColor.scope];
+        const settings = tokenColor.settings || {};
+        const foreground = settings.foreground ? normalizeHex(settings.foreground) : "";
+        if (!foreground) continue;
+        for (const rawScope of rawScopes) {
+            if (typeof rawScope !== "string") continue;
+            for (const scope of rawScope.split(/[\s,]+/).filter(Boolean)) {
+                parsed.push({segments: scope.split("."), foreground, fontStyle: settings.fontStyle});
+            }
+        }
+    }
+    return parsed;
 }
 
 /** 探测:找"点分段前缀"命中的主题规则,取最长选择器 */
@@ -181,19 +253,7 @@ function appendSemanticRules(themeData: any, rules: monaco.editor.ITokenThemeRul
     if (themeData.semanticHighlighting === false) return;
 
     // 解析主题 tokenColors 为可探测的规则表
-    const parsed: ParsedTokenRule[] = [];
-    for (const tokenColor of themeData.tokenColors || []) {
-        const rawScopes = Array.isArray(tokenColor.scope) ? tokenColor.scope : [tokenColor.scope];
-        const settings = tokenColor.settings || {};
-        const foreground = settings.foreground ? normalizeHex(settings.foreground) : "";
-        if (!foreground) continue;
-        for (const rawScope of rawScopes) {
-            if (typeof rawScope !== "string") continue;
-            for (const scope of rawScope.split(/[\s,]+/).filter(Boolean)) {
-                parsed.push({segments: scope.split("."), foreground, fontStyle: settings.fontStyle});
-            }
-        }
-    }
+    const parsed = parseTokenRules(themeData);
 
     // semanticTokenColors:键 "variable" / "variable.readonly",值为颜色字符串
     // 或 TokenStyle 对象。优先级高于默认规则(VS Code 同序)。
@@ -456,7 +516,10 @@ export function hasExtensionThemes(): boolean {
 // 返回 false 表示调用方需回退到思源配色主题
 export function applyThemeByPreference(pref: string, isDark: boolean): boolean {
     if (pref === "__siyuan__") {
-        activeThemeName = null;
+        if (activeThemeName !== null) {
+            activeThemeName = null;
+            notifyThemeChanged();
+        }
         return false;
     }
     if (pref) {
@@ -473,17 +536,25 @@ export function applyThemeByPreference(pref: string, isDark: boolean): boolean {
 export function removeExtensionThemes(extensionId: string): void {
     for (let i = loadedThemes.length - 1; i >= 0; i--) {
         if (loadedThemes[i].extensionId === extensionId) {
+            themeDataByName.delete(loadedThemes[i].name);
+            parsedRulesByName.delete(loadedThemes[i].name);
             loadedThemes.splice(i, 1);
         }
     }
     // 若激活主题属于被移除的扩展,清空记录(调用方负责重新应用回退主题)
     if (activeThemeName && !loadedThemes.some(t => t.name === activeThemeName)) {
         activeThemeName = null;
+        notifyThemeChanged();
     }
 }
 
 // 清理所有主题
 export function clearAllThemes(): void {
     loadedThemes.length = 0;
-    activeThemeName = null;
+    themeDataByName.clear();
+    parsedRulesByName.clear();
+    if (activeThemeName !== null) {
+        activeThemeName = null;
+        notifyThemeChanged();
+    }
 }

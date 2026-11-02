@@ -1,9 +1,12 @@
 // CM6 Markdown 富渲染扩展:在源码态编辑器里做「轻 live」渲染。
 //
 // 范围(与 cm6-markdown.ts 的语法高亮互补):
-//  - 围栏代码块:整块行底色 + 首尾行圆角 + 首行「语言标签/复制按钮」widget
-//    (代码保持可编辑源码,语言高亮由 lang-markdown 的 codeLanguages 提供;
-//    交互模型参考 ProseMark codeFenceExtension / PurrMD codeBlock)
+//  - 围栏代码块:光标在块外时整块替换为「代码卡片」(头部语言标签/复制按钮 +
+//    TextMate 高亮正文,复用 Monaco 代码文件那套 vscode-textmate 语法 + VS Code
+//    主题 tokenColors,见 tm-highlight.ts);光标进入块内回源码行底色态,
+//    并按 token 打 mark decoration 内联着色(与卡片同一套语法/主题;
+//    语法未就绪时先无色,grammarSync 插件就绪后补色)
+//    (交互模型参考 ProseMark codeFenceExtension / PurrMD codeBlock)
 //  - 图片:整行就是一张图片语法 ![alt](src) 或 <img src="..."> 时,替换为真实 <img>
 //    (光标落在该行时还原源码,方便编辑;地址经宿主 resolveImageSrc → blob URL)
 //  - 公式:$$...$$ 块用 KaTeX 渲染(资源来自 vditor 自带的 katex,懒加载),
@@ -15,15 +18,19 @@
 // 装饰("Block decorations may not be specified via plugins")。
 // 块级替换配合 atomicRanges 让光标不落在渲染物中间;
 // 光标进入块内即回源码,这是 Obsidian 同款的编辑模型。
-import {EditorState, Extension, Range, StateField} from "@codemirror/state";
+// 代码主题切换(Monaco 扩展主题)经 onCodeThemeChanged → StateEffect 强制重建。
+import {EditorState, Extension, Range, StateEffect, StateField} from "@codemirror/state";
 import {
     Decoration,
     DecorationSet,
     EditorView,
     ViewPlugin,
+    ViewUpdate,
     WidgetType,
 } from "@codemirror/view";
 import {syntaxTree} from "@codemirror/language";
+import {getCachedTmHighlight, getCachedTmTokens, tmHighlightToHtml, tmThemeSignature, tmTokenize, tmTokenizeSync} from "./tm-highlight";
+import {onCodeThemeChanged} from "../extensions/theme-loader";
 
 export interface Cm6RenderOptions {
     /** 解析图片地址 → 可加载 URL(blob URL / 绝对路径);返回 null 表示不处理 */
@@ -102,72 +109,91 @@ async function copyTextCompat(text: string): Promise<void> {
     if (!copied) throw new Error("copy failed");
 }
 
+// 复制按钮图标(新旧 widget 共用)
+const COPY_ICON_SVG =
+    '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"' +
+    ' fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+    '<rect width="14" height="14" x="8" y="8" rx="2" ry="2"/>' +
+    '<path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>';
+
 /**
- * 围栏代码块首行的「语言标签 + 复制按钮」(ProseMark CodeBlockInfoWidget / PurrMD 同款交互)。
- * 代码本体保持源码可编辑,widget 只悬浮在首行右端;点击整块区域即复制。
+ * 围栏代码块整块渲染卡片(光标在块外时):头部(语言标签 + 复制按钮)+
+ * TextMate 高亮正文(tm-highlight.ts,与 Monaco 代码文件同一套语法/主题)。
+ * 头部是交互区(复制),点击正文区把光标送回源码块(clickHandler)。
  */
-class CodeBlockInfoWidget extends WidgetType {
+class CodeBlockWidget extends WidgetType {
     private copiedTimer: number | undefined;
+    // 构建时快照的主题签名:主题切换 → eq 不等 → 重建 DOM 重取色
+    readonly themeSig = tmThemeSignature();
 
     constructor(readonly lang: string, readonly code: string) {
         super();
     }
 
-    eq(other: CodeBlockInfoWidget): boolean {
-        return other.lang === this.lang && other.code === this.code;
+    eq(other: CodeBlockWidget): boolean {
+        return other.lang === this.lang && other.code === this.code && other.themeSig === this.themeSig;
     }
 
-    private renderLabel(dom: HTMLElement, copied: boolean): void {
-        dom.replaceChildren();
-        if (copied) {
-            const ok = document.createElement("span");
-            ok.className = "syfe-cm-codeblock-info__copied";
-            ok.textContent = "已复制";
-            dom.appendChild(ok);
-        }
-        if (this.lang) dom.appendChild(document.createTextNode(this.lang));
+    private markCopied(btn: HTMLButtonElement): void {
+        if (!btn.isConnected) return;
+        btn.classList.add("is-copied");
+        btn.textContent = "已复制";
+        if (this.copiedTimer) window.clearTimeout(this.copiedTimer);
+        this.copiedTimer = window.setTimeout(() => {
+            this.copiedTimer = undefined;
+            if (!btn.isConnected) return;
+            btn.classList.remove("is-copied");
+            btn.innerHTML = COPY_ICON_SVG;
+        }, 1600);
     }
 
-    toDOM(): HTMLElement {
-        const dom = document.createElement("div");
-        dom.className = "syfe-cm-codeblock-info";
-        dom.setAttribute("contenteditable", "false");
-        this.renderLabel(dom, false);
+    toDOM(view: EditorView): HTMLElement {
+        const wrap = document.createElement("div");
+        wrap.className = "syfe-cm-codeblock";
+        wrap.setAttribute("contenteditable", "false");
 
+        const head = document.createElement("div");
+        head.className = "syfe-cm-codeblock-head";
+        const lang = document.createElement("span");
+        lang.className = "syfe-cm-codeblock-lang";
+        lang.textContent = this.lang || "text";
+        head.appendChild(lang);
         const btn = document.createElement("button");
-        btn.className = "syfe-cm-codeblock-info__copy";
+        btn.className = "syfe-cm-codeblock-copy";
         btn.title = "复制代码";
-        btn.innerHTML =
-            '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"' +
-            ' fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
-            '<rect width="14" height="14" x="8" y="8" rx="2" ry="2"/>' +
-            '<path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>';
-        dom.appendChild(btn);
-
-        // 抢在 CM 之前消费鼠标事件:点 widget 不移动光标、不触发移动端键盘
-        dom.onmousedown = (e) => {
+        btn.innerHTML = COPY_ICON_SVG;
+        // 抢在 CM/点击进源码之前消费头部事件:点复制不动光标、不触发移动端键盘
+        btn.onmousedown = (e) => {
             e.stopPropagation();
             e.preventDefault();
         };
-        dom.onclick = (e) => {
+        btn.onclick = (e) => {
             e.stopPropagation();
             e.preventDefault();
             void copyTextCompat(this.code)
-                .then(() => {
-                    if (!dom.isConnected) return;
-                    dom.classList.add("is-copied");
-                    this.renderLabel(dom, true);
-                    if (this.copiedTimer) window.clearTimeout(this.copiedTimer);
-                    this.copiedTimer = window.setTimeout(() => {
-                        this.copiedTimer = undefined;
-                        if (!dom.isConnected) return;
-                        dom.classList.remove("is-copied");
-                        this.renderLabel(dom, false);
-                    }, 1600);
-                })
+                .then(() => this.markCopied(btn))
                 .catch(() => undefined);
         };
-        return dom;
+        head.appendChild(btn);
+
+        const pre = document.createElement("pre");
+        pre.className = "syfe-cm-codeblock-body";
+        const cached = getCachedTmHighlight(this.lang, this.code);
+        if (cached) {
+            pre.innerHTML = cached.html;
+        } else {
+            // 高亮未就绪(语法/wasm 首次加载中):先显示纯文本,就绪后就地替换
+            pre.textContent = this.code;
+            void tmHighlightToHtml(this.lang, this.code).then(res => {
+                if (!res || !pre.isConnected) return;
+                pre.innerHTML = res.html;
+                view.requestMeasure();
+            });
+        }
+
+        wrap.appendChild(head);
+        wrap.appendChild(pre);
+        return wrap;
     }
 
     destroy(): void {
@@ -381,7 +407,7 @@ function renderGfmTable(lines: string[]): HTMLElement {
 const RE_IMAGE_LINE = /^\s*!\[([^\]]*)\]\(\s*(<[^>]*>|[^)\s]+)(?:\s+"[^"]*")?\s*\)\s*$/;
 const RE_IMG_TAG_LINE = /^\s*<img\b[^>]*\bsrc\s*=\s*("([^"]*)"|'([^']*)')[^>]*>\s*$/i;
 const RE_TABLE_ROW = /^\s{0,3}\|.*\|\s*$/;
-const RE_TABLE_SEP = /^\s{0,3}\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|?\s*$/;
+const RE_TABLE_SEP = /^\s{0,3}\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)+\|?\s*$/;
 
 /** 围栏代码块信息(借 lang-markdown 的语法树,FencedCode 节点) */
 interface FencedCodeInfo {
@@ -416,6 +442,38 @@ function fencedCodeInfos(state: EditorState): FencedCodeInfo[] {
 
 // ===== 主插件 =====
 
+// 编辑态 TextMate 着色的字符上限:巨型块同步分词会卡键击,超限回退纯文本
+const EDIT_MARK_MAX_CHARS = 20000;
+
+// 围栏代码块编辑态(光标在块内)的 token 着色装饰:
+// 围栏行之间的整行内容 → Decoration.mark 内联 color(与卡片正文同一套语法/主题)。
+// 只吃同步通道(缓存命中或语法已就绪);无色返回空数组,由 grammarSync 异步补。
+function editStateTokenMarks(
+    info: FencedCodeInfo,
+    doc: EditorState["doc"],
+    first: number,
+    last: number,
+): Array<Range<Decoration>> {
+    const out: Array<Range<Decoration>> = [];
+    if (!info.code || info.code.length > EDIT_MARK_MAX_CHARS) return out;
+    const cached = getCachedTmTokens(info.lang, info.code);
+    const toks = cached !== undefined ? cached : tmTokenizeSync(info.lang, info.code);
+    if (!toks) return out;
+    const innerLast = /^\s*(`{3,}|~{3,})\s*$/.test(doc.line(last).text) ? last - 1 : last;
+    for (let li = 0; li < toks.lines.length; li++) {
+        const ln = first + 1 + li;
+        if (ln > innerLast) break;
+        const line = doc.line(ln);
+        for (const span of toks.lines[li]) {
+            if (!span.css || span.end <= span.start) continue;
+            const from = Math.min(line.from + span.start, line.to);
+            const to = Math.min(line.from + span.end, line.to);
+            if (to > from) out.push(Decoration.mark({attributes: {style: span.css}}).range(from, to));
+        }
+    }
+    return out;
+}
+
 const codeLineDeco = Decoration.line({class: "syfe-cm-codeblock-line"});
 const codeLineFirstDeco = Decoration.line({class: "syfe-cm-codeblock-line syfe-cm-codeblock-first"});
 const codeLineLastDeco = Decoration.line({class: "syfe-cm-codeblock-line syfe-cm-codeblock-last"});
@@ -426,9 +484,14 @@ const tableSrcLineDeco = Decoration.line({class: "syfe-cm-tablesrc-line"});
 const mathSrcLineDeco = Decoration.line({class: "syfe-cm-mathsrc-line"});
 
 export function cm6MarkdownRender(opts: Cm6RenderOptions): Extension {
+    // 代码主题切换等外部事件 → 强制重建装饰(widget eq 带主题签名,重建才会重渲)
+    const forceRenderEffect = StateEffect.define<null>();
     const renderField = StateField.define<DecorationSet>({
         create: (st) => buildDecorations(st, opts),
         update: (value, tr) => {
+            if (tr.effects.some(e => e.is(forceRenderEffect))) {
+                return buildDecorations(tr.state, opts);
+            }
             // doc/selection 变化重建;语法树异步解析完成(树实例变化)也重建,
             // 否则大文档首次渲染时 FencedCode 装饰会缺失(PurrMD 同款坑)
             if (!tr.docChanged && !tr.selection && syntaxTree(tr.startState) === syntaxTree(tr.state)) {
@@ -444,7 +507,7 @@ export function cm6MarkdownRender(opts: Cm6RenderOptions): Extension {
         ],
     });
 
-    // 点击渲染物(表格/公式)→ 光标送进源码块,视图随即回源码态(编辑模型见文件头)。
+    // 点击渲染物(代码卡片/表格/公式)→ 光标送进源码块,视图随即回源码态(编辑模型见文件头)。
     // 事件处理必须放在 ViewPlugin 里(StateField 不接 DOM 事件;block 装饰限制只针对装饰)。
     const clickHandler = ViewPlugin.fromClass(class {
         constructor(readonly view: EditorView) {}
@@ -453,7 +516,9 @@ export function cm6MarkdownRender(opts: Cm6RenderOptions): Extension {
         eventHandlers: {
             mousedown(event, view) {
                 const target = event.target as HTMLElement;
-                const wrap = target.closest(".syfe-cm-table, .syfe-cm-math") as HTMLElement | null;
+                // 代码卡片头部是复制按钮交互区,不进入源码
+                if (target.closest(".syfe-cm-codeblock-head")) return false;
+                const wrap = target.closest(".syfe-cm-codeblock, .syfe-cm-table, .syfe-cm-math") as HTMLElement | null;
                 if (!wrap) return false;
                 const pos = view.posAtDOM(wrap);
                 const line = view.state.doc.lineAt(pos);
@@ -464,7 +529,43 @@ export function cm6MarkdownRender(opts: Cm6RenderOptions): Extension {
         },
     });
 
-    return [renderField, clickHandler];
+    // 代码主题切换(Monaco 扩展主题 applyTheme)→ 通知本编辑器重建代码块高亮
+    const themeSync = ViewPlugin.fromClass(class {
+        private off: () => void = () => undefined;
+        constructor(readonly view: EditorView) {
+            this.off = onCodeThemeChanged(() => {
+                view.dispatch({effects: forceRenderEffect.of(null)});
+            });
+        }
+        destroy() {
+            this.off();
+        }
+    });
+
+    // 编辑态 TextMate 着色的语法异步就绪回调:光标所在块缓存未命中且语法未就绪时
+    // 先无色,这里触发加载并在就绪后强制重建一次补上着色
+    // (卡片态由 widget 自己异步补,不走这里;null = 不支持,不重试不重建)
+    const grammarSync = ViewPlugin.fromClass(class {
+        private inflight = new Set<string>();
+        constructor(readonly view: EditorView) {}
+        update(u: ViewUpdate) {
+            if (!u.docChanged && !u.selectionSet) return;
+            const cursor = u.state.selection.main.head;
+            for (const info of fencedCodeInfos(u.state)) {
+                if (!(cursor >= info.from && cursor <= info.to)) continue;
+                if (getCachedTmTokens(info.lang, info.code) !== undefined) continue;
+                const key = `${info.lang}\u0000${info.code}`;
+                if (this.inflight.has(key)) continue;
+                this.inflight.add(key);
+                void tmTokenize(info.lang, info.code).then(res => {
+                    this.inflight.delete(key);
+                    if (res) this.view.dispatch({effects: forceRenderEffect.of(null)});
+                }).catch(() => this.inflight.delete(key));
+            }
+        }
+    });
+
+    return [renderField, clickHandler, themeSync, grammarSync];
 }
 
 function buildDecorations(state: EditorState, opts: Cm6RenderOptions): DecorationSet {
@@ -481,23 +582,31 @@ function buildDecorations(state: EditorState, opts: Cm6RenderOptions): Decoratio
             const overlapsUsed = (from: number, to: number) => usedRanges.some(r => from < r.to && to > r.from);
             const cursorInRange = (from: number, to: number) => cursor >= from && cursor <= to;
 
-            // 1) 围栏代码块:行底色(首尾行圆角)+ 首行「语言/复制」widget
+            // 1) 围栏代码块:光标在块内 → 行底色源码态(首尾圆角);
+            //    光标在块外 → 整块 replace 成代码卡片(围栏隐藏,头部语言/复制 + 高亮正文)
             for (const info of fencedCodeInfos(state)) {
                 const first = doc.lineAt(info.from).number;
                 const last = doc.lineAt(Math.max(info.from, info.to - 1)).number;
-                for (let ln = first; ln <= last; ln++) {
-                    const deco =
-                        ln === first
-                            ? (ln === last ? codeLineOnlyDeco : codeLineFirstDeco)
-                            : (ln === last ? codeLineLastDeco : codeLineDeco);
-                    lineDecos.push(deco.range(doc.line(ln).from));
-                }
-                // 语言标签 + 复制按钮悬浮在首行右端;代码保持可编辑源码,不参与 atomicRanges
-                lineDecos.push(
-                    Decoration.widget({widget: new CodeBlockInfoWidget(info.lang, info.code)})
-                        .range(doc.line(first).from),
-                );
                 usedRanges.push({from: info.from, to: info.to});
+                if (cursorInRange(info.from, info.to)) {
+                    for (let ln = first; ln <= last; ln++) {
+                        const deco =
+                            ln === first
+                                ? (ln === last ? codeLineOnlyDeco : codeLineFirstDeco)
+                                : (ln === last ? codeLineLastDeco : codeLineDeco);
+                        lineDecos.push(deco.range(doc.line(ln).from));
+                    }
+                    // 编辑态 TextMate 着色:mark decoration 按 token 上色
+                    // (语法未就绪时先无色,grammarSync 在加载完成后 dispatch 补色)
+                    for (const m of editStateTokenMarks(info, doc, first, last)) {
+                        ranges.push(m);
+                    }
+                } else {
+                    const widget = new CodeBlockWidget(info.lang, info.code);
+                    const replace = Decoration.replace({widget, block: true});
+                    ranges.push(replace.range(info.from, info.to));
+                    atomicRanges.push(replace.range(info.from, info.to));
+                }
             }
 
             // 2) 数学块 $$...$$(光标在块内时只加底色,便于编辑)
