@@ -53,6 +53,11 @@ const BUILTIN_GRAMMARS: BuiltinGrammarEntry[] = [
 
 let builtinLoaded = false;
 
+// 内置语法加载完成信号:getTmGrammar 等它,消除「wasm/registry 已就绪但语法清单还没
+// fetch 完」的竞态 —— 否则首次调用会在 grammarMap 为空时永久缓存 null,代码块永远无色
+let builtinReadyResolve: (() => void) | null = null;
+const builtinGrammarsReady = new Promise<void>((resolve) => { builtinReadyResolve = resolve; });
+
 // 加载内置 TextMate 语法并接管对应 Monaco 语言的着色。
 // 幂等;失败按文件跳过,不抛出 —— 语法加载失败只应退回 Monarch,不该打断启动。
 // setTokensProvider 是覆盖语义,同一 language id 以最后注册者为准;
@@ -107,6 +112,7 @@ export async function loadBuiltinGrammars(): Promise<number> {
             }
         }
     }
+    builtinReadyResolve?.();
     return loadedCount;
 }
 
@@ -330,6 +336,8 @@ export async function getTmGrammar(lang: string): Promise<IGrammar | null> {
     if (!cached) {
         cached = (async () => {
             const reg = await ensureRegistry();
+            // 等内置语法清单加载完再查 grammarMap(见 builtinGrammarsReady 注释)
+            await builtinGrammarsReady;
             const raw = grammarMap.get(scopeName);
             if (!raw) return null;
             const g = await reg.addGrammar(raw);

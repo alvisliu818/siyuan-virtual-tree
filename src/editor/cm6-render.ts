@@ -1,11 +1,10 @@
 // CM6 Markdown 富渲染扩展:在源码态编辑器里做「轻 live」渲染。
 //
 // 范围(与 cm6-markdown.ts 的语法高亮互补):
-//  - 围栏代码块:光标在块外时整块替换为「代码卡片」(头部语言标签/复制按钮 +
-//    TextMate 高亮正文,复用 Monaco 代码文件那套 vscode-textmate 语法 + VS Code
-//    主题 tokenColors,见 tm-highlight.ts);光标进入块内回源码行底色态,
-//    并按 token 打 mark decoration 内联着色(与卡片同一套语法/主题;
-//    语法未就绪时先无色,grammarSync 插件就绪后补色)
+//  - 围栏代码块:唯一一套渲染 —— 代码行永远以「行底色 + TextMate token 着色」呈现,
+//    两态唯一差别是围栏显隐:光标在块外(渲染态)围栏行 block replace 隐藏,开头围栏
+//    换成头部工具条(语言/复制);光标在块内(编辑态)围栏原样显示。高亮用 Monaco 代码
+//    文件那套 vscode-textmate 语法 + VS Code 主题 tokenColors(见 tm-highlight.ts)。//    (交互模型参考 ProseMark codeFenceExtension / PurrMD codeBlock)
 //    (交互模型参考 ProseMark codeFenceExtension / PurrMD codeBlock)
 //  - 图片:整行就是一张图片语法 ![alt](src) 或 <img src="..."> 时,替换为真实 <img>
 //    (光标落在该行时还原源码,方便编辑;地址经宿主 resolveImageSrc → blob URL)
@@ -29,7 +28,7 @@ import {
     WidgetType,
 } from "@codemirror/view";
 import {syntaxTree} from "@codemirror/language";
-import {getCachedTmHighlight, getCachedTmTokens, tmHighlightToHtml, tmThemeSignature, tmTokenize, tmTokenizeSync} from "./tm-highlight";
+import {getCachedTmTokens, tmTokenize, tmTokenizeSync} from "./tm-highlight";
 import {onCodeThemeChanged} from "../extensions/theme-loader";
 
 export interface Cm6RenderOptions {
@@ -117,21 +116,19 @@ const COPY_ICON_SVG =
     '<path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>';
 
 /**
- * 围栏代码块整块渲染卡片(光标在块外时):头部(语言标签 + 复制按钮)+
- * TextMate 高亮正文(tm-highlight.ts,与 Monaco 代码文件同一套语法/主题)。
- * 头部是交互区(复制),点击正文区把光标送回源码块(clickHandler)。
+ * 围栏代码块渲染态头部工具条(光标在块外时替换开头围栏行):语言标签 + 复制按钮。
+ * 正文不再走 widget —— 两态共用同一套代码行渲染(行底色 + TextMate mark),
+ * 头部只是渲染态多出的一个块级装饰。点击头部把光标送进块(clickHandler)。
  */
-class CodeBlockWidget extends WidgetType {
+class CodeHeadWidget extends WidgetType {
     private copiedTimer: number | undefined;
-    // 构建时快照的主题签名:主题切换 → eq 不等 → 重建 DOM 重取色
-    readonly themeSig = tmThemeSignature();
 
     constructor(readonly lang: string, readonly code: string) {
         super();
     }
 
-    eq(other: CodeBlockWidget): boolean {
-        return other.lang === this.lang && other.code === this.code && other.themeSig === this.themeSig;
+    eq(other: CodeHeadWidget): boolean {
+        return other.lang === this.lang && other.code === this.code;
     }
 
     private markCopied(btn: HTMLButtonElement): void {
@@ -148,12 +145,9 @@ class CodeBlockWidget extends WidgetType {
     }
 
     toDOM(view: EditorView): HTMLElement {
-        const wrap = document.createElement("div");
-        wrap.className = "syfe-cm-codeblock";
-        wrap.setAttribute("contenteditable", "false");
-
         const head = document.createElement("div");
         head.className = "syfe-cm-codeblock-head";
+        head.setAttribute("contenteditable", "false");
         const lang = document.createElement("span");
         lang.className = "syfe-cm-codeblock-lang";
         lang.textContent = this.lang || "text";
@@ -175,25 +169,7 @@ class CodeBlockWidget extends WidgetType {
                 .catch(() => undefined);
         };
         head.appendChild(btn);
-
-        const pre = document.createElement("pre");
-        pre.className = "syfe-cm-codeblock-body";
-        const cached = getCachedTmHighlight(this.lang, this.code);
-        if (cached) {
-            pre.innerHTML = cached.html;
-        } else {
-            // 高亮未就绪(语法/wasm 首次加载中):先显示纯文本,就绪后就地替换
-            pre.textContent = this.code;
-            void tmHighlightToHtml(this.lang, this.code).then(res => {
-                if (!res || !pre.isConnected) return;
-                pre.innerHTML = res.html;
-                view.requestMeasure();
-            });
-        }
-
-        wrap.appendChild(head);
-        wrap.appendChild(pre);
-        return wrap;
+        return head;
     }
 
     destroy(): void {
@@ -445,10 +421,10 @@ function fencedCodeInfos(state: EditorState): FencedCodeInfo[] {
 // 编辑态 TextMate 着色的字符上限:巨型块同步分词会卡键击,超限回退纯文本
 const EDIT_MARK_MAX_CHARS = 20000;
 
-// 围栏代码块编辑态(光标在块内)的 token 着色装饰:
-// 围栏行之间的整行内容 → Decoration.mark 内联 color(与卡片正文同一套语法/主题)。
+// 围栏代码块 token 着色装饰(两态共用,唯一一套渲染的高亮来源):
+// 围栏行之间的整行内容 → Decoration.mark 内联 color(vscode-textmate 语法 + 主题色)。
 // 只吃同步通道(缓存命中或语法已就绪);无色返回空数组,由 grammarSync 异步补。
-function editStateTokenMarks(
+function codeTokenMarks(
     info: FencedCodeInfo,
     doc: EditorState["doc"],
     first: number,
@@ -479,6 +455,11 @@ const codeLineFirstDeco = Decoration.line({class: "syfe-cm-codeblock-line syfe-c
 const codeLineLastDeco = Decoration.line({class: "syfe-cm-codeblock-line syfe-cm-codeblock-last"});
 const codeLineOnlyDeco = Decoration.line({
     class: "syfe-cm-codeblock-line syfe-cm-codeblock-first syfe-cm-codeblock-last",
+});
+// 渲染态修饰类:画出旧卡片的壳(左右/底部边线;编辑态不用,保留左侧强调条)
+const codeLineOutDeco = Decoration.line({class: "syfe-cm-codeblock-line syfe-cm-codeblock-out"});
+const codeLineOutLastDeco = Decoration.line({
+    class: "syfe-cm-codeblock-line syfe-cm-codeblock-out syfe-cm-codeblock-last",
 });
 const tableSrcLineDeco = Decoration.line({class: "syfe-cm-tablesrc-line"});
 const mathSrcLineDeco = Decoration.line({class: "syfe-cm-mathsrc-line"});
@@ -516,9 +497,9 @@ export function cm6MarkdownRender(opts: Cm6RenderOptions): Extension {
         eventHandlers: {
             mousedown(event, view) {
                 const target = event.target as HTMLElement;
-                // 代码卡片头部是复制按钮交互区,不进入源码
-                if (target.closest(".syfe-cm-codeblock-head")) return false;
-                const wrap = target.closest(".syfe-cm-codeblock, .syfe-cm-table, .syfe-cm-math") as HTMLElement | null;
+                // 头部工具条里的复制按钮是独立交互区,不进入源码
+                if (target.closest(".syfe-cm-codeblock-copy")) return false;
+                const wrap = target.closest(".syfe-cm-codeblock-head, .syfe-cm-table, .syfe-cm-math") as HTMLElement | null;
                 if (!wrap) return false;
                 const pos = view.posAtDOM(wrap);
                 const line = view.state.doc.lineAt(pos);
@@ -542,24 +523,37 @@ export function cm6MarkdownRender(opts: Cm6RenderOptions): Extension {
         }
     });
 
-    // 编辑态 TextMate 着色的语法异步就绪回调:光标所在块缓存未命中且语法未就绪时
-    // 先无色,这里触发加载并在就绪后强制重建一次补上着色
-    // (卡片态由 widget 自己异步补,不走这里;null = 不支持,不重试不重建)
+    // TextMate 语法异步就绪回调:任一代码块缓存未命中且语法未就绪时先无色,
+    // 这里触发加载并在就绪后强制重建补色(两态同一管线,无色也一致);
+    // null = 语言不支持,缓存 null 后不再重试不重建
     const grammarSync = ViewPlugin.fromClass(class {
         private inflight = new Set<string>();
-        constructor(readonly view: EditorView) {}
+        private dispatchQueued = false;
+        constructor(readonly view: EditorView) {
+            // 初次挂载也要调度:ViewPlugin 的 update 在视图创建时不触发,
+            // 不在构造函数里扫一遍的话首帧(渲染态)会一直无色
+            this.schedule();
+        }
         update(u: ViewUpdate) {
             if (!u.docChanged && !u.selectionSet) return;
-            const cursor = u.state.selection.main.head;
-            for (const info of fencedCodeInfos(u.state)) {
-                if (!(cursor >= info.from && cursor <= info.to)) continue;
+            this.schedule();
+        }
+        private schedule() {
+            for (const info of fencedCodeInfos(this.view.state)) {
                 if (getCachedTmTokens(info.lang, info.code) !== undefined) continue;
                 const key = `${info.lang}\u0000${info.code}`;
                 if (this.inflight.has(key)) continue;
                 this.inflight.add(key);
                 void tmTokenize(info.lang, info.code).then(res => {
                     this.inflight.delete(key);
-                    if (res) this.view.dispatch({effects: forceRenderEffect.of(null)});
+                    // 合并派发:同批多个块就绪只重建一次
+                    if (res && !this.dispatchQueued) {
+                        this.dispatchQueued = true;
+                        Promise.resolve().then(() => {
+                            this.dispatchQueued = false;
+                            this.view.dispatch({effects: forceRenderEffect.of(null)});
+                        });
+                    }
                 }).catch(() => this.inflight.delete(key));
             }
         }
@@ -582,30 +576,43 @@ function buildDecorations(state: EditorState, opts: Cm6RenderOptions): Decoratio
             const overlapsUsed = (from: number, to: number) => usedRanges.some(r => from < r.to && to > r.from);
             const cursorInRange = (from: number, to: number) => cursor >= from && cursor <= to;
 
-            // 1) 围栏代码块:光标在块内 → 行底色源码态(首尾圆角);
-            //    光标在块外 → 整块 replace 成代码卡片(围栏隐藏,头部语言/复制 + 高亮正文)
+            // 1) 围栏代码块 —— 唯一一套渲染:代码行永远以「行底色 + TextMate mark」呈现,
+            //    两态唯一差别是围栏显隐:
+            //      光标在块内(编辑态)→ 围栏显示,首尾围栏行圆角底色;
+            //      光标在块外(渲染态)→ 围栏行 block replace 隐藏,开头围栏换成头部工具条。
             for (const info of fencedCodeInfos(state)) {
                 const first = doc.lineAt(info.from).number;
                 const last = doc.lineAt(Math.max(info.from, info.to - 1)).number;
+                const lastIsFence = /^\s*(`{3,}|~{3,})\s*$/.test(doc.line(last).text);
+                const innerLast = lastIsFence && last > first ? last - 1 : last;
                 usedRanges.push({from: info.from, to: info.to});
-                if (cursorInRange(info.from, info.to)) {
-                    for (let ln = first; ln <= last; ln++) {
-                        const deco =
-                            ln === first
-                                ? (ln === last ? codeLineOnlyDeco : codeLineFirstDeco)
-                                : (ln === last ? codeLineLastDeco : codeLineDeco);
-                        lineDecos.push(deco.range(doc.line(ln).from));
-                    }
-                    // 编辑态 TextMate 着色:mark decoration 按 token 上色
-                    // (语法未就绪时先无色,grammarSync 在加载完成后 dispatch 补色)
-                    for (const m of editStateTokenMarks(info, doc, first, last)) {
-                        ranges.push(m);
+                const renderedState = !cursorInRange(info.from, info.to);
+                // 代码行:两态同一套渲染(行底色 + token mark);渲染态附旧卡片壳修饰类
+                for (let ln = first + 1; ln <= innerLast; ln++) {
+                    const deco = renderedState
+                        ? (ln === innerLast ? codeLineOutLastDeco : codeLineOutDeco)
+                        : (ln === innerLast ? codeLineLastDeco : codeLineDeco);
+                    lineDecos.push(deco.range(doc.line(ln).from));
+                }
+                for (const m of codeTokenMarks(info, doc, first, last)) {
+                    ranges.push(m);
+                }
+                if (!renderedState) {
+                    // 编辑态:围栏原样显示(首围栏行顶圆角,闭合围栏行底圆角)
+                    lineDecos.push((first === last ? codeLineOnlyDeco : codeLineFirstDeco).range(doc.line(first).from));
+                    if (lastIsFence && last > first) {
+                        lineDecos.push(codeLineLastDeco.range(doc.line(last).from));
                     }
                 } else {
-                    const widget = new CodeBlockWidget(info.lang, info.code);
-                    const replace = Decoration.replace({widget, block: true});
-                    ranges.push(replace.range(info.from, info.to));
-                    atomicRanges.push(replace.range(info.from, info.to));
+                    // 渲染态:围栏隐藏;开头围栏行 → 头部工具条(语言/复制),闭合围栏行整行隐藏
+                    const headReplace = Decoration.replace({widget: new CodeHeadWidget(info.lang, info.code), block: true});
+                    ranges.push(headReplace.range(info.from, doc.line(first).to));
+                    atomicRanges.push(headReplace.range(info.from, doc.line(first).to));
+                    if (lastIsFence && last > first) {
+                        const tailReplace = Decoration.replace({block: true});
+                        ranges.push(tailReplace.range(doc.line(last).from, info.to));
+                        atomicRanges.push(tailReplace.range(doc.line(last).from, info.to));
+                    }
                 }
             }
 

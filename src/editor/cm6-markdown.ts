@@ -110,6 +110,12 @@ const syfeCmTheme = EditorView.theme({
         backgroundColor: "var(--b3-theme-surface)",
         boxShadow: "inset 2px 0 0 var(--b3-theme-primary-lighter, var(--b3-border-color))",
         fontVariantLigatures: "none",
+        // 与代码卡片正文同字体/字号/行高:编辑态(光标入块)与渲染态(卡片)观感一致
+        // (编辑器整体是 UI 字体 14px/1.65,代码块若不覆写会明显不一致)
+        fontFamily: "var(--b3-font-family-code, monospace)",
+        fontSize: "13px",
+        lineHeight: "1.6",
+        tabSize: 4,
     },
     // 首尾行圆角(ProseMark/PurrMD 同款视觉)
     ".syfe-cm-codeblock-first": {
@@ -124,23 +130,27 @@ const syfeCmTheme = EditorView.theme({
     ".cm-activeLine.syfe-cm-codeblock-line": {
         backgroundColor: "var(--b3-theme-surface)",
     },
-    // 整块代码卡片(渲染态):头部(语言 + 复制)+ 高亮正文
-    ".syfe-cm-codeblock": {
-        margin: "6px 0",
-        border: "1px solid var(--b3-border-color)",
-        borderRadius: "6px",
-        backgroundColor: "var(--b3-theme-surface)",
-        overflow: "hidden",
-    },
+    // 围栏代码块渲染态头部工具条(替换开头围栏行;正文与编辑态同一套行渲染,无独立卡片壳)
     ".syfe-cm-codeblock-head": {
         display: "flex",
         alignItems: "center",
         justifyContent: "space-between",
         padding: "3px 10px",
-        borderBottom: "1px solid var(--b3-border-color)",
+        margin: "6px 0 0",
+        border: "1px solid var(--b3-border-color)",
+        borderRadius: "6px 6px 0 0",
+        backgroundColor: "var(--b3-theme-surface)",
         fontSize: "12px",
         color: "var(--b3-theme-on-surface)",
         userSelect: "none",
+    },
+    // 渲染态卡片壳:代码行两侧描边(配合头部完整边框 + 末行底部描边,拼出旧卡片外壳;
+    // 编辑态不加此类,保留左侧强调条)
+    ".syfe-cm-codeblock-out": {
+        boxShadow: "inset 1px 0 0 var(--b3-border-color), inset -1px 0 0 var(--b3-border-color)",
+    },
+    ".syfe-cm-codeblock-out.syfe-cm-codeblock-last": {
+        boxShadow: "inset 1px 0 0 var(--b3-border-color), inset -1px 0 0 var(--b3-border-color), inset 0 -1px 0 var(--b3-border-color)",
     },
     ".syfe-cm-codeblock-lang": {
         opacity: ".75",
@@ -163,17 +173,6 @@ const syfeCmTheme = EditorView.theme({
     ".syfe-cm-codeblock-copy.is-copied": {
         color: "var(--b3-theme-primary)",
         fontWeight: "600",
-    },
-    ".syfe-cm-codeblock-body": {
-        margin: "0",
-        padding: "8px 12px",
-        overflowX: "auto",
-        fontFamily: "var(--b3-font-family-code, monospace)",
-        fontSize: "13px",
-        lineHeight: "1.6",
-        fontVariantLigatures: "none",
-        whiteSpace: "pre",
-        tabSize: 4,
     },
     ".syfe-cm-tablesrc-line": {backgroundColor: "var(--b3-theme-surface)"},
     ".syfe-cm-mathsrc-line": {backgroundColor: "var(--b3-theme-surface)"},
