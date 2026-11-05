@@ -1537,7 +1537,7 @@ function getNotebooks() {
 
 async function getNodebookList() {
     let url = "/api/notebook/lsNotebooks";
-    let response = await postRequest({}, url);
+    let response = await request(url, {});
     if (response.code == 0 && response.data != null && "notebooks" in response.data){
         return response.data.notebooks;
     }
@@ -1569,7 +1569,7 @@ async function listDocTree(notebook, path) {
         notebook,
         path
     }
-    let response = await postRequest(postBody, url);
+    let response = await request(url, postBody);
     if (response.code == 0) {
         return response.data.tree;
     } else {
@@ -1579,7 +1579,7 @@ async function listDocTree(notebook, path) {
 
 async function getNotebookInfo(notebookId) {
     let url = "/api/notebook/getNotebookInfo";
-    let response = await postRequest({notebook: notebookId}, url);
+    let response = await request(url, {notebook: notebookId});
     if (response.code == 0 && response.data != null){
         return response.data.boxInfo;
     } else {

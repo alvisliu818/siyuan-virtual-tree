@@ -1,5 +1,5 @@
 // 思源虚拟路径与系统文件系统路径的相互转换
-import {isKernelPath} from "./path";
+import {isKernelPath, basename} from "./path";
 
 // 获取思源工作空间的绝对路径
 export function getWorkspacePath(): string {
@@ -20,7 +20,7 @@ export function toSystemPath(kernelPath: string, workspacePath?: string): string
     }
     if (!workspacePath) {
         // 拿不到工作空间时返回原路径(调用方需自行兜底)
-        return siyuanPath;
+        return kernelPath;
     }
     const relPath = kernelPath.replace(/^\/+/, "");
     const wsNormalized = workspacePath.replace(/[\\/]+$/, "");
