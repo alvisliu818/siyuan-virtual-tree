@@ -20,7 +20,7 @@ import {
     PythonLanguageServer, maybeRestartForInterpreterChange,
 } from "./python-lsp";
 import {getPythonKernel} from "./python-kernel";
-import {registerSettingsChangedHandler} from "../settings/user-settings";
+import {registerSettingsChangedHandler, getBoolSetting} from "../settings/user-settings";
 
 /** 已注册的 provider(用于整体注销) */
 let disposables: monaco.IDisposable[] = [];
@@ -159,6 +159,8 @@ function setMarkers(
     fsPath: string,
     items: Array<{range: LspRangeLike; severity?: number; message: string; code?: string | number; source?: string}>,
 ): void {
+    // 设置里的「显示报错」关闭时不上报诊断(补全/悬停/跳转不受影响)
+    if (!getBoolSetting("editor.diagnostics.enabled", true)) return;
     const model = findModelForPath(fsPath);
     if (!model) return;  // 文件没打开(或不是 python)→ 没有 model 可挂 marker
     if (getLanguageForPath(fsPath) === "plaintext") return;
@@ -221,6 +223,20 @@ function getLanguageForPath(p: string): string {
     return "plaintext";
 }
 
+/** 清空当前所有打开模型的 pyright 诊断(「显示报错」关闭时调用) */
+function clearAllPythonMarkers(): void {
+    currentEditors.forEach((e) => {
+        const model = e.editor.getModel();
+        if (model) {
+            try {
+                monaco.editor.setModelMarkers(model, MARKER_OWNER, []);
+            } catch {
+                // ignore
+            }
+        }
+    });
+}
+
 // ===== 注册 =====
 
 /**
@@ -246,8 +262,23 @@ export function registerPythonLsp(): void {
     // settings.json 被保存(含手改文件)时的广播;GUI 路径由 editor-settings-ui
     // 的 afterChange 直调 maybeRestartForInterpreterChange,两路最终都靠
     // "server 已应用值 vs 当前设置值" 的比对去重,重复触发零开销。
+    let lastDiagEnabled = getBoolSetting("editor.diagnostics.enabled", true);
     registerSettingsChangedHandler(() => {
         void maybeRestartForInterpreterChange();
+        // 「显示报错」开关:关闭 → 立即清掉已挂的 marker;打开 → didChange 让
+        // pyright 重新 publishDiagnostics,波浪线马上回来(无需改动文件内容)
+        const now = getBoolSetting("editor.diagnostics.enabled", true);
+        if (now !== lastDiagEnabled) {
+            lastDiagEnabled = now;
+            if (!now) {
+                clearAllPythonMarkers();
+            } else {
+                currentEditors.forEach((e) => {
+                    const model = e.editor.getModel();
+                    if (model) server.didChange(e.path, model.getValue());
+                });
+            }
+        }
     });
     // server 重启完成(新进程已就绪、文档已重开)后让 monaco 重拉语义 token
     server.onRestarted(() => {
@@ -527,16 +558,7 @@ export function disposePythonLsp(): void {
     registered = false;
     // 清掉所有 marker:monaco 0.50 按 (owner, model) 管理,
     // 所以要逐个打开着的模型传空数组
-    currentEditors.forEach((e) => {
-        const model = e.editor.getModel();
-        if (model) {
-            try {
-                monaco.editor.setModelMarkers(model, MARKER_OWNER, []);
-            } catch {
-                // ignore
-            }
-        }
-    });
+    clearAllPythonMarkers();
 }
 
 /** 当前是否已启用 LSP */

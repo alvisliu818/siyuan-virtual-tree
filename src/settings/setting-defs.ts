@@ -63,6 +63,7 @@ const G_SCROLL = "导航窗格与滚动";
 const G_EDIT = "编辑辅助";
 const G_SUGGEST = "建议与悬停";
 const G_LOOK = "外观细节";
+const G_DIAG = "诊断";
 const G_PYTHON = "Python";
 
 const STRATEGY = ["always", "languageDefined", "beforeWhitespace", "never"];
@@ -770,6 +771,19 @@ export const EDITOR_DEFS: SettingDef[] = [
         default: false,
     },
 
+    // ---- 诊断 ----
+    {
+        key: "editor.diagnostics.enabled",
+        kind: "boolean",
+        group: G_DIAG,
+        title: "显示报错",
+        description: "在代码文件里显示错误/警告标记(Python 的 pyright 诊断、settings.json 的 schema 校验);" +
+            "关闭后编辑器不再出现红色波浪线,补全/悬停/跳转不受影响",
+        default: true,
+        // 不是 Monaco 单一选项:同时作用于 pyright marker 与 JSON schema 校验,由各自消费方读取
+        skipMonaco: true,
+    },
+
     // ---- Python(代码智能) ----
     {
         key: "python.pythonPath",
@@ -1222,7 +1236,7 @@ export function defByKey(key: string): SettingDef | undefined {
 
 /** 分组顺序(GUI 与生成的 settings.json 都按此顺序) */
 export const GROUP_ORDER: string[] = [
-    G_FONT, G_WRAP, G_INDENT, G_CURSOR, G_GUIDE, G_FOLD, G_SCROLL, G_EDIT, G_SUGGEST, G_LOOK,
+    G_FONT, G_WRAP, G_INDENT, G_CURSOR, G_GUIDE, G_FOLD, G_SCROLL, G_EDIT, G_SUGGEST, G_LOOK, G_DIAG,
     G_FILES, G_SEARCH, G_MD, G_TERM, G_WORKBENCH, G_TREE, G_MEDIA,
 ];
 

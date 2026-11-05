@@ -46,6 +46,9 @@ let rawText = "";
 /** 上一次解析是否成功(解析失败时不覆盖内存值,避免把用户设置清空) */
 let parseOk = true;
 let flushTimer: number | undefined;
+// 「显示报错」开关的 schema 重挂去重(见 registerSettingsJsonSchema)
+let schemaDiagHandlerRegistered = false;
+let lastSchemaDiagEnabled: boolean | null = null;
 
 function hasOwn(obj: object, key: string): boolean {
     return Object.prototype.hasOwnProperty.call(obj, key);
@@ -497,14 +500,25 @@ export function registerSettingsJsonSchema(): void {
             fileMatch: storageUri ? [storageUri] : [],
             schema: buildSettingsJsonSchema(),
         });
+        // 「显示报错」关闭时连 settings.json 的 schema 校验一起停掉(补全不受影响)
+        const diagEnabled = getBoolSetting("editor.diagnostics.enabled", true);
+        lastSchemaDiagEnabled = diagEnabled;
         json.setDiagnosticsOptions({
-            validate: true,
+            ...prev,
+            validate: diagEnabled,
             allowComments: true,
             enableSchemaRequest: false,
             trailingCommas: "ignore",
-            ...prev,
             schemas,
         });
+        // 开关变化 → 按新值重挂(去重:只登记一次,值变了才重注册)
+        if (!schemaDiagHandlerRegistered) {
+            schemaDiagHandlerRegistered = true;
+            registerSettingsChangedHandler(() => {
+                const now = getBoolSetting("editor.diagnostics.enabled", true);
+                if (now !== lastSchemaDiagEnabled) registerSettingsJsonSchema();
+            });
+        }
     } catch (e) {
         console.warn("[siyuan-file-editor] 注册 settings.json schema 失败:", e);
     }
