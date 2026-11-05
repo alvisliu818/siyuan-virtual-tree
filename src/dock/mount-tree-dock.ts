@@ -318,6 +318,11 @@ interface MountTreeDockInstance {
     _tagsChangedHandler?: () => void;
     _relationHandler?: () => void;
     _relationRebuildHandler?: () => void;
+    // 定位事件(window 级监听,destroy 必须反注册):面板重建后旧闭包若还订阅着,
+    // 会以空 _rows 参与定位 → 定位成功的同时弹「不在挂载范围」的假提示
+    _folderLocateHandler?: (e: Event) => void;
+    _locateMountHandler?: () => void;
+    _docLocateHandler?: (e: Event) => void;
     // 拖拽监听统一在 _mountDragHandlers 表里(手动挂载行 + 自动挂载行)
     // 拖拽排序:挂载项(事件名 → 处理器,成对注册/反注册)
     _mountDragHandlers?: Array<[string, (e: Event) => void]>;
@@ -701,10 +706,12 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 notInRange();
             };
             // 外部触发:window.dispatchEvent(new CustomEvent("syfe:mount-tree-locate-folder", {detail:{path}}))
-            window.addEventListener("syfe:mount-tree-locate-folder", (e: Event) => {
+            const folderLocateHandler = (e: Event) => {
                 const p = (e as CustomEvent).detail?.path;
                 if (typeof p === "string" && p) void locateFolderInMountTree(p);
-            });
+            };
+            this._folderLocateHandler = folderLocateHandler;
+            window.addEventListener("syfe:mount-tree-locate-folder", folderLocateHandler);
 
             /**
              * 按文档 id 在挂载树里定位:SQL 取存储路径 → 逐段匹配挂载链 →
@@ -823,15 +830,18 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 await locateDocInMountTree(cur);
             };
             const locateMountHandler = () => { void locateActiveInMountTree(); };
+            this._locateMountHandler = locateMountHandler;
             window.addEventListener("syfe:mount-tree-locate", locateMountHandler);
             // 外部触发:点击固定/最近里的思源文档时,顺带在树上闪烁定位(静默失败)。
             // detail.revealPanel=false(默认,见 entry-menu 的顺带定位)→ 面板没开就不展开
-            window.addEventListener("syfe:mount-tree-locate-doc", (e: Event) => {
+            const docLocateHandler = (e: Event) => {
                 const detail = (e as CustomEvent).detail || {};
                 const id = detail?.docId;
                 const revealPanel = detail?.revealPanel !== false;
                 if (typeof id === "string" && id) void locateDocInMountTree(id, true, revealPanel);
-            });
+            };
+            this._docLocateHandler = docLocateHandler;
+            window.addEventListener("syfe:mount-tree-locate-doc", docLocateHandler);
 
             /** 定位当前文档:退出聚焦 → 展开沿途 → 滚动到该行并闪烁提示 */
             const locateCurrentDoc = () => {
@@ -2832,6 +2842,18 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
             if (this._relationRebuildHandler) {
                 window.removeEventListener("syfe:files-changed", this._relationRebuildHandler);
                 this._relationRebuildHandler = undefined;
+            }
+            if (this._folderLocateHandler) {
+                window.removeEventListener("syfe:mount-tree-locate-folder", this._folderLocateHandler);
+                this._folderLocateHandler = undefined;
+            }
+            if (this._locateMountHandler) {
+                window.removeEventListener("syfe:mount-tree-locate", this._locateMountHandler);
+                this._locateMountHandler = undefined;
+            }
+            if (this._docLocateHandler) {
+                window.removeEventListener("syfe:mount-tree-locate-doc", this._docLocateHandler);
+                this._docLocateHandler = undefined;
             }
             if (this._scrollEl && this._mountDragHandlers) {
                 for (const [evt, fn] of this._mountDragHandlers) {
