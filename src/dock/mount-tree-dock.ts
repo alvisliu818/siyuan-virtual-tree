@@ -8,7 +8,7 @@ import {readDir, querySQL} from "../api/file";
 import {DirEntry} from "../types";
 import {basename, dirname, joinPath} from "../utils/path";
 import {fileIconHTML, folderIconHTML} from "../utils/icons";
-import {toFileLink} from "../utils/system-path";
+import {toFileLink, getWorkspacePath} from "../utils/system-path";
 import {virtualListDir, virtualId, isNotebookRoot, isBoxDocEnabled} from "../utils/virtual-tree";
 import {docTreeIconHTML, cachedDocIcon, ensureDocIcons, getNotebookIcon} from "../utils/siyuan-icon";
 import {listChildBlocks, blockTitle, blockGutterIcon, soloImageInfo, BlockNode} from "../utils/blocks";
@@ -531,13 +531,25 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
             // 路径比较:统一正斜杠 + 去尾分隔符;Windows 本地路径再比一层小写
             // (文件树里的路径与页签里的路径来源不同,盘符/目录大小写可能不一致)
             const normFsPath = (p: string) => p.replace(/\\/g, "/").replace(/\/+$/, "");
+            // 内核路径(/data/...、/conf/...、/)与系统绝对路径(E:/.../data/...)是同一文件的两个表示:
+            // 点击 file:// 链接还原出系统路径,而挂载树行(尤其工作空间挂载下的子行)常是内核路径,
+            // 直接字符串比较永远失配 → 目录明明已在树里却被误报「不在挂载范围」。
+            // 统一映射到系统空间后再比较;拿不到工作空间目录时原样返回(退化为旧行为)。
+            const canonFsPath = (p: string): string => {
+                const norm = normFsPath(p);
+                const ws = normFsPath(getWorkspacePath());
+                if (!ws) return norm;
+                if (norm === "") return ws;                     // 原 "/" = 工作空间根
+                if (norm.startsWith("/")) return ws + norm;     // /data、/conf、/temp 等内核路径
+                return norm;                                    // 系统绝对路径原样
+            };
             const sameFsPath = (a: string, b: string) => {
-                const x = normFsPath(a), y = normFsPath(b);
+                const x = canonFsPath(a), y = canonFsPath(b);
                 return x === y || x.toLowerCase() === y.toLowerCase();
             };
             // target 是否在 dir 之下(严格子路径,按目录边界切分)
             const fsPathUnder = (dir: string, target: string) => {
-                const d = normFsPath(dir), t = normFsPath(target);
+                const d = canonFsPath(dir), t = canonFsPath(target);
                 if (!d) return false;
                 const pre = d + "/";
                 return (t.startsWith(pre) || t.toLowerCase().startsWith(pre.toLowerCase())) && t.length > d.length;
