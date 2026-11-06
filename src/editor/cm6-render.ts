@@ -29,6 +29,7 @@ import {
 } from "@codemirror/view";
 import {syntaxTree} from "@codemirror/language";
 import {resolveFenceLanguageId} from "../extensions/grammar-loader";
+import {getBoolSetting, registerSettingsChangedHandler} from "../settings/user-settings";
 import {
     colorizeCached,
     flushActiveBlock,
@@ -514,6 +515,61 @@ const forceRenderEffect = StateEffect.define<null>();
 // 编辑态同步状态:块 key + 最近一次同步进文档的内容(monaco ↔ cm6 回写定位用)
 let activeSync: {key: string; lastValue: string} | null = null;
 
+// 开关:CM6 代码块 Monaco 渲染(markdown.cm6CodeBlockMonaco,默认开)。
+// 关闭后围栏代码块回落编辑器原生源码行(不渲染卡片、不可 Monaco 编辑),
+// 与点语言标签的围栏态同观感;数学/表格/图片等非 Monaco 渲染不受影响。
+function isCodeBlockMonacoEnabled(): boolean {
+    return getBoolSetting("markdown.cm6CodeBlockMonaco", true);
+}
+
+// 开关关且正处 Monaco 编辑态 → 退出(落盘 + 卸载单例),否则单例滞留 detached DOM
+function exitBlockEditingIfAny(): void {
+    if (!getEditingKey()) return;
+    flushActiveBlock();
+    unmountBlockEditor();
+    setEditingKey(null);
+    activeSync = null;
+}
+
+// 活跃 CM6 视图集合:设置变更统一扇出重建。registerSettingsChangedHandler 无退订,
+// 模块级单订阅 + 集合随视图销毁自清,避免每页签一个闭包的泄漏。
+const activeRenderViews = new Set<EditorView>();
+let settingsFanoutInstalled = false;
+function ensureSettingsFanout(): void {
+    if (settingsFanoutInstalled) return;
+    settingsFanoutInstalled = true;
+    registerSettingsChangedHandler(() => {
+        if (!isCodeBlockMonacoEnabled()) {
+            exitBlockEditingIfAny();
+        }
+        for (const view of [...activeRenderViews]) {
+            if (!view.dom.isConnected) {
+                activeRenderViews.delete(view);
+                continue;
+            }
+            view.dispatch({effects: forceRenderEffect.of(null)});
+        }
+    });
+}
+
+/**
+ * CM6 代码块渲染配置变更(markdown.cm6CodeBlockMonaco 开关)→ 全部活跃视图
+ * 重建装饰。设置面板(settings.json 编辑器保存)与旧版设置对话框两条入口都调它;
+ * 开关关时顺带退出编辑态。
+ */
+export function notifyCm6RenderConfigChanged(): void {
+    if (!isCodeBlockMonacoEnabled()) {
+        exitBlockEditingIfAny();
+    }
+    for (const view of [...activeRenderViews]) {
+        if (!view.dom.isConnected) {
+            activeRenderViews.delete(view);
+            continue;
+        }
+        view.dispatch({effects: forceRenderEffect.of(null)});
+    }
+}
+
 const tableSrcLineDeco = Decoration.line({class: "syfe-cm-tablesrc-line"});
 const mathSrcLineDeco = Decoration.line({class: "syfe-cm-mathsrc-line"});
 
@@ -576,15 +632,18 @@ export function cm6MarkdownRender(opts: Cm6RenderOptions): Extension {
     });
 
     // 主题切换(monaco 全局事件:扩展主题/思源配色/明暗切换全覆盖)→
-    // 强制重建代码块卡片(colorize 缓存按主题名失效,重取即新色)
+    // 强制重建代码块卡片(colorize 缓存按主题名失效,重取即新色)。
+    // 兼职:登记/清理活跃视图集合(设置变更扇出用,见 ensureSettingsFanout)。
     const themeSync = ViewPlugin.fromClass(class {
         private off: {dispose(): void} = {dispose: () => undefined};
         constructor(readonly view: EditorView) {
+            activeRenderViews.add(view);
             this.off = onMonacoThemeChanged(() => {
                 view.dispatch({effects: forceRenderEffect.of(null)});
             });
         }
         destroy() {
+            activeRenderViews.delete(this.view);
             this.off.dispose();
         }
     });
@@ -664,6 +723,7 @@ export function cm6MarkdownRender(opts: Cm6RenderOptions): Extension {
         }
     });
 
+    ensureSettingsFanout();
     return [renderField, clickHandler, themeSync, editMounter];
 }
 
@@ -686,7 +746,10 @@ function buildDecorations(state: EditorState, opts: Cm6RenderOptions): Decoratio
             //    b. editingKey 命中(点卡片) → 卡片 + 全局单例 Monaco(monaco-block.ts)
             //    c. 光标在块内未挂 Monaco   → 原始围栏(源码态;点语言标签/方向键进块,
             //       Obsidian 同款「点语言看源码」),不加替换装饰、不占 usedRanges
+            //    开关 markdown.cm6CodeBlockMonaco 关闭 → 整体回落源码行(无卡片),
+            //    数学/表格/图片等非 Monaco 渲染不受影响
             for (const info of fencedCodeInfos(state)) {
+                if (!isCodeBlockMonacoEnabled()) continue;
                 const editing = getEditingKey() === String(info.from);
                 if (!editing && cursorInRange(info.from, info.to)) continue;
                 usedRanges.push({from: info.from, to: info.to});

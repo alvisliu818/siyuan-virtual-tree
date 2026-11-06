@@ -12,6 +12,7 @@ import {
 import {EditorConfig, DEFAULT_CONFIG} from "./types";
 import {setupMonaco, applyTheme, getCurrentMode, disposeMonaco} from "./editor/monaco";
 import {disposeAll} from "./editor/model-manager";
+import {notifyCm6RenderConfigChanged} from "./editor/cm6-render";
 import {createEditorTabConfig, openFileTab} from "./tabs/editor-tab";
 import {createImageTabConfig, openImageTab} from "./tabs/image-tab";
 import {createOfficeTabConfig, openOfficeTab} from "./tabs/office-tab";
@@ -173,6 +174,7 @@ export default class FileEditorPlugin extends Plugin {
     private markdownModeSelect?: HTMLSelectElement;
     // Markdown 编辑器引擎下拉(vditor 所见即所得 / cm6 源码编辑)
     private markdownEditorSelect?: HTMLSelectElement;
+    private cm6CodeBlockMonacoInput?: HTMLInputElement;
     private newTabReplacePlusInput?: HTMLInputElement;
     private newTabShowPinnedInput?: HTMLInputElement;
     private newTabShowRecentInput?: HTMLInputElement;
@@ -1076,6 +1078,12 @@ export default class FileEditorPlugin extends Plugin {
             <option value="cm6">CodeMirror 6(源码编辑)</option>`;
         addRow("openFiles", "Markdown 编辑器", "实时预览模式的编辑引擎,对新开页签生效:vditor = 所见即所得(光标行显示源码,其余实时渲染);cm6 = CodeMirror 6 源码编辑(整篇源码 + 语法高亮,大文件更流畅,阅读态仍为完整渲染)。已有页签按页签顶部按钮重新切换即可应用", this.markdownEditorSelect);
 
+        // CM6 代码块 Monaco 渲染/编辑开关(仅 markdownEditor=cm6 的实时预览生效)
+        this.cm6CodeBlockMonacoInput = document.createElement("input");
+        this.cm6CodeBlockMonacoInput.type = "checkbox";
+        this.cm6CodeBlockMonacoInput.className = "b3-switch";
+        addRow("openFiles", "CM6 代码块 Monaco 渲染", "Markdown 编辑器 = cm6 时生效:代码块渲染为 Monaco 主题配色卡片(点击进 Monaco 编辑,与代码文件同一套主题和语义着色);关闭后代码块回落为编辑器原生源码行", this.cm6CodeBlockMonacoInput);
+
         // 导入 Markdown 到思源时,是否把源文件作为资源插入文档顶部的引述块
         this.importMdSourceAssetInput = document.createElement("input");
         this.importMdSourceAssetInput.type = "checkbox";
@@ -1555,6 +1563,7 @@ export default class FileEditorPlugin extends Plugin {
         if (this.terminalShellSelect) this.terminalShellSelect.value = this.config.terminalShell || "auto";
         if (this.markdownModeSelect) this.markdownModeSelect.value = this.config.markdownDefaultMode || "live";
         if (this.markdownEditorSelect) this.markdownEditorSelect.value = this.config.markdownEditor || "vditor";
+        if (this.cm6CodeBlockMonacoInput) this.cm6CodeBlockMonacoInput.checked = this.config.cm6CodeBlockMonaco !== false;
         if (this.globalReadingModeInput) this.globalReadingModeInput.checked = this.config.globalReadingMode !== false;
         if (this.versionKeepCountInput) this.versionKeepCountInput.value = String(this.config.versionKeepCount ?? 10);
         if (this.deleteModeSelect) this.deleteModeSelect.value = this.config.deleteMode || "plugin";
@@ -1645,6 +1654,7 @@ export default class FileEditorPlugin extends Plugin {
             marketTopBarIcon: this.marketTopBarIconInput?.checked ?? true,
             markdownDefaultMode: (this.markdownModeSelect?.value as "live" | "source" | "reading") || "live",
             markdownEditor: (this.markdownEditorSelect?.value as "vditor" | "cm6") || "vditor",
+            cm6CodeBlockMonaco: this.cm6CodeBlockMonacoInput?.checked ?? true,
             globalReadingMode: this.globalReadingModeInput?.checked ?? true,
             versionKeepCount: Math.max(0, parseInt(this.versionKeepCountInput?.value || "10", 10) || 0),
             deleteMode: ((this.deleteModeSelect?.value || "plugin") as "plugin" | "system"),
@@ -1699,6 +1709,8 @@ export default class FileEditorPlugin extends Plugin {
         // 面板值即用户值:回写 settings.json(只写与默认不同的项,与 VS Code 一致)
         syncUserSettingsFromConfig(this.config);
         await flushUserSettings();
+        // CM6 代码块渲染开关跟随生效(关时退出编辑态 + 全部活跃视图重建)
+        notifyCm6RenderConfigChanged();
         // 版本控制保留条数跟随设置生效(0=关闭并清空历史)
         setVersionKeepCount(this.config.versionKeepCount ?? 10);
         // 删除方式跟随设置生效

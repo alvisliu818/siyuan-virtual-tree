@@ -45,6 +45,9 @@ export interface EditorConfig {
     // Markdown 编辑器引擎:vditor = 所见即所得(实时预览/阅读);cm6 = CodeMirror 6
     // 源码编辑(实时预览)+ Vditor.preview 静态渲染(阅读)。默认 vditor
     markdownEditor: "vditor" | "cm6";
+    // CM6 编辑面代码块是否用 Monaco 渲染/编辑(colorize 卡片 + 单例编辑器);
+    // 关闭后代码块回落为 CM6 原生源码行(与点语言标签的围栏态一致)
+    cm6CodeBlockMonaco: boolean;
     newTabReplacePlus: boolean;      // 接管思源顶部「+」:点击改为打开新标签页(而非新建文档)
     newTabShowPinned: boolean;       // 新标签页显示「固定」区
     newTabShowRecent: boolean;       // 新标签页显示「最近打开」区
@@ -270,6 +273,7 @@ export const DEFAULT_CONFIG: EditorConfig = {
     marketTopBarIcon: true, // 顶栏默认显示「扩展市场」图标
     markdownDefaultMode: "live", // 实时预览(类 Obsidian Live Preview)
     markdownEditor: "vditor",    // Markdown 编辑器引擎:vditor(所见即所得)默认;cm6 备选
+    cm6CodeBlockMonaco: true,     // CM6 代码块 Monaco 渲染/编辑默认开
     newTabReplacePlus: true,        // 默认接管顶部「+」
     newTabShowPinned: true,
     newTabShowRecent: true,

@@ -977,6 +977,19 @@ export const PLUGIN_DEFS: SettingDef[] = [
             c.markdownEditor = v === "cm6" ? "cm6" : "vditor";
         },
     },
+    {
+        key: "markdown.cm6CodeBlockMonaco",
+        kind: "boolean",
+        group: G_MD,
+        title: "CM6 代码块 Monaco 渲染",
+        description: "仅 Markdown 编辑器 = cm6 时生效。开启后代码块渲染为 Monaco 主题配色卡片" +
+            "(点击进 Monaco 编辑,含语义着色);关闭后代码块回落为编辑器原生源码行",
+        default: true,
+        // 不是 Monaco 编辑器选项:消费方是 cm6-render 的装饰构建,热读
+        skipMonaco: true,
+        get: (c) => c.cm6CodeBlockMonaco !== false,
+        set: (c, v) => { c.cm6CodeBlockMonaco = v !== false; },
+    },
 
     {
         key: "terminal.backend",
