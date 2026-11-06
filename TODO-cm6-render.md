@@ -1,5 +1,15 @@
 # TODO：CM6 代码块 Monaco 化（2026-11-02 ✅ 全部完成并部署验证）
 
+> 2026-11-07 增量（✅ 已完成）：两态语法渲染与代码文件完全同源 ——
+> 编辑态块 model 接入 basedpyright LSP 虚拟文档（内容哈希 tmp 路径，语义
+> provider 反查 blockDocs）；阅读态 colorize 之上叠语义色（LSP 五元组 →
+> resolveSemanticTokenStyle → 逐段切分 mtk span 内联覆盖，失效链
+> semanticReady/onRestarted → invalidateColorizeCache）。
+> 另修：model 级关括号彩虹（编辑器级到不了 model）、occurrencesHighlight off、
+> focus outline none、块 model classic 分词被 rIC 饿死的同步驱动兜底、
+> 虚拟文档 didOpen 抢设 workspaceRoot 导致 pyright spawn ENOENT。
+> 点语言标签亮/收围栏（Obsidian 同款源码态）。详见 project_memory.md 2026-11-07。
+
 > 诉求：「代码块使用 Monaco 编辑和 Monaco 渲染，全局单一 Monaco 实例」。
 > 参考 my-logseq 模块的代码块实现（colorize 静态渲染 + 单例按需挂载，两态同源）。
 > 历史：曾用 tm-highlight（vscode-textmate 自分词）做统一管线，本轮整体退役——
