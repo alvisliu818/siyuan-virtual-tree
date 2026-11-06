@@ -256,48 +256,83 @@ function probeTokenColor(parsed: ParsedTokenRule[], scopeSegments: string[]): Pa
  * 生成规则对 TextMate 语法着色无副作用:裸类型规则的颜色 = 主题对同名 scope
  * 的既有匹配结果,对以它为前缀的语法 scope 而言是重复/更弱的匹配。
  */
-function appendSemanticRules(themeData: any, rules: monaco.editor.ITokenThemeRule[]): void {
-    // 主题声明不支持语义高亮时跳过(与 VS Code semanticHighlighting 开关一致)
-    if (themeData.semanticHighlighting === false) return;
+// 语义规则表缓存(themeName → 语义类型 → 样式)。defineTheme 追加与
+// resolveSemanticTokenStyle(块内 colorize 的语义覆盖取色)共用一份。
+const semanticRulesCache = new Map<string, Map<string, {foreground: string; fontStyle?: string}>>();
 
-    // 解析主题 tokenColors 为可探测的规则表
-    const parsed = parseTokenRules(themeData);
+function buildSemanticRules(themeName: string, themeData: any): Map<string, {foreground: string; fontStyle?: string}> {
+    const cached = semanticRulesCache.get(themeName);
+    if (cached) return cached;
+    const byToken = new Map<string, {foreground: string; fontStyle?: string}>();
+    // 主题声明不支持语义高亮时为空表(与 VS Code semanticHighlighting 开关一致;
+    // resolveSemanticTokenStyle 取不到色 → 调用方回落 TextMate 着色)
+    if (themeData.semanticHighlighting !== false) {
+        // 解析主题 tokenColors 为可探测的规则表
+        const parsed = parseTokenRules(themeData);
 
-    // semanticTokenColors:键 "variable" / "variable.readonly",值为颜色字符串
-    // 或 TokenStyle 对象。优先级高于默认规则(VS Code 同序)。
-    const byToken = new Map<string, monaco.editor.ITokenThemeRule>();
-    const putRule = (token: string, foreground: string, fontStyle?: string): void => {
-        byToken.set(token, {token, foreground, fontStyle: fontStyle as any});
-    };
-    const stc = themeData.semanticTokenColors || {};
-    for (const key of Object.keys(stc)) {
-        if (key.includes(":")) continue;  // 语言限定键(type:python)不处理
-        const value = stc[key];
-        let foreground = "";
-        let fontStyle: string | undefined;
-        if (typeof value === "string") {
-            foreground = value;
-        } else if (value && typeof value === "object") {
-            foreground = value.foreground || "";
-            fontStyle = value.fontStyle;
+        // semanticTokenColors:键 "variable" / "variable.readonly",值为颜色字符串
+        // 或 TokenStyle 对象。优先级高于默认规则(VS Code 同序)。
+        const putRule = (token: string, foreground: string, fontStyle?: string): void => {
+            byToken.set(token, {foreground, fontStyle});
+        };
+        const stc = themeData.semanticTokenColors || {};
+        for (const key of Object.keys(stc)) {
+            if (key.includes(":")) continue;  // 语言限定键(type:python)不处理
+            const value = stc[key];
+            let foreground = "";
+            let fontStyle: string | undefined;
+            if (typeof value === "string") {
+                foreground = value;
+            } else if (value && typeof value === "object") {
+                foreground = value.foreground || "";
+                fontStyle = value.fontStyle;
+            }
+            foreground = normalizeHex(foreground);
+            if (foreground) putRule(key, foreground, fontStyle);
         }
-        foreground = normalizeHex(foreground);
-        if (foreground) putRule(key, foreground, fontStyle);
-    }
 
-    // 默认规则表:每条 selector 解析一次颜色
-    for (const dr of SEMANTIC_DEFAULT_RULES) {
-        if (byToken.has(dr.selector)) continue;  // semanticTokenColors 已覆盖
-        let resolved: ParsedTokenRule | null = null;
-        // 依次尝试各探测 scope(官方顺序),首个探到颜色的生效
-        for (const scope of dr.scopes) {
-            resolved = probeTokenColor(parsed, scope.split("."));
-            if (resolved) break;
+        // 默认规则表:每条 selector 解析一次颜色
+        for (const dr of SEMANTIC_DEFAULT_RULES) {
+            if (byToken.has(dr.selector)) continue;  // semanticTokenColors 已覆盖
+            let resolved: ParsedTokenRule | null = null;
+            // 依次尝试各探测 scope(官方顺序),首个探到颜色的生效
+            for (const scope of dr.scopes) {
+                resolved = probeTokenColor(parsed, scope.split("."));
+                if (resolved) break;
+            }
+            if (resolved) putRule(dr.selector, resolved.foreground, resolved.fontStyle);
         }
-        if (resolved) putRule(dr.selector, resolved.foreground, resolved.fontStyle);
     }
+    semanticRulesCache.set(themeName, byToken);
+    return byToken;
+}
 
-    rules.push(...byToken.values());
+function appendSemanticRules(themeName: string, themeData: any, rules: monaco.editor.ITokenThemeRule[]): void {
+    for (const [token, style] of buildSemanticRules(themeName, themeData)) {
+        rules.push({token, foreground: style.foreground, fontStyle: style.fontStyle as any});
+    }
+}
+
+/**
+ * 语义 token 字符串(type + "." + modifiers,如 "function.declaration")→ 主题色。
+ * 与 Monaco 的 ThemeTrie 同款最长前缀匹配:全串不命中再逐段去尾回退。
+ * 供块内 colorize 的语义覆盖(python-lsp-bridge)取色;非扩展主题(思源配色)
+ * 没有 tokenColors 数据 → 返回 null,调用方保持 TextMate 着色(与文件编辑器
+ * 在思源主题下语义层本就无色可施的行为一致)。
+ */
+export function resolveSemanticTokenStyle(
+    themeName: string,
+    typeWithModifiers: string,
+): {foreground: string; fontStyle?: string} | null {
+    const themeData = themeDataByName.get(themeName);
+    if (!themeData) return null;
+    const map = buildSemanticRules(themeName, themeData);
+    const segs = typeWithModifiers.split(".");
+    for (let i = segs.length; i >= 1; i--) {
+        const hit = map.get(segs.slice(0, i).join("."));
+        if (hit) return hit;
+    }
+    return null;
 }
 
 // 将 VSCode 主题转换为 Monaco 主题
@@ -353,7 +388,7 @@ function convertThemeToMonaco(
     }
 
     // 语义 token 规则(LSP semanticTokens 的类型 → 主题颜色换算)
-    appendSemanticRules(themeData, rules);
+    appendSemanticRules(themeName, themeData, rules);
 
     // 排查观测(与 obsidian 侧 [lgp-tm] 同款):语义着色"数据到达但 DOM 黑"时,
     // 第一件事就是确认语义规则是否真的进了 defineTheme 的 rules
@@ -546,6 +581,7 @@ export function removeExtensionThemes(extensionId: string): void {
         if (loadedThemes[i].extensionId === extensionId) {
             themeDataByName.delete(loadedThemes[i].name);
             parsedRulesByName.delete(loadedThemes[i].name);
+            semanticRulesCache.delete(loadedThemes[i].name);
             loadedThemes.splice(i, 1);
         }
     }
@@ -561,6 +597,7 @@ export function clearAllThemes(): void {
     loadedThemes.length = 0;
     themeDataByName.clear();
     parsedRulesByName.clear();
+    semanticRulesCache.clear();
     if (activeThemeName !== null) {
         activeThemeName = null;
         notifyThemeChanged();

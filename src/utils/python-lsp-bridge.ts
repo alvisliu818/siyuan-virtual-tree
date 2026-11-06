@@ -19,8 +19,15 @@ import {
     getPythonLanguageServer, isPyrightAvailable, toLspPosition, fromLspRange,
     PythonLanguageServer, maybeRestartForInterpreterChange,
 } from "./python-lsp";
+import {getNativeRequire} from "./native-require";
 import {getPythonKernel} from "./python-kernel";
 import {registerSettingsChangedHandler, getBoolSetting} from "../settings/user-settings";
+// CM6 代码块语义接线(见文件尾「块内代码块」段):注入钩子 + colorize 语义覆盖。
+// 方向:本模块 → monaco-block / theme-loader 单向;monaco-block 不反向 import 本模块。
+import {
+    getMonacoThemeName, invalidateColorizeCache, setBlockLspHooks, setSemanticOverlayHook,
+} from "../editor/monaco-block";
+import {resolveSemanticTokenStyle} from "../extensions/theme-loader";
 
 /** 已注册的 provider(用于整体注销) */
 let disposables: monaco.IDisposable[] = [];
@@ -146,6 +153,158 @@ export function unregisterPythonEditor(editor: monaco.editor.IStandaloneCodeEdit
     if (typeof cleanup === "function") cleanup();
 }
 
+// ===== 块内代码块的虚拟文档(CM6 md 编辑器的围栏代码块)=====
+// 围栏代码块没有磁盘文件:pyright 的文档身份 = 临时目录下的虚拟 .py 路径 +
+// 实时内容(路径按内容哈希命名,同一份代码在任何文档里都是同一个 LSP 文档)。
+// 语义 provider 反查、诊断挂载与文件编辑器共用管线:
+// currentEditors(文件 Tab)↔ blockDocs(块内 model)互为补充。
+interface BlockDocEntry {
+    path: string;
+    languageId: string;
+    contentSub: monaco.IDisposable;
+}
+const blockDocs = new Map<monaco.editor.ITextModel, BlockDocEntry>();
+
+// 编辑态会话登记的路径集合(LRU 淘汰阅读态文档时跳过,不掐断正在编辑的块)
+const sessionBlockPaths = new Set<string>();
+
+/** 块内 model 登记:didOpen + 内容变化 didChange(与 registerPythonEditor 同构) */
+export function registerPythonBlockDoc(
+    model: monaco.editor.ITextModel,
+    fsPath: string,
+    languageId: string,
+): void {
+    if (!fsPath || !isPyrightAvailable() || blockDocs.has(model)) return;
+    sessionBlockPaths.add(fsPath.toLowerCase());
+    const server = getPythonLanguageServer();
+    void server.start().then((ok) => {
+        if (ok && !model.isDisposed() && blockDocs.has(model)) {
+            void server.didOpen(fsPath, languageId, model.getValue());
+        }
+    });
+    const contentSub = model.onDidChangeContent(() => {
+        const s = getPythonLanguageServer();
+        if (!s.isReady) return;
+        s.didChange(fsPath, model.getValue());
+    });
+    blockDocs.set(model, {path: fsPath, languageId, contentSub});
+}
+
+/** 块内 model 注销:didClose + 摘 marker(卸载/换 model 时调用) */
+export function unregisterPythonBlockDoc(model: monaco.editor.ITextModel): void {
+    const entry = blockDocs.get(model);
+    if (!entry) return;
+    blockDocs.delete(model);
+    entry.contentSub.dispose();
+    sessionBlockPaths.delete(entry.path.toLowerCase());
+    try {
+        if (!model.isDisposed()) monaco.editor.setModelMarkers(model, MARKER_OWNER, []);
+    } catch {
+        // ignore
+    }
+    try {
+        getPythonLanguageServer().didClose(entry.path);
+    } catch {
+        // ignore
+    }
+}
+
+// ===== 语义 token 就绪信号 =====
+// server 就绪/重启/注销都 fire:订阅方(monaco-block 的 colorize 缓存)清缓存重渲,
+// 否则「LSP 未就绪时渲染的纯 TextMate 结果」会一直留在缓存里永不补语义色。
+let semanticReady = false;
+const semanticReadyListeners = new Set<() => void>();
+
+function fireSemanticReady(): void {
+    for (const cb of [...semanticReadyListeners]) {
+        try {
+            cb();
+        } catch {
+            // ignore
+        }
+    }
+}
+
+export function onSemanticTokensReady(cb: () => void): () => void {
+    semanticReadyListeners.add(cb);
+    if (semanticReady) {
+        // 晚到订阅:已就绪立即对齐一次
+        try {
+            cb();
+        } catch {
+            // ignore
+        }
+    }
+    return () => semanticReadyListeners.delete(cb);
+}
+
+// ===== 块虚拟文档路径与阅读态供给 =====
+function fnv1a32(str: string): number {
+    let h = 0x811c9dc5;
+    for (let i = 0; i < str.length; i++) {
+        h ^= str.charCodeAt(i);
+        h = Math.imul(h, 0x01000193);
+    }
+    return h >>> 0;
+}
+
+const BLOCK_DOC_EXT: Record<string, string> = {python: "py"};
+
+/** 块代码 → 虚拟文档路径(tmp 目录 + 内容哈希;同内容同身份,偏移漂移不换文档) */
+export function makeBlockDocPath(lang: string, code: string): string {
+    const ext = BLOCK_DOC_EXT[lang];
+    if (!ext) return "";
+    const req = getNativeRequire();
+    if (!req) return "";
+    try {
+        const os = req("os");
+        const pathMod = req("path");
+        const fsMod = req("fs");
+        const hash = fnv1a32(`${lang}\u0000${code}`).toString(16).padStart(8, "0");
+        const dir = pathMod.join(os.tmpdir(), "syfe-blocks");
+        // 目录建出来:虽然是"虚拟文档"(文件内容走 LSP didOpen,不落盘),
+        // 但 cwd/rootUri 指向的目录最好真实存在,免得 pyright 侧 stat 出幺蛾子
+        try {
+            fsMod.mkdirSync(dir, {recursive: true});
+        } catch {
+            // 已存在或其他失败都不影响文档打开
+        }
+        return pathMod.join(dir, `block-${hash}.${ext}`);
+    } catch {
+        return "";
+    }
+}
+
+// 阅读态覆盖用过的虚拟文档 LRU 上限:pyright 对每个 open 文档做语义分析,
+// 无上限会随浏览的代码块数线性涨(进程内存 + 分析耗时)。
+const BLOCK_DOC_LRU_LIMIT = 32;
+const blockDocLru: string[] = [];
+
+function evictBlockDocs(): void {
+    while (blockDocLru.length > BLOCK_DOC_LRU_LIMIT) {
+        const victim = blockDocLru.shift()!;
+        if (sessionBlockPaths.has(victim.toLowerCase())) continue;  // 编辑会话中,不掐
+        try {
+            getPythonLanguageServer().didClose(victim);
+        } catch {
+            // ignore
+        }
+    }
+}
+
+/** 确保某块代码的虚拟文档已打开且内容最新(didOpen 幂等:已打开转 didChange) */
+async function ensureBlockSemanticDoc(fsPath: string, languageId: string, text: string): Promise<boolean> {
+    if (!isPyrightAvailable()) return false;
+    const server = getPythonLanguageServer();
+    const ok = await server.start();
+    if (!ok) return false;
+    await server.didOpen(fsPath, languageId, text);
+    const lower = fsPath.toLowerCase();
+    if (!blockDocLru.some(p => p.toLowerCase() === lower)) blockDocLru.push(fsPath);
+    evictBlockDocs();
+    return true;
+}
+
 // ===== 诊断 =====
 
 /**
@@ -193,6 +352,10 @@ function findModelForPath(fsPath: string): monaco.editor.ITextModel | null {
     for (const e of currentEditors) {
         if (sameFsPath(e.path, fsPath)) return e.editor.getModel();
     }
+    // 块内代码块的虚拟文档(诊断 marker 也要能挂到块 model 上)
+    for (const [model, entry] of blockDocs) {
+        if (sameFsPath(entry.path, fsPath)) return model;
+    }
     return null;
 }
 
@@ -233,6 +396,13 @@ function clearAllPythonMarkers(): void {
             } catch {
                 // ignore
             }
+        }
+    });
+    blockDocs.forEach((_entry, model) => {
+        try {
+            monaco.editor.setModelMarkers(model, MARKER_OWNER, []);
+        } catch {
+            // ignore
         }
     });
 }
@@ -283,6 +453,9 @@ export function registerPythonLsp(): void {
     // server 重启完成(新进程已就绪、文档已重开)后让 monaco 重拉语义 token
     server.onRestarted(() => {
         semanticChanged?.fire();
+        // colorize 缓存里的 plain 结果(重启窗口期渲染的)也一并失效重渲,
+        // 否则重启后阅读态代码块停留在纯 TextMate 色,与编辑态/代码文件漂移
+        invalidateColorizeCache();
     });
 
     // ---- 补全 ----
@@ -507,8 +680,14 @@ export function registerPythonLsp(): void {
             },
             async provideDocumentSemanticTokens(model) {
                 const entry = currentEditors.find((e) => e.editor.getModel() === model);
-                if (!entry) return {data: new Uint32Array(0)};
-                const data = await server.semanticTokensFull(entry.path);
+                let path: string | null = entry ? entry.path : null;
+                if (!path) {
+                    // 块内代码块:虚拟文档登记表反查(见文件头「块内代码块」段)
+                    const block = blockDocs.get(model);
+                    path = block ? block.path : null;
+                }
+                if (!path) return {data: new Uint32Array(0)};
+                const data = await server.semanticTokensFull(path);
                 // LSP 与 monaco 的五元组编码完全一致
                 // (deltaLine, deltaStartChar, length, tokenType, tokenModifiers)
                 return {data: new Uint32Array(data || [])};
@@ -518,14 +697,39 @@ export function registerPythonLsp(): void {
             },
         }));
         console.info("[syfe-semantic] 语义 provider 已注册: language=python");
+        // 就绪信号:让 colorize 缓存里「语义未就绪时渲染的纯 TextMate 结果」失效重渲
+        semanticReady = true;
+        fireSemanticReady();
     };
 
     emitStatus("starting");
     // start() 幂等:已就绪时立即 resolve,两个分支(新启动/已就绪)都只注册一次
-    void server.start().then((ok) => {
+    const onStarted = (ok: boolean): void => {
         console.info(`[syfe-semantic] registerPythonLsp start.then ok=${ok} legend=${!!server.semanticTokensLegend}`);
         emitStatus(ok ? "ready" : "error", ok ? server.version : "启动失败");
-        if (ok) registerSemanticProvider();
+        if (!ok) return;
+        registerSemanticProvider();
+        // 重试成功路径:此前 start 失败时已登记编辑器的 didOpen 也被跳过了
+        // (didOpen 在 start().then 里),这里补齐,否则文件编辑器语义/补全全无
+        currentEditors.forEach((e) => {
+            const m = e.editor.getModel();
+            if (m) server.didOpen(e.path, e.languageId, m.getValue());
+        });
+    };
+    void server.start().then((ok) => {
+        // ⚠ 冷启动握手超时重试:思源进程刚拉起时多子进程并发启动,pyright 的
+        //   initialize 偶发 40s 无响应(实测本机反复出现;手动同参 spawn 147ms
+        //   响应、子进程全程存活)。start() 失败后不会自愈,这里延后重试一轮;
+        //   仍失败则维持旧行为(补全退化,用户重载窗口恢复)。
+        if (!ok && !server.isReady) {
+            console.info("[syfe-semantic] 启动失败,8s 后重试一轮");
+            setTimeout(() => {
+                void server.start().then(onStarted);
+            }, 8000);
+            emitStatus("error", "启动失败(将重试)");
+            return;
+        }
+        onStarted(ok);
     });
 }
 
@@ -559,9 +763,215 @@ export function disposePythonLsp(): void {
     // 清掉所有 marker:monaco 0.50 按 (owner, model) 管理,
     // 所以要逐个打开着的模型传空数组
     clearAllPythonMarkers();
+    // 就绪信号翻转:订阅方清 colorize 缓存 → 已叠语义色的渲染回落纯 TextMate
+    if (semanticReady) {
+        semanticReady = false;
+        fireSemanticReady();
+    }
 }
 
 /** 当前是否已启用 LSP */
 export function isPythonLspActive(): boolean {
     return registered;
+}
+
+// ===== CM6 代码块语义覆盖(阅读态 colorize 叠 LSP 语义色)=====
+// 阅读态没有编辑器实例,Monaco 自身的语义渲染管线用不上;这里把
+// semanticTokensFull 的五元组手工叠到 colorize 的 mtk span 上:
+//   1) 五元组 → 每行 {col,len,css} 覆盖区间(resolveSemanticTokenStyle 取色,
+//      与 defineTheme 的语义规则同一张表 → 文件编辑器什么色,块就什么色);
+//   2) colorize HTML 按行(<br> 分隔)展开成叶子 span 段;
+//   3) 在语义 token 边界切分段,整段落在覆盖内的切片内联覆盖色/字重。
+// 切片保持原 mtk 类与原内联样式,覆盖色写在 style 尾部(同属性后者胜)。
+
+interface SemanticOverlayOv {
+    col: number;
+    len: number;
+    css: string;
+}
+
+async function overlayBlockSemanticTokens(lang: string, code: string, html: string): Promise<string> {
+    if (!semanticReady || lang !== "python") return html;
+    const server = getPythonLanguageServer();
+    const legend = server.semanticTokensLegend;
+    if (!legend) return html;
+    const path = makeBlockDocPath(lang, code);
+    if (!path) return html;
+    if (!(await ensureBlockSemanticDoc(path, lang, code))) return html;
+    // pyright 对刚 didOpen 的文档会**立即**返回空 token(分析还没跑完),
+    // 空结果一旦缓存就永远是纯 TextMate 色 —— 带宽限重试等首轮分析落地
+    // (冷启动竞态实测:首次恒空,几百 ms 后重试即有数据)。
+    let data: number[] | null = null;
+    for (let attempt = 0; attempt < 6; attempt++) {
+        data = await server.semanticTokensFull(path);
+        if (data && data.length) break;
+        await new Promise(r => setTimeout(r, 400));
+    }
+    if (!data || data.length === 0) return html;
+    try {
+        return applySemanticToColorizeHtml(html, data, legend);
+    } catch (e) {
+        console.warn("[syfe-semantic] colorize 语义覆盖失败,回落纯 TextMate:", e);
+        return html;
+    }
+}
+
+function applySemanticToColorizeHtml(
+    html: string,
+    data: number[],
+    legend: {tokenTypes: string[]; tokenModifiers: string[]},
+): string {
+    const themeName = getMonacoThemeName();
+    // 1) 五元组 → 每行覆盖区间
+    const byLine = new Map<number, SemanticOverlayOv[]>();
+    let line = 0;
+    let col = 0;
+    for (let i = 0; i + 4 < data.length; i += 5) {
+        const deltaLine = data[i];
+        const deltaStart = data[i + 1];
+        const len = data[i + 2];
+        const typeIdx = data[i + 3];
+        const modBits = data[i + 4];
+        line += deltaLine;
+        col = deltaLine > 0 ? deltaStart : col + deltaStart;
+        const type = legend.tokenTypes[typeIdx];
+        if (!type || !len) continue;
+        const mods: string[] = [];
+        for (let b = 0; b < legend.tokenModifiers.length; b++) {
+            if (modBits & (1 << b)) mods.push(legend.tokenModifiers[b]);
+        }
+        const style = resolveSemanticTokenStyle(themeName, [type, ...mods].join("."));
+        if (!style || !style.foreground) continue;
+        let css = `color:${style.foreground};`;
+        const fm = (style.fontStyle || "").split(/\s+/).filter(Boolean);
+        if (fm.includes("bold")) css += "font-weight:bold;";
+        if (fm.includes("italic")) css += "font-style:italic;";
+        if (fm.includes("underline")) css += "text-decoration:underline;";
+        const arr = byLine.get(line) || [];
+        arr.push({col, len, css});
+        byLine.set(line, arr);
+    }
+    if (!byLine.size) return html;
+
+    // 2) 展开 colorize HTML:行 = 顶层节点序列,<br> 分隔
+    const holder = document.createElement("div");
+    holder.innerHTML = html;
+    const outHtml: string[] = [];
+    let lineIdx = 0;
+    let bucket: Node[] = [];
+    const flushLine = () => {
+        outHtml.push(renderLine(bucket, byLine.get(lineIdx)));
+        bucket = [];
+        lineIdx++;
+    };
+    for (const n of Array.from(holder.childNodes)) {
+        if (n.nodeName === "BR") {
+            flushLine();
+            outHtml.push("<br>");
+        } else {
+            bucket.push(n);
+        }
+    }
+    flushLine();
+    return outHtml.join("");
+}
+
+interface ColorizeSeg {
+    text: string;
+    className: string;
+    css: string;
+    start: number;
+}
+
+function escapeHtml(s: string): string {
+    return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/** 一行:叶子 span 段收集 → 语义边界切分 → 重建(覆盖段内联色) */
+function renderLine(nodes: Node[], ovs: SemanticOverlayOv[] | undefined): string {
+    // 收集叶子段(带样式的最近元素祖先 = mtk span;colorize 行包裹 span 无类无样式)
+    const segs: ColorizeSeg[] = [];
+    let lineLen = 0;
+    const walk = (el: Element): void => {
+        for (const child of Array.from(el.childNodes)) {
+            if (child.nodeType === Node.TEXT_NODE) {
+                const t = child.textContent || "";
+                const he = el as HTMLElement;
+                segs.push({text: t, className: he.className || "", css: he.style ? he.style.cssText : "", start: lineLen});
+                lineLen += t.length;
+            } else if (child.nodeType === Node.ELEMENT_NODE && (child as Element).nodeName !== "BR") {
+                walk(child as Element);
+            }
+        }
+    };
+    for (const n of nodes) {
+        if (n.nodeType === Node.ELEMENT_NODE) {
+            walk(n as Element);
+        } else if (n.nodeType === Node.TEXT_NODE) {
+            const t = n.textContent || "";
+            segs.push({text: t, className: "", css: "", start: lineLen});
+            lineLen += t.length;
+        }
+    }
+    if (!segs.length) return "";
+    if (!ovs || !ovs.length) {
+        // 无覆盖:原样序列化(保持原 span 的类与内联样式)
+        return segs.map(g => {
+            const cls = g.className ? ` class="${g.className}"` : "";
+            const css = g.css ? ` style="${g.css}"` : "";
+            return `<span${cls}${css}>${escapeHtml(g.text)}</span>`;
+        }).join("");
+    }
+    // 语义边界切分:**逐段推进**(先前的「按切点区间取首段文本」在区间跨段时
+    // 会吞掉跨界文字 —— 实测 def 后的空格、字符串尾部被吞成 defhello/print()。
+    // 每段独立用覆盖边界切分,天然不丢字;切片各自判定覆盖(语义 token 可能
+    // 跨 TextMate 段边界,逐切片判定即可)。
+    let built = "";
+    for (const seg of segs) {
+        const segStart = seg.start;
+        const segEnd = seg.start + seg.text.length;
+        const cuts = new Set<number>([segStart, segEnd]);
+        for (const ov of ovs) {
+            if (ov.col > segStart && ov.col < segEnd) cuts.add(ov.col);
+            if (ov.col + ov.len > segStart && ov.col + ov.len < segEnd) cuts.add(ov.col + ov.len);
+        }
+        const pts = [...cuts].sort((a, b) => a - b);
+        for (let i = 0; i < pts.length - 1; i++) {
+            const s = pts[i];
+            const e = pts[i + 1];
+            if (e <= s) continue;
+            const slice = seg.text.slice(s - segStart, e - segStart);
+            if (!slice) continue;
+            const ov = ovs.find(o => o.col <= s && e <= o.col + o.len);
+            const cls = seg.className ? ` class="${seg.className}"` : "";
+            // 覆盖 css 拼在原 css 之后(同属性后者胜);任一为空都不出前导分号
+            const css = (seg.css || ov) ? ` style="${[seg.css, ov ? ov.css : ""].filter(Boolean).join(";")}"` : "";
+            built += `<span${cls}${css}>${escapeHtml(slice)}</span>`;
+        }
+    }
+    return built;
+}
+
+// ===== 块语义接线入口(onload 调一次)=====
+
+/**
+ * 把 CM6 代码块接进语义层:
+ *   - 编辑态:mountBlockEditor/unmountBlockEditor → 块 model 登记虚拟文档
+ *     (didOpen + 内容 didChange)→ 语义 provider 反查得到 token;
+ *   - 阅读态:colorizeCached 的 TextMate HTML → 语义覆盖;
+ *   - 就绪/注销信号 → colorize 缓存失效重渲。
+ * 与 registerPythonLsp 并列调用;未启用 LSP 时全部钩子内部自短路,零开销。
+ */
+export function setupBlockSemanticBridge(): void {
+    setSemanticOverlayHook(overlayBlockSemanticTokens);
+    setBlockLspHooks({
+        onBlockMounted: (lang, code, model) => {
+            const path = makeBlockDocPath(lang, code);
+            if (path) registerPythonBlockDoc(model, path, lang);
+        },
+        onBlockUnmounted: (model) => {
+            unregisterPythonBlockDoc(model);
+        },
+    });
+    onSemanticTokensReady(() => invalidateColorizeCache());
 }

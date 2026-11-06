@@ -133,7 +133,7 @@ const syfeCmTheme = EditorView.theme({
     ".syfe-cm-codeblock-lang": {
         marginRight: "auto",        // 语言居左、按钮组贴右;只留这一个 auto
         textTransform: "lowercase",
-        cursor: "default",
+        cursor: "pointer",          // 可点:亮/收围栏(cm6-render toggleFenceReveal)
     },
     ".syfe-cm-codeblock-lang.is-empty": {
         opacity: ".55",             // 无语言围栏:读作「未设置」而非叫 text 的语言

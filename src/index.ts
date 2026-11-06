@@ -74,7 +74,7 @@ import {clearAllSnippets} from "./extensions/snippet-loader";
 import {clearAllLsp} from "./extensions/lsp-loader";
 import {clearAllIconThemes, getIconThemesWithMissingIcons, getLoadedIconThemes, activateIconThemeByPreference, ICON_THEME_CHANGED_EVENT} from "./extensions/icon-theme-loader";
 import {setCloseUnsavedAction} from "./utils/close-guard";
-import {registerPythonLsp, disposePythonLsp} from "./utils/python-lsp-bridge";
+import {registerPythonLsp, disposePythonLsp, setupBlockSemanticBridge} from "./utils/python-lsp-bridge";
 import {disposePythonKernel} from "./utils/python-kernel";
 import {disposeAllKernels, disposeAllKernelsSync, getGlobalDefaultChoice, getKernelChoice, loadKernelChoices, registerKernelChoicePersistence, setKernelChoice, DEFAULT_KERNEL_ID} from "./utils/kernel/registry";
 import {listKernelSpecs} from "./utils/kernel/interpreter";
@@ -343,6 +343,8 @@ export default class FileEditorPlugin extends Plugin {
         // start() 内部是异步且有超时的,不会拖慢插件加载。
         try {
             registerPythonLsp();
+            // CM6 代码块语义接线(编辑态虚拟文档 + 阅读态 colorize 语义覆盖)
+            setupBlockSemanticBridge();
         } catch (e) {
             console.warn("[siyuan-file-editor] Python LSP 注册失败:", e);
         }

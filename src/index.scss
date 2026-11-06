@@ -5239,6 +5239,18 @@ button.syfe-editor__arrow--exp:hover {
         // 顶部无需圆角(工具栏在上方),底部圆角与正文一致
         border-radius: 0 0 var(--b3-border-radius, 6px) var(--b3-border-radius, 6px) !important;
         overflow: hidden;
+
+        // 去掉 monaco 自带的蓝色聚焦描边 —— editor.main.css 无条件给每个
+        // .monaco-editor(.synthetic-focus)画一圈 outline-color:
+        // var(--vscode-focusBorder) 的外框(focus 时卡片底部一圈蓝线),
+        // 与阅读态(colorize 无框)不一致。与 notebook 区 .syfe-nb__src 同款修法。
+        outline: none;
+    }
+
+    // 括号配对着色兜底(model 级开关失效时装饰类名仍会出现):强制回落继承色
+    // (= 主题默认前景,与阅读态 colorize 的无彩括号一致)。my-logseq 同款双保险。
+    .monaco-editor [class*='bracket-highlighting-'] {
+        color: inherit !important;
     }
 
     // 滚动条细条半透明(悬停恢复):monaco.css 异步注入且排在后面,

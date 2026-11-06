@@ -491,10 +491,18 @@ export class PythonLanguageServer {
         // rootUri=null 会让 pyright 用 "\<default workspace root>" 占位并刷
         // "does not exist" 警告;指向文件目录则扫描范围小且消灭警告。
         // (lesson 15 的定案是别指向思源工作区根 —— 文件目录不违背)
+        // ⚠ 只认**磁盘上真实存在**的文件:块内代码块的虚拟文档(tmp 路径、文件
+        //   本身不存在)不能抢设 root —— 不存在的 cwd 会让下次 spawn 直接
+        //   ENOENT,解释器重启/重试的 initialize 全挂(实测:md 代码块虚拟文档
+        //   先于文件 didOpen 时,重启后 initialize 40s 无响应,症状是
+        //   "pyright 时好时坏")。
         if (!this.workspaceRoot) {
             const req0 = getNativeRequire();
             const pathMod = req0 ? (req0("path") as typeof import("path")) : null;
-            if (pathMod) this.workspaceRoot = pathMod.dirname(fsPath);
+            const fsMod = req0 ? (req0("fs") as typeof import("fs")) : null;
+            if (pathMod && fsMod && fsMod.existsSync(fsPath)) {
+                this.workspaceRoot = pathMod.dirname(fsPath);
+            }
         }
         const uri = pathToUri(fsPath);
         // openDocs 的 key 一律小写:didOpen 与 semanticTokensFull/completion 等的

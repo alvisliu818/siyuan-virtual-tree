@@ -88,10 +88,11 @@ function ensureEditor(): monaco.editor.IStandaloneCodeEditor {
     S.stash.appendChild(root);
     // 注意不能传 theme:构造时的 theme 参数会全局覆盖 setTheme,导致扩展主题失效
     // (与 monaco.ts createEditor 同款坑)。省略即跟随全局当前主题。
-    // 字号/字体/行高与卡片正文一致(21px);其余与 my-logseq 块内形态同套:
-    // 无行号、折叠槽清零、无 minimap、不折行(Logseq parity:长行横向滚)、
-    // 关括号彩虹(阅读态 colorize 产物没有括号彩色,编辑态开着会跳色)、
-    // 横向滚动条 10px = 阅读态常驻条带高度 —— 两态任何情况下等高。
+// 字号/字体/行高与卡片正文一致(21px);其余与 my-logseq 块内形态同套:
+        // 无行号、折叠槽清零、无 minimap、不折行(Logseq parity:长行横向滚)、
+        // 关括号彩虹(此处编辑器级选项实际到不了 model,真开关在 mountBlockEditor
+        // 的 model 级 updateOptions —— 这里保留是防御,两态颜色一致靠那个)、
+        // 横向滚动条 10px = 阅读态常驻条带高度 —— 两态任何情况下等高。
     S.editor = monaco.editor.create(root, {
         value: "",
         automaticLayout: false,
@@ -103,6 +104,9 @@ function ensureEditor(): monaco.editor.IStandaloneCodeEditor {
         scrollBeyondLastColumn: 0,
         wordWrap: "off",
         bracketPairColorization: {enabled: false},
+        // 点击词带的同词灰底高亮(occurrencesHighlight 默认 singleClick)也是编辑态
+        // 独有的视觉噪声 —— 阅读态 colorize 产物没有,关掉两态才一致
+        occurrencesHighlight: "off",
         overviewRulerLanes: 0,
         hideCursorInOverviewRuler: true,
         minimap: {enabled: false},
@@ -116,6 +120,11 @@ function ensureEditor(): monaco.editor.IStandaloneCodeEditor {
         fontSize: 13,
         lineHeight: 21,
         fontFamily: "var(--b3-font-family-code, monospace)",
+        // 语义着色开关(monaco standalone 默认关):python 块经 LSP 虚拟文档拿到
+        // semanticTokens 后,扩展主题的语义色才能在编辑态生效 —— 与代码文件
+        // (monaco.ts createEditor 同款)对齐。思源配色主题无语义规则,开了也无色可施,
+        // 两态/文件依旧一致。
+        "semanticHighlighting.enabled": true,
     });
     // 搬运的就是 root 本体(.monaco-editor 是它的子节点,随行)
     S.domNode = root;
@@ -130,6 +139,40 @@ export function setGlobalCodeTheme(name: string): void {
     if (S.themeName === name) return;   // 同名重复应用(如明暗切换到同一主题)不折腾
     monaco.editor.setTheme(name);
     S.themeName = name;
+    S.colorizeCache.clear();
+    for (const cb of [...S.listeners]) {
+        try {
+            cb();
+        } catch {
+            // 单个监听器异常不影响其他监听器
+        }
+    }
+}
+
+// ===== 语义层挂钩(python-lsp-bridge 经 setupBlockSemanticBridge 注入)=====
+// 模块方向:bridge → 本模块单向注入,本模块不反向 import bridge
+// (theme-loader → 本模块的 setGlobalCodeTheme 已构成一条边,再加反向边成环)。
+/** 阅读态语义覆盖:colorize 的 TextMate HTML → 叠语义色(python + pyright 就绪时) */
+type SemanticOverlayHook = (lang: string, code: string, html: string) => Promise<string>;
+/** 编辑态生命周期:块 model 挂载/卸载 → LSP 虚拟文档登记与注销 */
+interface BlockLspHooks {
+    onBlockMounted(lang: string, code: string, model: monaco.editor.ITextModel): void;
+    onBlockUnmounted(model: monaco.editor.ITextModel): void;
+}
+let semanticOverlayHook: SemanticOverlayHook | null = null;
+let blockLspHooks: BlockLspHooks | null = null;
+
+export function setSemanticOverlayHook(h: SemanticOverlayHook | null): void {
+    semanticOverlayHook = h;
+}
+
+export function setBlockLspHooks(h: BlockLspHooks | null): void {
+    blockLspHooks = h;
+}
+
+// 清 colorize 缓存并通知订阅者(卡片重渲)。语义 provider 就绪/重启/注销时由
+// bridge 调 —— 缓存里可能有语义层未就绪时的纯 TextMate 结果,不清会永远偏色。
+export function invalidateColorizeCache(): void {
     S.colorizeCache.clear();
     for (const cb of [...S.listeners]) {
         try {
@@ -181,11 +224,21 @@ export function colorizeCached(lang: string, code: string): Promise<string> {
         p = monaco.editor
             .colorize(code, lang || "plaintext", {tabSize: 4})
             .then(
-                (html) => {
+                async (html) => {
                     if (S.colorizeCache.size > COLORIZE_CACHE_LIMIT) S.colorizeCache.clear();
                     // Monaco 每行(含最后一行)都补一个 <br/>:剥掉末尾那个,
                     // 卡片/阅读态盒子才不多出一行空行(my-logseq 同款处理)
-                    return html.replace(/<br\/>\s*$/, "");
+                    let out = html.replace(/<br\/>\s*$/, "");
+                    // 语义覆盖(python + pyright 就绪时把 LSP 语义色叠上去;
+                    // 无钩子/未就绪/失败一律回落纯 TextMate 高亮)
+                    if (semanticOverlayHook) {
+                        try {
+                            out = await semanticOverlayHook(lang || "plaintext", code, out);
+                        } catch {
+                            // 保持 TextMate 原样
+                        }
+                    }
+                    return out;
                 },
                 () => escapeFallback(code),
             );
@@ -378,7 +431,45 @@ export function mountBlockEditor(o: MountBlockOptions): void {
     S.blockModel = monaco.editor.createModel(o.value, o.language);
     // 统一 LF:monaco 在 Windows 上默认 CRLF,会把插入内容转成 \r\n 污染 markdown
     S.blockModel.setEOL(monaco.editor.EndOfLineSequence.LF);
+    // 括号配对着色必须在 **MODEL 级**关:编辑器级选项到不了 model —— modelService
+    // 按**全局** config 计算 bracketPairColorizationOptions(默认开着),create 传的
+    // 编辑器级选项被忽略,括号一直是 VS Code 的 #0431FA 蓝,与阅读态(colorize)
+    // 的无彩括号不一致(my-logseq 同款坑同款修法)。updateOptions 的键名是
+    // bracketColorizationOptions(历史拼写);老版本 monaco 没有该选项时忽略。
+    try {
+        S.blockModel.updateOptions({
+            bracketColorizationOptions: {
+                enabled: false,
+                independentColorPoolPerBracketType: false,
+            },
+        } as monaco.editor.ITextModelUpdateOptions);
+    } catch {
+        // 老版本 monaco 无该 model 选项
+    }
     ed.setModel(S.blockModel);
+    // ⭐ 同步驱动一次后台分词。monaco 0.50 的 classic 分词走 DefaultBackgroundTokenizer
+    //   → runWhenGlobalIdle = requestIdleCallback(无 timeout 兜底)—— 窗口被遮挡/
+    //   失焦时 Chromium 不回调 rIC,分词永远停在 scheduled(bgState 停留 InProgress),
+    //   视图里关键词/字符串全落默认色、只剩语义 token 有色(实测坐实:代码文件
+    //   model 在窗口启动早期跑完所以正常,块 model 挂载时刻窗口状态差就饿死)。
+    //   直接用假 deadline 同步跑完 —— 块内容几~几十行,1ms 量级;内部结构变化时
+    //   静默跳过回落 idle 调度。
+    try {
+        const gt = (S.blockModel as any)._tokenizationTextModelPart?.grammarTokens;
+        const bgt = gt?._defaultBackgroundTokenizer;
+        if (bgt && typeof bgt._backgroundTokenizeWithDeadline === "function") {
+            bgt._backgroundTokenizeWithDeadline({didTimeout: true, timeRemaining: () => 10});
+        }
+    } catch {
+        // 回落 idle 调度(窗口状态好时自愈)
+    }
+    // Python 块接入 LSP 虚拟文档(语义着色与文件编辑器同源;钩子由
+    // python-lsp-bridge 的 setupBlockSemanticBridge 注入,未接线时是 no-op)
+    try {
+        blockLspHooks?.onBlockMounted(o.language, o.value, S.blockModel);
+    } catch {
+        // LSP 接线失败不影响编辑可用性
+    }
     S.mountedContainer = o.container;
     S.mountedLanguage = o.language;
     S.domNode && o.container.appendChild(S.domNode);
@@ -436,6 +527,12 @@ export function unmountBlockEditor(): void {
     }
     setActiveBlock(null);
     S.mountedContainer = null;
+    // 先注销 LSP 虚拟文档(didClose + 摘 marker),再 dispose model
+    try {
+        if (S.blockModel) blockLspHooks?.onBlockUnmounted(S.blockModel);
+    } catch {
+        // ignore
+    }
     if (S.blockModel && !S.blockModel.isDisposed()) S.blockModel.dispose();
     S.blockModel = null;
     if (S.editor && S.stash && S.domNode) {

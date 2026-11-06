@@ -1,9 +1,10 @@
 // CM6 Markdown 富渲染扩展:在源码态编辑器里做「轻 live」渲染。
 //
 // 范围(与 cm6-markdown.ts 的语法高亮互补):
-//  - 围栏代码块:唯一一套渲染 —— 代码行永远以「行底色 + TextMate token 着色」呈现,
-//    两态唯一差别是围栏显隐:光标在块外(渲染态)围栏行 block replace 隐藏,开头围栏
-//    换成头部工具条(语言/复制);光标在块内(编辑态)围栏原样显示。高亮与代码文件
+//  - 围栏代码块:唯一一套渲染 —— 代码行永远以「行底色 + TextMate token 着色」呈现。
+//    三种形态(buildDecorations):光标在块外 → 卡片(colorize 正文);点卡片 →
+//    卡片 + 全局单例 Monaco 编辑器;点语言标签/光标进块(未挂 Monaco)→ 原始围栏
+//    源码态(Obsidian 同款「点语言看源码」),光标离开块回卡片。高亮与代码文件
 //    同源:Monaco TextMate 分词 + 全局主题(colorize 出静态 HTML,编辑态挂单例)。
 //    (交互模型参考 ProseMark codeFenceExtension / PurrMD codeBlock)
 //  - 图片:整行就是一张图片语法 ![alt](src) 或 <img src="..."> 时,替换为真实 <img>
@@ -164,12 +165,20 @@ class CodeBlockWidget extends WidgetType {
         }, 1600);
     }
 
-    private buildHead(): HTMLElement {
+    private buildHead(view: EditorView): HTMLElement {
         const head = document.createElement("div");
         head.className = "syfe-cm-codeblock-head";
         const lang = document.createElement("span");
         lang.className = "syfe-cm-codeblock-lang" + (this.lang ? "" : " is-empty");
         lang.textContent = this.lang || "text";
+        // 点语言 → 亮/收围栏(Obsidian 同款)。mousedown 即响应 + stopPropagation:
+        // 阻断 CM6 的光标放置(否则光标被放到块边界又触发一次态翻转)。
+        lang.title = "点击显示/隐藏围栏";
+        lang.onmousedown = (e) => {
+            e.stopPropagation();
+            e.preventDefault();
+            toggleFenceReveal(view, this.key);
+        };
         head.appendChild(lang);
         const btn = document.createElement("button");
         btn.className = "syfe-cm-codeblock-copy";
@@ -197,7 +206,7 @@ class CodeBlockWidget extends WidgetType {
         wrap.className = "syfe-cm-codeblock";
         wrap.dataset.blockKey = this.key;
         wrap.setAttribute("contenteditable", "false");
-        wrap.appendChild(this.buildHead());
+        wrap.appendChild(this.buildHead(view));
         const body = document.createElement("div");
         body.className = "syfe-cm-codeblock-body";
         wrap.appendChild(body);
@@ -466,6 +475,37 @@ function fencedCodeInfos(state: EditorState): FencedCodeInfo[] {
     return out;
 }
 
+// 语言标签点击:亮/收围栏(Obsidian 同款「点语言进源码」)。
+//   - 卡片态 → 光标放到开头围栏行尾(紧贴语言名,可直接改语言),渲染层对
+//     「光标在块内且未挂 Monaco」的块显示原始围栏(见 buildDecorations);
+//   - 围栏态(光标已在块内)→ 光标移到块后,卡片回来;
+//   - Monaco 编辑态 → 先退出(落盘 + 卸载单例)再亮围栏。
+// 全部通过 dispatch selection 完成,装饰重建走 StateField 正常管线。
+function toggleFenceReveal(view: EditorView, key: string): void {
+    const from = parseInt(key, 10);
+    if (Number.isNaN(from) || from >= view.state.doc.length) return;
+    const info = fencedCodeInfos(view.state).find(i => i.from === from);
+    if (!info) return;
+    const editing = getEditingKey() === key;
+    if (editing) {
+        flushActiveBlock();
+        unmountBlockEditor();
+        setEditingKey(null);
+        activeSync = null;
+    }
+    const inside = !editing && view.state.selection.main.head >= info.from
+        && view.state.selection.main.head <= info.to;
+    if (inside) {
+        // 已在围栏态 → 收起:光标移到块后(下一行行首;块后无行则取文档尾)
+        const nextLine = Math.min(view.state.doc.lineAt(info.to).number + 1, view.state.doc.lines);
+        view.dispatch({selection: {anchor: view.state.doc.line(nextLine).from}});
+    } else {
+        // 亮围栏:光标放到开头围栏行尾
+        view.dispatch({selection: {anchor: view.state.doc.lineAt(info.from).to}});
+    }
+    view.focus();
+}
+
 // ===== 主插件 =====
 
 // 外部事件(主题切换/进入编辑态)→ 强制重建装饰。模块级:编辑态退出等 widget 回调也
@@ -575,9 +615,20 @@ export function cm6MarkdownRender(opts: Cm6RenderOptions): Extension {
     // 每次更新后把单例编辑器安置进「当前编辑块」的真实宿主(过滤测量克隆):
     //   - 未挂载 → 全量挂载(点击卡片后的第一次重建)
     //   - 已挂载同块但容器变了(重建换了 widget DOM)→ 搬 DOM + 重绑监听
+    // ⚠ update 里只做调度:ViewPlugin.update 跑在 DocView DOM 同步**之前**
+    //   (CM6 update 流:updatePlugins → docView.update),同事务直接挂载会挂进
+    //   即将被替换的旧 widget DOM —— 编辑态首挂时 editingFlag 翻转必触发 widget
+    //   重建,刚挂进去的宿主连人带编辑器一起 detach;而 flags-only 的 measure
+    //   不重跑 plugins(ViewUpdate.empty 短路),没有后续 update 就永不自愈
+    //   (实测坐实:宿主空、单例滞留 detached DOM)。挪到微任务执行时本轮
+    //   DOM 同步已完结,拿到的必是最终宿主。
     const editMounter = ViewPlugin.fromClass(class {
         constructor(readonly view: EditorView) {}
         update() {
+            if (!getEditingKey()) return;
+            queueMicrotask(() => this.sync());
+        }
+        sync() {
             const key = getEditingKey();
             if (!key) return;
             const hosts: HTMLElement[] = [];
@@ -630,10 +681,14 @@ function buildDecorations(state: EditorState, opts: Cm6RenderOptions): Decoratio
             const overlapsUsed = (from: number, to: number) => usedRanges.some(r => from < r.to && to > r.from);
             const cursorInRange = (from: number, to: number) => cursor >= from && cursor <= to;
 
-            // 1) 围栏代码块:一律整块替换为卡片 —— 渲染态正文 = Monaco colorize;
-            //    编辑态(点击卡片)正文 = 全局单例 Monaco 编辑器(monaco-block.ts),
-            //    失焦/Esc/点击块外退出回渲染态
+            // 1) 围栏代码块:三种形态 ——
+            //    a. 光标在块外            → 卡片(colorize 正文)
+            //    b. editingKey 命中(点卡片) → 卡片 + 全局单例 Monaco(monaco-block.ts)
+            //    c. 光标在块内未挂 Monaco   → 原始围栏(源码态;点语言标签/方向键进块,
+            //       Obsidian 同款「点语言看源码」),不加替换装饰、不占 usedRanges
             for (const info of fencedCodeInfos(state)) {
+                const editing = getEditingKey() === String(info.from);
+                if (!editing && cursorInRange(info.from, info.to)) continue;
                 usedRanges.push({from: info.from, to: info.to});
                 const widget = new CodeBlockWidget(info.lang, info.code, String(info.from));
                 const replace = Decoration.replace({widget, block: true});
