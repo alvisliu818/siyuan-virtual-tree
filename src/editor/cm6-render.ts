@@ -130,6 +130,26 @@ const COPY_ICON_SVG =
     '<rect width="14" height="14" x="8" y="8" rx="2" ry="2"/>' +
     '<path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>';
 
+// colorize HTML → 带行号的逐行结构。
+// 行号是卡片滚动视图的一部分:每行 = 行号格(sticky left,横向滚动时钉在卡内
+// 左缘、始终可见)+ 代码格(pre,跟随横向滚动)。宽度按最大行号的位数用 ch
+// 定宽,等宽字体下各行的代码起始 x 严格对齐。
+function buildNumberedLines(html: string): string {
+    // colorize 以 <br> 分行;colorize 失败的兜底是 \n 分行的转义文本,一并支持
+    const lines = html.split(/<br\s*\/?>|\n/);
+    const widthCh = String(Math.max(lines.length, 1)).length + 1;
+    const rows: string[] = [];
+    for (let i = 0; i < lines.length; i++) {
+        rows.push(
+            '<div class="syfe-cm-cl">' +
+            '<span class="syfe-cm-cl-n" style="width:' + widthCh + 'ch">' + (i + 1) + '</span>' +
+            '<span class="syfe-cm-cl-c">' + (lines[i] || "") + '</span>' +
+            '</div>',
+        );
+    }
+    return rows.join("");
+}
+
 /**
  * 围栏代码块卡片(整块 replace):头部(语言标签 + 复制按钮)+ 正文。
  * 渲染态正文 = Monaco colorize(与代码文件同一主题服务/分词);
@@ -148,8 +168,13 @@ class CodeBlockWidget extends WidgetType {
     }
 
     eq(other: CodeBlockWidget): boolean {
-        // 编辑中内容变化不重建(Monaco 自持最新内容);渲染态主题变了要重建重取色
+        // 编辑中内容变化不重建(Monaco 自持最新内容);渲染态主题变了要重建重取色。
+        // ⚠ 非编辑态必须比较 code:外部内容变更(setValue/撤销/粘贴)同偏移时
+        //   若只比 key/lang,eq 会误判相等 → 卡片滞留旧内容(实测:整卡变成
+        //   已被替换的旧代码)。编辑态跳过 code 比较,避免每次击键重建卡片
+        //   打断 Monaco 挂载。
         if (other.key !== this.key || other.lang !== this.lang || other.editingFlag !== this.editingFlag) return false;
+        if (!this.editingFlag && other.code !== this.code) return false;
         return this.editingFlag || other.themeSig === this.themeSig;
     }
 
@@ -212,13 +237,15 @@ class CodeBlockWidget extends WidgetType {
         body.className = "syfe-cm-codeblock-body";
         wrap.appendChild(body);
         // 渲染正文:Monaco colorize(异步,先纯文本占位)。编辑态由 CSS 隐藏此层。
+        // colorize 结果重建为带行号的逐行结构(行号列 sticky,随卡片横向滚动
+        // 保持可见 —— 见 buildNumberedLines)
         const colorizeDiv = document.createElement("div");
         colorizeDiv.className = "syfe-cm-codeblock-colorize";
         body.appendChild(colorizeDiv);
         colorizeDiv.textContent = this.code;
         void colorizeCached(this.lang, this.code).then(html => {
             if (!colorizeDiv.isConnected) return;
-            colorizeDiv.innerHTML = html;
+            colorizeDiv.innerHTML = buildNumberedLines(html);
             view.requestMeasure();
         });
         // 编辑态宿主:点击卡片后由 editMounter 把全局单例 Monaco 安置进来

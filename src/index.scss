@@ -5279,3 +5279,30 @@ button.syfe-editor__arrow--exp:hover {
 .syfe-cm-codeblock-body::-webkit-scrollbar-track {
     background: transparent;
 }
+
+/* 代码块行号列(阅读态):行号是卡片滚动视图的一部分 —— sticky 钉在卡内
+   左缘,横向滚动时数字始终可见、代码从其下滚过;纵向逐行对齐。
+   宽度由重建时按最大行号位数内联定宽(ch),等宽字体下各行代码起始 x 对齐 */
+.syfe-cm-cl {
+    display: flex;
+    align-items: flex-start;
+    min-width: max-content;
+}
+
+.syfe-cm-cl-n {
+    flex: none;
+    position: sticky;
+    left: 0;
+    box-sizing: border-box;
+    padding: 0 0.9em;
+    text-align: right;
+    color: var(--b3-theme-on-surface);
+    opacity: 0.45;
+    background: var(--b3-theme-surface);
+    user-select: none;
+}
+
+.syfe-cm-cl-c {
+    flex: none;
+    white-space: pre;
+}

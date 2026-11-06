@@ -76,6 +76,12 @@ const syfeCmTheme = EditorView.theme({
     },
     ".cm-content": {
         caretColor: "var(--b3-theme-primary)",
+        // 断开 min-content 传播:cm-content 是 cm-scroller 的 flex item,
+        // min-width:auto = 内容的 min-content —— 宽代码块卡片(不换行的 pre
+        // 行)会把整个编辑器撑出横向滚动(行号栏一起滚走/挡内容)。归零后
+        // cm-content 收敛到视口宽,卡片宽度受约束,横向滚动发生在卡片内部
+        // (body overflowX scroll + 行号列 sticky),行号成为卡片滚动视图的一部分
+        minWidth: 0,
     },
     ".cm-gutters": {
         backgroundColor: "var(--b3-theme-background)",
@@ -163,7 +169,9 @@ const syfeCmTheme = EditorView.theme({
     },
     ".syfe-cm-codeblock-body": {
         margin: "0",
-        padding: "8px 0.9em",      // 固定 px:与编辑态(padding 8×2 + 横条 10)逐像素等高
+        // 左内边距归零:行号列(逐行重建,sticky)从 x=0 起,数字自带缩进;
+        // 右侧 0.9em 给滚动条留白。固定 px:与编辑态(padding 8×2 + 横条 10)逐像素等高
+        padding: "8px 0.9em 8px 0",
         overflowX: "scroll",        // scroll 非 auto:条带常驻,短块也留 10px 底带
         overflowY: "hidden",
         whiteSpace: "pre",          // 不折行(Logseq parity),长行横向滚

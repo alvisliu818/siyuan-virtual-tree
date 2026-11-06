@@ -96,7 +96,10 @@ function ensureEditor(): monaco.editor.IStandaloneCodeEditor {
     S.editor = monaco.editor.create(root, {
         value: "",
         automaticLayout: false,
-        lineNumbers: "off",
+        // 行号打开:与代码文件编辑器一致,阅读态卡片的行号列(逐行重建)也
+        // 一直在 —— 两态都有行号,视觉不跳
+        lineNumbers: "on",
+        lineNumbersMinChars: 2,
         lineDecorationsWidth: 0,
         folding: false,
         renderLineHighlight: "none",
