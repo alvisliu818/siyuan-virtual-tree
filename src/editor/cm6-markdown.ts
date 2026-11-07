@@ -64,6 +64,10 @@ export interface Cm6MarkdownHandle {
 const syfeCmTheme = EditorView.theme({
     "&": {
         height: "100%",
+        // 顶部留白放在编辑器根上(content 与 gutter 一起下移,相对位置不变);
+        // 放 scroller 会破坏 CM6 的行号槽对齐
+        paddingTop: "10px",
+        boxSizing: "border-box",
         fontSize: "14px",
         backgroundColor: "var(--b3-theme-background)",
         color: "var(--b3-theme-on-background)",
@@ -71,7 +75,13 @@ const syfeCmTheme = EditorView.theme({
     ".cm-scroller": {
         fontFamily: "var(--b3-font-family, var(--b3-font-family-code))",
         lineHeight: "1.65",
-        padding: "10px 16px 45vh",   // 底部留白:文末继续编辑不用顶到屏幕底
+        // ⚠ 行号槽对齐:CM6 的 measure() 只按 contentDOM 的 padding 计算
+        // gutter spacer。给 scroller 加 10px padding-top 会让行号整体比内容
+        // 行低约 10px(实测 19 行仅 1 行对齐);把 padding 挪到 content 又会
+        // 让 CM6 初始化时把默认行高算成 14px 而非 25px,行号按 14px 间距
+        // 排布、逐行累积错位。结论:垂直方向完全不碰 scroller/content 的
+        // padding(用 CM6 默认 4px),只保留底部滚动留白与左右边距。
+        padding: "0 16px 45vh",
         overflow: "auto",
     },
     ".cm-content": {
@@ -88,6 +98,10 @@ const syfeCmTheme = EditorView.theme({
         color: "var(--b3-theme-on-surface)",
         border: "none",
         userSelect: "none",
+        // CM6 的行号槽 spacer 按 content 的 padding 计算,与内容行首仍有约
+        // 10px 的固定差(实测 19 行里 18 行行号比内容行低 9px)。整体上移
+        // 10px 抵消;不用 transform,避免影响 sticky 的命中区域。
+        marginTop: "-10px",
     },
     ".cm-activeLine": {backgroundColor: "var(--b3-list-hover, rgba(0,0,0,.03))"},
     ".cm-activeLineGutter": {
@@ -457,6 +471,13 @@ export function createCm6MarkdownEditor(
     });
 
     const view = new EditorView({state, parent: container});
+
+    // CM6 的初始 measure 走 rAF;窗口失焦/页签在后台时可能迟迟不跑,行号槽会
+    // 一直按 defaultLineHeight(=font-size 14px) 排布而不是真实行高 25px。
+    // 显式补一次测量 + 字体/KaTeX/图片就绪后的延时兜底(富渲染 widget 另由
+    // ResizeObserver 通知,见 cm6-render.ts 的 observeWidgetResize)。
+    view.requestMeasure();
+    window.setTimeout(() => view.requestMeasure(), 250);
 
     return {
         getValue: () => view.state.doc.toString(),

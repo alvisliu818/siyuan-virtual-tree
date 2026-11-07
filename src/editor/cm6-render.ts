@@ -96,6 +96,26 @@ function loadKatex(): Promise<any> {
 
 // ===== Widgets =====
 
+/**
+ * 富渲染 widget 的内容常异步变化(图片 blob 加载、KaTeX 懒加载重绘、
+ * Monaco 挂载)。块高变了而 CM6 没重新测量 → 行号槽(gutter)与内容行错位。
+ * 统一用 ResizeObserver 通知 CM6;MathWidget 等所有 widget 共用同一套记账,
+ * destroy 时断开,避免测量克隆的 DOM 泄漏观察者。
+ */
+const widgetObservers = new WeakMap<HTMLElement, ResizeObserver>();
+
+function observeWidgetResize(wrap: HTMLElement, view: EditorView): void {
+    if (typeof ResizeObserver === "undefined" || widgetObservers.has(wrap)) return;
+    const ro = new ResizeObserver(() => view.requestMeasure());
+    ro.observe(wrap);
+    widgetObservers.set(wrap, ro);
+}
+
+function disconnectWidgetResize(wrap: HTMLElement): void {
+    widgetObservers.get(wrap)?.disconnect();
+    widgetObservers.delete(wrap);
+}
+
 /** 复制代码的兼容实现:Clipboard API 被拒(Electron WebView 常见)时退回 execCommand(PurrMD 同款兜底) */
 async function copyTextCompat(text: string): Promise<void> {
     if (window.navigator.clipboard) {
@@ -237,6 +257,8 @@ class CodeBlockWidget extends WidgetType {
     toDOM(view: EditorView): HTMLElement {
         const wrap = document.createElement("div");
         wrap.className = "syfe-cm-codeblock";
+        // colorize / Monaco 挂载会改变卡片高度 → 通知 CM6 重新测量行号槽
+        observeWidgetResize(wrap, view);
         wrap.dataset.blockKey = this.key;
         wrap.setAttribute("contenteditable", "false");
         wrap.appendChild(this.buildHead(view));
@@ -263,7 +285,8 @@ class CodeBlockWidget extends WidgetType {
         return wrap;
     }
 
-    destroy(): void {
+    destroy(dom: HTMLElement): void {
+        disconnectWidgetResize(dom);
         if (this.copiedTimer) window.clearTimeout(this.copiedTimer);
         this.copiedTimer = undefined;
         // 不在此处卸载单例:同 key 的继任 widget 可能在本实例销毁后才挂载,
@@ -286,9 +309,11 @@ class ImageWidget extends WidgetType {
         return other.src === this.src && other.alt === this.alt;
     }
 
-    toDOM(): HTMLElement {
+    toDOM(view: EditorView): HTMLElement {
         const wrap = document.createElement("span");
         wrap.className = "syfe-cm-img";
+        // blob 图片异步加载会改变行高 → 通知 CM6 重新测量,否则行号槽错位
+        observeWidgetResize(wrap, view);
         const img = document.createElement("img");
         img.alt = this.alt;
         img.className = "syfe-cm-img__pic";
@@ -314,6 +339,10 @@ class ImageWidget extends WidgetType {
             wrap.appendChild(cap);
         }
         return wrap;
+    }
+
+    destroy(dom: HTMLElement): void {
+        disconnectWidgetResize(dom);
     }
 
     ignoreEvent(): boolean {
@@ -348,8 +377,6 @@ function splitMathBlockBody(lines: string[]): MathBlockBody {
 }
 
 /** 公式块:KaTeX display 渲染;失败回退为等宽样式并给出错误提示 */
-const mathWidgetObservers = new WeakMap<HTMLElement, ResizeObserver>();
-
 class MathWidget extends WidgetType {
     constructor(readonly tex: string, readonly notes: string[], readonly katex: any) {
         super();
@@ -379,14 +406,8 @@ class MathWidget extends WidgetType {
     toDOM(view: EditorView): HTMLElement {
         const wrap = document.createElement("div");
         wrap.className = "syfe-cm-math";
-        // KaTeX 异步渲染完成会改变块高,主动通知 CM 重新测量(ProseMark 同款;
-        // 否则长公式首屏可能出现滚动/光标定位偏差)
-        let ro: ResizeObserver | undefined;
-        if (typeof ResizeObserver !== "undefined") {
-            ro = new ResizeObserver(() => view.requestMeasure());
-            ro.observe(wrap);
-            mathWidgetObservers.set(wrap, ro);
-        }
+        // KaTeX 异步渲染完成会改变块高 → 通知 CM6 重新测量(行号槽对齐)
+        observeWidgetResize(wrap, view);
         const requestRelayout = () => view.requestMeasure();
         const tryRender = (katex: any) => {
             try {
@@ -424,8 +445,7 @@ class MathWidget extends WidgetType {
     }
 
     destroy(dom: HTMLElement): void {
-        mathWidgetObservers.get(dom)?.disconnect();
-        mathWidgetObservers.delete(dom);
+        disconnectWidgetResize(dom);
     }
 
     ignoreEvent(): boolean {
@@ -476,8 +496,15 @@ class PropertiesWidget extends WidgetType {
         return other.lines.join("\n") === this.lines.join("\n");
     }
 
-    toDOM(): HTMLElement {
-        return createPropertiesElement(this.lines);
+    toDOM(view: EditorView): HTMLElement {
+        const wrap = createPropertiesElement(this.lines);
+        // 属性面板与 4 行源码高度差很大;尺寸变化必须让 CM6 重新测量行号槽
+        observeWidgetResize(wrap, view);
+        return wrap;
+    }
+
+    destroy(dom: HTMLElement): void {
+        disconnectWidgetResize(dom);
     }
 
     ignoreEvent(): boolean {
@@ -527,6 +554,8 @@ class InlineMathWidget extends WidgetType {
         const span = document.createElement("span");
         span.className = "syfe-cm-inline-math";
         span.setAttribute("contenteditable", "false");
+        // KaTeX 未就绪时异步重绘会改变行高 → 通知 CM6 重新测量行号槽
+        observeWidgetResize(span, view);
         const katex = (window as any).__syfeKatex;
         if (katex) {
             span.innerHTML = inlineMathHtml(katex, this.tex);
@@ -541,6 +570,10 @@ class InlineMathWidget extends WidgetType {
             });
         }
         return span;
+    }
+
+    destroy(dom: HTMLElement): void {
+        disconnectWidgetResize(dom);
     }
 
     ignoreEvent(): boolean {
@@ -565,6 +598,8 @@ class TableWidget extends WidgetType {
     toDOM(view: EditorView): HTMLElement {
         const wrap = document.createElement("div");
         wrap.className = "syfe-cm-table";
+        // 表格内公式重绘/字体加载会改变块高 → 通知 CM6 重新测量行号槽
+        observeWidgetResize(wrap, view);
         const initial = renderGfmTable(this.lines, (window as any).__syfeKatex || null);
         wrap.appendChild(initial);
         if (!this.katexReady) {
@@ -579,6 +614,10 @@ class TableWidget extends WidgetType {
             });
         }
         return wrap;
+    }
+
+    destroy(dom: HTMLElement): void {
+        disconnectWidgetResize(dom);
     }
 
     ignoreEvent(): boolean {
