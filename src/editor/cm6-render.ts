@@ -1257,19 +1257,21 @@ function buildDecorations(state: EditorState, opts: Cm6RenderOptions): Decoratio
             }
 
             // 5) 行内公式 $...$ / $$...$$ → KaTeX inline。
-            //    光标在该行时整行保持源码态(Obsidian 同款编辑模型),点击 widget 即回源码。
+            //    光标落在某个公式的源码区间内时,只有该公式回源码(可编辑),
+            //    同行其余公式保持渲染 —— 早期是"光标在该行就整行回源码",
+            //    长段落里多个公式会一起闪成源码(用户实测反馈)。
             //    KaTeX 只在 widget.toDOM(可见视口)里跑,且按 tex 缓存 —— 数百个公式
             //    的大文档按键重建装饰也不会逐个重渲。
             for (let ln = 1; ln <= doc.lines; ln++) {
                 const line = doc.line(ln);
                 if (overlapsUsed(line.from, line.to)) continue;
-                if (cursorInRange(line.from, line.to)) continue;
                 if (line.text.indexOf("$") < 0) continue;
                 for (const part of splitCellMath(line.text)) {
                     if (part.math === undefined || part.from === undefined || part.to === undefined) continue;
                     const from = line.from + part.from;
                     const to = line.from + part.to;
                     if (overlapsUsed(from, to)) continue;
+                    if (cursorInRange(from, to)) continue;
                     ranges.push(Decoration.replace({
                         widget: new InlineMathWidget(part.math, part.text),
                     }).range(from, to));
