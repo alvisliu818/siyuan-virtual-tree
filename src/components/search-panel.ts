@@ -759,7 +759,7 @@ export function createSearchTabConfig(plugin: IPluginForSearch) {
                 // 服务范围固定可用模式:Everything 只做文件名;AnyTXT 主打内容(「全部」等同内容)
                 if (self._scope === "everything" && self._mode !== "filename") self._mode = "filename";
                 if (self._scope === "anytxt" && self._mode === "all") self._mode = "content";
-                modesEl.querySelectorAll(".syfe-search__mode").forEach(b => {
+                modesEl.querySelectorAll<HTMLElement>(".syfe-search__mode").forEach(b => {
                     b.classList.toggle("active", b.dataset.mode === self._mode);
                 });
                 scopesEl.querySelectorAll(".syfe-search__scope").forEach(b => {

@@ -160,7 +160,8 @@ export class PythonLanguageServer {
     private intentionalShutdown = false;
     /** 本次 server 进程实际应用的解释器配置(doStart 时快照;空串 = 自动检测)。
      *  解释器设置变更后与现值比对,不同才重启 —— settings.json 的保存广播是不分项的。 */
-    private appliedPythonPath = "";
+    // 模块内的 maybeRestartForInterpreterChange 要读「进程已应用的值」,故不设 private
+    appliedPythonPath = "";
     /** server 重启完成(新进程已就绪并重新打开文档)后的回调 */
     private restartedListeners = new Set<() => void>();
 

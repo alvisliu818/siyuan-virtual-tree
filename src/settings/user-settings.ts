@@ -154,7 +154,7 @@ function parseInto(text: string): boolean {
 /** 从存储重新加载(settings.json 被外部改过 / 编辑器里保存后调用) */
 export async function reloadUserSettings(): Promise<boolean> {
     const text = await readRawText();
-    return parseInto(text);
+    return text === null ? false : parseInto(text);
 }
 
 /**

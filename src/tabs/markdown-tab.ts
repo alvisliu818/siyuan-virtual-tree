@@ -28,6 +28,7 @@ import {highlightMatches, clearFindHighlights, setCurrentFindHit} from "../compo
 import {installMarkdownClipboard, getVditorLute, type MdClipboardHandle} from "../editor/md-clipboard";
 // CM6 编辑面(设置「Markdown 编辑器 = CM6」时的实时预览/编辑面)
 import {createCm6MarkdownEditor, type Cm6MarkdownHandle} from "../editor/cm6-markdown";
+import {createPropertiesElement} from "../editor/cm6-render";
 // vditor 与思源共用 window.Lute,且 vditor 那份缺 SetTabs —— 详见 utils/lute-guard 的说明
 import {ensureSiyuanLute} from "../utils/lute-guard";
 import {colorizeCached, flushActiveBlock, onMonacoThemeChanged, setEditingKey, unmountBlockEditor} from "../editor/monaco-block";
@@ -491,6 +492,20 @@ function applyFileRef(tab: MarkdownTabInstance, ref: FileRef): void {
         setTimeout(() => tryAt(left - 1), 150);
     };
     tryAt(8);
+}
+
+/**
+ * 阅读态页面属性:lute 把 YAML frontmatter 渲染成
+ * `<pre class="vditor-yml-front-matter"><code class="language-yaml">…</code></pre>`,
+ * 这里换成与 CM6 live 同款的属性面板(共用 createPropertiesElement)。
+ * 必须在 restyleReadingCodeBlocks 之前跑,否则这个 pre>code 会被当普通代码块着色。
+ * 幂等:pre 被替换后再调用直接返回(after 回调与兜底定时器都会触发)。
+ */
+function restyleReadingProperties(host: HTMLElement): void {
+    const pre = host.querySelector("pre.vditor-yml-front-matter");
+    if (!pre) return;
+    const text = pre.querySelector("code")?.textContent ?? "";
+    pre.replaceWith(createPropertiesElement(text.split(/\r?\n/)));
 }
 
 // 阅读态(cm6 引擎)代码块高亮对齐:Vditor.preview 默认走 hljs,与 Monaco 代码文件
@@ -1196,7 +1211,7 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                 const cm = createCm6MarkdownEditor(self._contentEl!, {
                     value: self._model?.getValue() ?? "",
                     // cm6 富渲染:图片地址 → blob URL(与 vditor 预览同一条解析链)
-                    resolveImageSrc: (src) => {
+                    resolveImageSrc: async (src) => {
                         const resolved = resolveAssetSrc(self._path!, src);
                         if (resolved === null) {
                             // 网络/内联地址可直接加载
@@ -1272,11 +1287,18 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                             current: isDark ? "dark" : "light",
                             path: `${VDITOR_CDN}/dist/css/content-theme`,
                         },
-                        // 渲染完成后把代码块从 hljs 换成 TextMate 主题色(与编辑态/卡片一致)
-                        after: () => void restyleReadingCodeBlocks(host),
+                        // 渲染完成后:frontmatter → 属性面板,代码块 hljs → TextMate 主题色
+                        // (顺序固定:属性面板的 pre>code 不能被当普通代码块着色)
+                        after: () => {
+                            restyleReadingProperties(host);
+                            void restyleReadingCodeBlocks(host);
+                        },
                     });
-                    // 兑底:after 未触发(vditor 构建差异)时定时补一次;幂等,已处理块跳过
-                    setTimeout(() => void restyleReadingCodeBlocks(host), 1500);
+                    // 兑底:after 未触发(vditor 构建差异)时定时补一次;两者都幂等
+                    setTimeout(() => {
+                        restyleReadingProperties(host);
+                        void restyleReadingCodeBlocks(host);
+                    }, 1500);
                 } else {
                     host.textContent = self._model?.getValue() ?? "";
                 }

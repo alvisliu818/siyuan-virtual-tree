@@ -171,6 +171,13 @@ export interface IPluginForMountTree {
     openFileSplit(path: string, position: "right" | "bottom"): void;
     loadData(key: string): Promise<any>;
     saveData(key: string, data: any): Promise<void>;
+    /** 新建思源文档对话框(实现见 src/index.ts 插件类) */
+    openNewSiyuanDocDialog(
+        path: string,
+        isDir: boolean,
+        mountParent?: () => Promise<string | null>,
+        onMounted?: (parentUid: string) => void,
+    ): void;
 }
 
 // ===== 顶栏按钮注册表(可配置显示与排序)=====
@@ -1727,9 +1734,13 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 }
                 const top = chain[0];
                 if (top.kind !== "mount") return [];
-                return chain.map(r => r.kind === "mount"
-                    ? {kind: "mount" as const, uid: r.uid, name: r.item.name}
-                    : {kind: "file" as const, path: r.path, name: r.name, isDir: r.isDir});
+                // 父链理论上只含 mount/file;其余行(doc/empty/loading…)直接跳过,
+                // 避免在非 file 变体上取 path/name/isDir(原来会产出 undefined 字段)
+                return chain.flatMap<MountChainStep>(r => r.kind === "mount"
+                    ? [{kind: "mount" as const, uid: r.uid, name: r.item.name}]
+                    : r.kind === "file"
+                        ? [{kind: "file" as const, path: r.path, name: r.name, isDir: r.isDir}]
+                        : []);
             };
 
             // 打开挂载项(文件→编辑器;笔记本→打开其中第一篇文档;文档/块→思源协议定位)

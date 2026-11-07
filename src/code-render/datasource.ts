@@ -8,6 +8,13 @@ const READONLY_PREFIX = /^\s*(select|show|describe|desc|explain|with|pragma|anal
 
 export class QueryError extends Error {}
 
+/** siyuan 的 fetchPost 声明返回 void,但 /api/query/sql 实际回包体;这里显式收窄 */
+interface SqlApiResponse {
+    code: number;
+    msg?: string;
+    data?: unknown;
+}
+
 export function isReadonlyStatement(sql: string): boolean {
     return READONLY_PREFIX.test(sql);
 }
@@ -66,7 +73,7 @@ export async function runQuery(ds: DataSource, sql: string, maxRows: number): Pr
         const res = await fetchPost("/api/query/sql", {
             stmt,
             mode: ds.readOnly ? "readonly" : "",
-        });
+        }) as unknown as SqlApiResponse | null;
         if (!res || res.code !== 0) {
             throw new QueryError(res?.msg || "查询失败");
         }
@@ -115,7 +122,7 @@ export async function runQuery(ds: DataSource, sql: string, maxRows: number): Pr
 /** 测试数据源连通性 */
 export async function testDataSource(ds: DataSource): Promise<string> {
     if (ds.type === "siyuan-sqlite") {
-        const res = await fetchPost("/api/query/sql", { stmt: "SELECT 1 AS ok", mode: "readonly" });
+        const res = await fetchPost("/api/query/sql", { stmt: "SELECT 1 AS ok", mode: "readonly" }) as unknown as SqlApiResponse | null;
         if (!res || res.code !== 0) throw new QueryError(res?.msg || "连接失败");
         return "OK";
     }

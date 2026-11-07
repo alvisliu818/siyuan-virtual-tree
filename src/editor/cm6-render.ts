@@ -9,9 +9,16 @@
 //    (交互模型参考 ProseMark codeFenceExtension / PurrMD codeBlock)
 //  - 图片:整行就是一张图片语法 ![alt](src) 或 <img src="..."> 时,替换为真实 <img>
 //    (光标落在该行时还原源码,方便编辑;地址经宿主 resolveImageSrc → blob URL)
-//  - 公式:$$...$$ 块用 KaTeX 渲染(资源来自 vditor 自带的 katex,懒加载),
-//    光标在块内时还原源码;$...$ 行内公式不做(编辑体验容易翻车)
-//  - 表格:GFM 表格块替换为真实 <table>,光标进入块内时还原源码编辑
+//  - 公式:$$...$$ 块用 KaTeX display 渲染(资源来自 vditor 自带的 katex,懒加载),
+//    光标在块内时还原源码;行内 $...$ / $$...$$ 用 inline widget 渲染,
+//    **光标所在行保持源码态**(Obsidian 同款编辑模型,见 buildDecorations 步骤 5)。
+//    表格单元格内同款公式在 TableWidget 里同步渲染(见 renderCellHtml)
+//  - 页面属性:文档开头的 YAML frontmatter(--- ... ---)渲染为 Obsidian 属性面板,
+//    光标进入块内时还原源码编辑
+//  - 图片:行内 ![...](...) / <img> 逐处替换为 <img>(支持列表项内、一行多图、
+//    与文字混排);光标所在行保持源码态。地址经宿主 resolveImageSrc → blob URL
+//  - 表格:GFM 表格块替换为真实 <table>,光标进入块内时还原源码编辑;
+//    单元格内的公式段/行内码段中的 | 不作为列分隔符(见 splitRow)
 //
 // 实现要点:一个 StateField 统一计算 Decoration 集(doc/selection 变化全量重建)。
 // 必须用 StateField 而非 ViewPlugin —— CM6 不允许 ViewPlugin 提供块级 replace
@@ -314,16 +321,59 @@ class ImageWidget extends WidgetType {
     }
 }
 
+/**
+ * 公式块内容分段。思源导出的 md 常见「$$ 块里夹进列表标记甚至整段正文」:
+ * 原来的整块 KaTeX 会把这些内容一起吞掉(大段文字消失/变红字)。
+ * 这里按行判定:LaTeX 行合并进 tex;明显是正文/标题/图片/表格的行保留为 notes,
+ * 以普通文本按原顺序显示在公式下方 —— 内容不丢,也不污染公式。
+ */
+interface MathBlockBody {
+    tex: string;
+    notes: string[];
+}
+
+function splitMathBlockBody(lines: string[]): MathBlockBody {
+    const tex: string[] = [];
+    const notes: string[] = [];
+    for (const raw of lines) {
+        const s = raw.replace(/^\s*-\s+/, "").trim();
+        if (!s) continue;
+        const looksLikeMarkdown = /!\[[^\]]*\]\(/.test(s) || /^\s*\|/.test(s) ||
+            /^<img\b/i.test(s) || /^\[\[.*\]\]/.test(s);
+        const looksLikeTex = /\\[a-zA-Z]|\^|_|\{|\}|=|<|>/.test(s);
+        if (looksLikeTex && !looksLikeMarkdown) tex.push(s);
+        else notes.push(s);
+    }
+    return {tex: tex.join("\n"), notes};
+}
+
 /** 公式块:KaTeX display 渲染;失败回退为等宽样式并给出错误提示 */
 const mathWidgetObservers = new WeakMap<HTMLElement, ResizeObserver>();
 
 class MathWidget extends WidgetType {
-    constructor(readonly tex: string, readonly katex: any) {
+    constructor(readonly tex: string, readonly notes: string[], readonly katex: any) {
         super();
     }
 
     eq(other: MathWidget): boolean {
-        return other.tex === this.tex;
+        return other.tex === this.tex && other.notes.join("\n") === this.notes.join("\n");
+    }
+
+    /** 把公式 + 保留正文写进容器(KaTeX 就绪/失败两条路径共用) */
+    private paint(wrap: HTMLElement, texHtml: string | null): void {
+        wrap.textContent = "";
+        if (this.tex) {
+            const holder = document.createElement("div");
+            if (texHtml !== null) holder.innerHTML = texHtml;
+            else holder.textContent = this.tex;
+            wrap.appendChild(holder);
+        }
+        for (const note of this.notes) {
+            const div = document.createElement("div");
+            div.className = "syfe-cm-math-note";
+            div.textContent = note;
+            wrap.appendChild(div);
+        }
     }
 
     toDOM(view: EditorView): HTMLElement {
@@ -340,16 +390,19 @@ class MathWidget extends WidgetType {
         const requestRelayout = () => view.requestMeasure();
         const tryRender = (katex: any) => {
             try {
-                const holder = document.createElement("div");
-                katex.render(this.tex, holder, {displayMode: true, throwOnError: false});
-                wrap.textContent = "";
-                wrap.appendChild(holder);
+                let html: string | null = null;
+                if (this.tex) {
+                    const holder = document.createElement("div");
+                    katex.render(this.tex, holder, {displayMode: true, throwOnError: false});
+                    html = holder.innerHTML;
+                }
+                this.paint(wrap, html);
                 wrap.classList.remove("is-error");
                 wrap.classList.add("is-rendered");
                 requestRelayout();
                 return true;
             } catch (err) {
-                wrap.textContent = this.tex;
+                this.paint(wrap, null);
                 wrap.classList.add("is-error");
                 wrap.setAttribute("title", err instanceof Error ? err.message : String(err));
                 requestRelayout();
@@ -361,7 +414,7 @@ class MathWidget extends WidgetType {
             tryRender(ready);
         } else {
             // KaTeX 尚未加载完:先回退显示源码,加载完成后就地重渲(不依赖编辑器重建)
-            wrap.textContent = this.tex;
+            this.paint(wrap, null);
             wrap.classList.add("is-error");
             loadKatex().then(k => {
                 if (k && wrap.isConnected) tryRender(k);
@@ -380,20 +433,151 @@ class MathWidget extends WidgetType {
     }
 }
 
-/** GFM 表格:块级替换为真实 <table>;点击表格把光标送回源码块 */
-class TableWidget extends WidgetType {
+/**
+ * Obsidian 页面属性面板 DOM。CM6 live 的 PropertiesWidget 与阅读态
+ * (Vditor.preview 的 frontmatter pre)共用同一份渲染,保证两态一致。
+ * 值一律用 textContent 输出(防注入);只认「顶格 key: value」的简单属性,
+ * 多行数组/嵌套值保留在源码态查看。
+ */
+export function createPropertiesElement(lines: string[]): HTMLElement {
+    const wrap = document.createElement("div");
+    wrap.className = "syfe-cm-properties";
+    const head = document.createElement("div");
+    head.className = "syfe-cm-properties__head";
+    head.textContent = "属性";
+    wrap.appendChild(head);
+    const list = document.createElement("div");
+    list.className = "syfe-cm-properties__list";
+    for (const line of lines) {
+        const m = /^([^:#\s][^:]*):\s*(.*)$/.exec(line.trim());
+        if (!m) continue;
+        const row = document.createElement("div");
+        row.className = "syfe-cm-properties__row";
+        const key = document.createElement("span");
+        key.className = "syfe-cm-properties__key";
+        key.textContent = m[1].trim();
+        const val = document.createElement("span");
+        val.className = "syfe-cm-properties__value";
+        val.textContent = m[2].trim();
+        row.appendChild(key);
+        row.appendChild(val);
+        list.appendChild(row);
+    }
+    wrap.appendChild(list);
+    return wrap;
+}
+
+class PropertiesWidget extends WidgetType {
     constructor(readonly lines: string[]) {
         super();
     }
 
-    eq(other: TableWidget): boolean {
+    eq(other: PropertiesWidget): boolean {
         return other.lines.join("\n") === this.lines.join("\n");
     }
 
     toDOM(): HTMLElement {
+        return createPropertiesElement(this.lines);
+    }
+
+    ignoreEvent(): boolean {
+        return false;
+    }
+}
+
+/** 行内公式 HTML 缓存:大文档(数百个公式)按键重建装饰时,只有可见 widget 会取用 */
+const inlineMathCache = new Map<string, string>();
+
+function inlineMathHtml(katex: any, tex: string): string {
+    const cached = inlineMathCache.get(tex);
+    if (cached !== undefined) return cached;
+    let html: string;
+    try {
+        html = katex.renderToString(tex, {
+            displayMode: false,
+            throwOnError: false,
+            strict: "ignore",
+        });
+    } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        html = `<span class="syfe-cm-math-inline is-error" title="${escapeHtml(msg)}">${escapeHtml(tex)}</span>`;
+    }
+    if (inlineMathCache.size >= 512) inlineMathCache.clear();
+    inlineMathCache.set(tex, html);
+    return html;
+}
+
+/**
+ * 行内公式 widget。光标所在行由 buildDecorations 跳过(保持源码态),
+ * 点击 widget 由 clickHandler 把光标送回该行 → 装饰消失即可编辑。
+ */
+class InlineMathWidget extends WidgetType {
+    readonly katexReady: boolean;
+
+    constructor(readonly tex: string, readonly raw: string) {
+        super();
+        this.katexReady = !!(window as any).__syfeKatex;
+    }
+
+    eq(other: InlineMathWidget): boolean {
+        return other.tex === this.tex && other.katexReady === this.katexReady;
+    }
+
+    toDOM(view: EditorView): HTMLElement {
+        const span = document.createElement("span");
+        span.className = "syfe-cm-inline-math";
+        span.setAttribute("contenteditable", "false");
+        const katex = (window as any).__syfeKatex;
+        if (katex) {
+            span.innerHTML = inlineMathHtml(katex, this.tex);
+        } else {
+            span.textContent = this.raw;
+            span.classList.add("is-pending");
+            loadKatex().then(k => {
+                if (!k || !span.isConnected) return;
+                span.classList.remove("is-pending");
+                span.innerHTML = inlineMathHtml(k, this.tex);
+                view.requestMeasure();
+            });
+        }
+        return span;
+    }
+
+    ignoreEvent(): boolean {
+        return false;
+    }
+}
+
+/** GFM 表格:块级替换为真实 <table>;点击表格把光标送回源码块 */
+class TableWidget extends WidgetType {
+    /** KaTeX 是否已就绪 —— 参与 eq,保证首屏之后加载完成时表格 DOM 真的重建 */
+    readonly katexReady: boolean;
+
+    constructor(readonly lines: string[]) {
+        super();
+        this.katexReady = !!(window as any).__syfeKatex;
+    }
+
+    eq(other: TableWidget): boolean {
+        return other.lines.join("\n") === this.lines.join("\n") && other.katexReady === this.katexReady;
+    }
+
+    toDOM(view: EditorView): HTMLElement {
         const wrap = document.createElement("div");
         wrap.className = "syfe-cm-table";
-        wrap.appendChild(renderGfmTable(this.lines));
+        const initial = renderGfmTable(this.lines, (window as any).__syfeKatex || null);
+        wrap.appendChild(initial);
+        if (!this.katexReady) {
+            // 首屏早于 KaTeX 就绪:加载完成后就地重绘(不依赖编辑器重建)。
+            // preloadCm6Katex 完成时还会派发 forceRenderEffect,eq 的 katexReady
+            // 翻转使真实 widget DOM 重建,测量克隆里的一次重绘不影响结果。
+            loadKatex().then(k => {
+                if (!k || !wrap.isConnected) return;
+                const next = renderGfmTable(this.lines, k);
+                if (initial.parentNode === wrap) wrap.replaceChild(next, initial);
+                view.requestMeasure();
+            });
+        }
         return wrap;
     }
 
@@ -402,26 +586,120 @@ class TableWidget extends WidgetType {
     }
 }
 
-/** 极简行内格式(粗/斜/行内码),先转义再替换,防 XSS */
-function formatInlineCell(text: string): string {
-    const escaped = text
+/** HTML 转义(formatInlineCell / 公式回退态共用) */
+function escapeHtml(text: string): string {
+    return text
         .replace(/&/g, "&amp;")
         .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;");
-    return escaped
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+}
+
+/** 极简行内格式(粗/斜/行内码),先转义再替换,防 XSS */
+function formatInlineCell(text: string): string {
+    return escapeHtml(text)
         .replace(/`([^`]+)`/g, "<code>$1</code>")
         .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-        .replace(/\*([^*]+)\*/g, "<em>$1</em>");
+        .replace(/\*([^*]+)\*/g, "<em>$1</em>")
+        // 思源导出的表格单元格常用 <br> 换行;只放行 br,其余标签仍以转义文本显示
+        .replace(/&lt;br\s*\/?&gt;/gi, "<br>");
+}
+
+interface CellPart {
+    /** 原始片段(公式段含定界符,回退时直接显示) */
+    text: string;
+    /** 非 undefined 表示该段是公式,值为去掉定界符后的 TeX */
+    math?: string;
+    /** 在原始文本中的偏移(行内公式装饰据此换算 doc 位置) */
+    from?: number;
+    to?: number;
+}
+
+/**
+ * 找公式闭合符。为避开货币符号($100 | $200 之类)误判,要求:
+ * 闭合符后不能紧跟字母数字(行尾/空白/标点皆可)、内容非空。
+ * ⚠ 闭合符**前**允许空白:思源导出大量写成 "$$ ( C )' = 0 $$",且单元格里
+ * "$$公式A$$<br>$$公式B$$" 靠 <br> 分隔;若要求前非空白,第一个闭合会被跳过,
+ * 于是 A 与 B 的起始定界符错配成一个跨 <br> 的怪公式。
+ */
+function findMathClose(text: string, from: number, close: string): {end: number; tex: string} | null {
+    let at = from;
+    while ((at = text.indexOf(close, at)) >= 0) {
+        const tex = text.slice(from, at).trim();
+        const after = text[at + close.length] ?? "";
+        if (tex && !/[\w]/.test(after)) {
+            return {end: at + close.length, tex};
+        }
+        at += close.length;
+    }
+    return null;
+}
+
+/** 把单元格文本切成「普通文本段 / 行内公式段」;公式段不再走 markdown 格式化 */
+function splitCellMath(text: string): CellPart[] {
+    const parts: CellPart[] = [];
+    let i = 0;
+    let plainFrom = 0;
+    while (i < text.length) {
+        // 转义符连同伴字符整体跳过(\$100 不是公式,\| 不是列分隔)
+        if (text[i] === "\\" && i + 1 < text.length) { i += 2; continue; }
+        if (text[i] !== "$") { i++; continue; }
+        const close = text[i + 1] === "$" ? "$$" : "$";
+        const found = findMathClose(text, i + close.length, close);
+        if (!found) { i += close.length; continue; }
+        if (i > plainFrom) parts.push({text: text.slice(plainFrom, i), from: plainFrom, to: i});
+        parts.push({text: text.slice(i, found.end), math: found.tex, from: i, to: found.end});
+        i = found.end;
+        plainFrom = i;
+    }
+    if (plainFrom < text.length) parts.push({text: text.slice(plainFrom), from: plainFrom, to: text.length});
+    return parts.length ? parts : [{text, from: 0, to: text.length}];
+}
+
+/** 单元格 HTML:普通段走 formatInlineCell,公式段按 inline 交给 KaTeX;未就绪时回退源码 */
+function renderCellHtml(cell: string, katex: any): string {
+    return splitCellMath(cell).map(part => {
+        if (part.math === undefined) return formatInlineCell(part.text);
+        if (!katex) return `<span class="syfe-cm-math-inline is-pending">${escapeHtml(part.text)}</span>`;
+        try {
+            return `<span class="syfe-cm-math-inline">${katex.renderToString(part.math, {
+                displayMode: false,
+                throwOnError: false,
+                strict: "ignore",
+            })}</span>`;
+        } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            return `<span class="syfe-cm-math-inline is-error" title="${escapeHtml(msg)}">${escapeHtml(part.text)}</span>`;
+        }
+    }).join("");
+}
+
+// 占位符而非转义:公式/行内码里的 | 不当列分隔符,切完再还原(含 LaTeX 的 \|)
+const PIPE_PLACEHOLDER = "\u0000";
+
+function maskInlinePipes(text: string): string {
+    let out = "";
+    for (const part of splitCellMath(text)) {
+        if (part.math !== undefined) {
+            out += part.text.replace(/\|/g, PIPE_PLACEHOLDER);
+        } else {
+            // 行内码里的竖线同样不当分隔符
+            out += part.text.replace(/`[^`]+`/g, m => m.replace(/\|/g, PIPE_PLACEHOLDER));
+        }
+    }
+    return out;
 }
 
 function splitRow(line: string): string[] {
     let s = line.trim();
     if (s.startsWith("|")) s = s.slice(1);
     if (s.endsWith("|") && !s.endsWith("\\|")) s = s.slice(0, -1);
-    return s.split(/(?<!\\)\|/).map(c => c.trim().replace(/\\\|/g, "|"));
+    return maskInlinePipes(s)
+        .split(/(?<!\\)\|/)
+        .map(c => c.trim().replace(/\u0000/g, "|").replace(/\\\|/g, "|"));
 }
 
-function renderGfmTable(lines: string[]): HTMLElement {
+function renderGfmTable(lines: string[], katex: any): HTMLElement {
     const table = document.createElement("table");
     table.className = "syfe-cm-md-table";
     if (lines.length < 2) {
@@ -443,7 +721,7 @@ function renderGfmTable(lines: string[]): HTMLElement {
     header.forEach((cell, i) => {
         const th = document.createElement("th");
         th.style.textAlign = aligns[i] as any;
-        th.innerHTML = formatInlineCell(cell);
+        th.innerHTML = renderCellHtml(cell, katex);
         hr.appendChild(th);
     });
     thead.appendChild(hr);
@@ -456,7 +734,7 @@ function renderGfmTable(lines: string[]): HTMLElement {
         header.forEach((_, i) => {
             const td = document.createElement("td");
             td.style.textAlign = aligns[i] as any;
-            td.innerHTML = formatInlineCell(cells[i] || "");
+            td.innerHTML = renderCellHtml(cells[i] || "", katex);
             tr.appendChild(td);
         });
         tbody.appendChild(tr);
@@ -467,8 +745,9 @@ function renderGfmTable(lines: string[]): HTMLElement {
 
 // ===== 结构识别 =====
 
-const RE_IMAGE_LINE = /^\s*!\[([^\]]*)\]\(\s*(<[^>]*>|[^)\s]+)(?:\s+"[^"]*")?\s*\)\s*$/;
-const RE_IMG_TAG_LINE = /^\s*<img\b[^>]*\bsrc\s*=\s*("([^"]*)"|'([^']*)')[^>]*>\s*$/i;
+// 行内图片:逐处匹配(不要求独占整行),支持 "- ![](a.png) ![](b.png)" 这类导出形态
+const RE_IMAGE_INLINE = /!\[([^\]]*)\]\(\s*(<[^>]*>|[^)\s]+)(?:\s+"[^"]*")?\s*\)/g;
+const RE_IMG_TAG_INLINE = /<img\b[^>]*\bsrc\s*=\s*("([^"]*)"|'([^']*)')[^>]*>/gi;
 const RE_TABLE_ROW = /^\s{0,3}\|.*\|\s*$/;
 const RE_TABLE_SEP = /^\s{0,3}\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)+\|?\s*$/;
 
@@ -599,6 +878,7 @@ export function notifyCm6RenderConfigChanged(): void {
 
 const tableSrcLineDeco = Decoration.line({class: "syfe-cm-tablesrc-line"});
 const mathSrcLineDeco = Decoration.line({class: "syfe-cm-mathsrc-line"});
+const propSrcLineDeco = Decoration.line({class: "syfe-cm-propsrc-line"});
 
 export function cm6MarkdownRender(opts: Cm6RenderOptions): Extension {
     const renderField = StateField.define<DecorationSet>({
@@ -633,7 +913,10 @@ export function cm6MarkdownRender(opts: Cm6RenderOptions): Extension {
                 const target = event.target as HTMLElement;
                 // 复制按钮是独立交互区
                 if (target.closest(".syfe-cm-codeblock-copy")) return false;
-                const wrap = target.closest(".syfe-cm-codeblock, .syfe-cm-table, .syfe-cm-math") as HTMLElement | null;
+                const wrap = target.closest(
+                    ".syfe-cm-codeblock, .syfe-cm-table, .syfe-cm-math, .syfe-cm-inline-math, " +
+                    ".syfe-cm-img, .syfe-cm-properties",
+                ) as HTMLElement | null;
                 if (!wrap) return false;
                 if (wrap.classList.contains("syfe-cm-codeblock")) {
                     // 代码块:声明进入编辑态,由 editMounter 在重建后的真实视图 DOM 上
@@ -650,9 +933,27 @@ export function cm6MarkdownRender(opts: Cm6RenderOptions): Extension {
                     return true;   // 已挂载:事件交给 Monaco 自行处理
                 }
                 const pos = view.posAtDOM(wrap);
+                // 点击处在屏幕上的位置:渲染物被源码替换后块高会变(属性面板
+                // ↔ 4 行 YAML、公式 widget ↔ 源码文本),必须把该点锚住才不跳页
+                const anchorTop = wrap.getBoundingClientRect().top;
                 const line = view.state.doc.lineAt(pos);
-                view.dispatch({selection: {anchor: Math.min(line.from + 1, line.to)}});
+                // 行内渲染物(公式/图片)直接落在自身位置,块级渲染物落到行首;
+                // 光标一进该行,该行的行内装饰即撤销 → 回到可编辑源码态
+                const inline = wrap.classList.contains("syfe-cm-inline-math") ||
+                    wrap.classList.contains("syfe-cm-img");
+                const anchor = inline
+                    ? Math.min(Math.max(pos, line.from), line.to)
+                    : Math.min(line.from + 1, line.to);
+                view.dispatch({selection: {anchor}});
                 view.focus();
+                // CM6 的 dispatch 同步完成 DOM 更新,此时 coordsAtPos 已是新布局;
+                // 把光标处的屏幕 Y 拉回点击时的位置(scrollTop 差值补偿)。
+                try {
+                    const now = view.coordsAtPos(anchor);
+                    if (now) view.scrollDOM.scrollTop += now.top - anchorTop;
+                } catch {
+                    // 位置已失效(块被替换/折叠)时忽略
+                }
                 return true;
             },
         },
@@ -768,6 +1069,35 @@ function buildDecorations(state: EditorState, opts: Cm6RenderOptions): Decoratio
             const overlapsUsed = (from: number, to: number) => usedRanges.some(r => from < r.to && to > r.from);
             const cursorInRange = (from: number, to: number) => cursor >= from && cursor <= to;
 
+            // 0) Obsidian 页面属性:只认文档开头且闭合的 YAML frontmatter(--- ... ---)。
+            //    光标在块内时回源码态,与表格/公式块同一套编辑模型。
+            {
+                const first = doc.line(1);
+                if (/^\s*---\s*$/.test(first.text)) {
+                    let end = 2;
+                    while (end <= doc.lines && !/^\s*---\s*$/.test(doc.line(end).text)) end++;
+                    if (end <= doc.lines) {
+                        const from = first.from;
+                        const to = doc.line(end).to;
+                        usedRanges.push({from, to});
+                        // 打开文档时光标默认停在位置 0(块首),此时仍要显示属性面板;
+                        // 只有真正进入块内(cursor > from)才回源码态。点击面板时
+                        // clickHandler 会把光标送到 line.from + 1,同样能进编辑态。
+                        if (cursor > from && cursor <= to) {
+                            for (let k = 1; k <= end; k++) {
+                                lineDecos.push(propSrcLineDeco.range(doc.line(k).from));
+                            }
+                        } else {
+                            const propLines: string[] = [];
+                            for (let k = 2; k < end; k++) propLines.push(doc.line(k).text);
+                            const deco = Decoration.replace({widget: new PropertiesWidget(propLines), block: true});
+                            ranges.push(deco.range(from, to));
+                            atomicRanges.push(deco.range(from, to));
+                        }
+                    }
+                }
+            }
+
             // 1) 围栏代码块:三种形态 ——
             //    a. 光标在块外            → 卡片(colorize 正文)
             //    b. editingKey 命中(点卡片) → 卡片 + 全局单例 Monaco(monaco-block.ts)
@@ -805,8 +1135,10 @@ function buildDecorations(state: EditorState, opts: Cm6RenderOptions): Decoratio
                             lineDecos.push(mathSrcLineDeco.range(doc.line(ln).from));
                         }
                     } else {
-                        const texInner = j - 1 > i ? doc.sliceString(doc.line(i + 1).from, doc.line(j - 1).to).trim() : "";
-                        const widget = new MathWidget(texInner, (window as any).__syfeKatex || null);
+                        const bodyLines: string[] = [];
+                        for (let k = i + 1; k < j; k++) bodyLines.push(doc.line(k).text);
+                        const body = splitMathBlockBody(bodyLines);
+                        const widget = new MathWidget(body.tex, body.notes, (window as any).__syfeKatex || null);
                         const replace = Decoration.replace({widget, block: true});
                         ranges.push(replace.range(from, to));
                         atomicRanges.push(replace.range(from, to));
@@ -815,32 +1147,8 @@ function buildDecorations(state: EditorState, opts: Cm6RenderOptions): Decoratio
                 }
             }
 
-            // 3) 独立图片行
-            for (let ln = 1; ln <= doc.lines; ln++) {
-                const line = doc.line(ln);
-                if (overlapsUsed(line.from, line.to)) continue;
-                let src = "";
-                let alt = "";
-                const m = line.text.match(RE_IMAGE_LINE);
-                if (m) {
-                    alt = m[1];
-                    src = m[2].replace(/^<|>$/g, "");
-                } else {
-                    const tag = line.text.match(RE_IMG_TAG_LINE);
-                    if (tag) {
-                        src = tag[2] || tag[3] || "";
-                        alt = "";
-                    }
-                }
-                if (!src) continue;
-                if (cursorInRange(line.from, line.to)) continue;
-                usedRanges.push({from: line.from, to: line.to});
-                ranges.push(Decoration.replace({
-                    widget: new ImageWidget(src, alt, opts),
-                }).range(line.from, line.to));
-            }
-
-            // 4) GFM 表格(≥2 行:表头 + 分隔行;光标在块内时只加底色)
+            // 3) GFM 表格(≥2 行:表头 + 分隔行;光标在块内时只加底色)
+            //    先占位,后面的行内图片/公式不会误落到表格 widget 的替换区里
             for (let ln = 1; ln <= doc.lines; ln++) {
                 const line = doc.line(ln);
                 if (overlapsUsed(line.from, line.to)) continue;
@@ -869,6 +1177,57 @@ function buildDecorations(state: EditorState, opts: Cm6RenderOptions): Decoratio
                 ln = end;
             }
 
+            // 4) 行内图片:逐处替换,覆盖列表项内图片、一行多图、与文字混排。
+            //    光标在该行时整行保持源码态,便于编辑地址。
+            for (let ln = 1; ln <= doc.lines; ln++) {
+                const line = doc.line(ln);
+                if (overlapsUsed(line.from, line.to)) continue;
+                if (cursorInRange(line.from, line.to)) continue;
+                const text = line.text;
+                const hits: Array<{from: number; to: number; src: string; alt: string}> = [];
+                for (const m of text.matchAll(RE_IMAGE_INLINE)) {
+                    hits.push({
+                        from: m.index,
+                        to: m.index + m[0].length,
+                        src: m[2].replace(/^<|>$/g, ""),
+                        alt: m[1],
+                    });
+                }
+                for (const m of text.matchAll(RE_IMG_TAG_INLINE)) {
+                    hits.push({from: m.index, to: m.index + m[0].length, src: m[2] || m[3] || "", alt: ""});
+                }
+                hits.sort((a, b) => a.from - b.from);
+                for (const hit of hits) {
+                    if (!hit.src) continue;
+                    const from = line.from + hit.from;
+                    const to = line.from + hit.to;
+                    if (overlapsUsed(from, to)) continue;
+                    ranges.push(Decoration.replace({
+                        widget: new ImageWidget(hit.src, hit.alt, opts),
+                    }).range(from, to));
+                }
+            }
+
+            // 5) 行内公式 $...$ / $$...$$ → KaTeX inline。
+            //    光标在该行时整行保持源码态(Obsidian 同款编辑模型),点击 widget 即回源码。
+            //    KaTeX 只在 widget.toDOM(可见视口)里跑,且按 tex 缓存 —— 数百个公式
+            //    的大文档按键重建装饰也不会逐个重渲。
+            for (let ln = 1; ln <= doc.lines; ln++) {
+                const line = doc.line(ln);
+                if (overlapsUsed(line.from, line.to)) continue;
+                if (cursorInRange(line.from, line.to)) continue;
+                if (line.text.indexOf("$") < 0) continue;
+                for (const part of splitCellMath(line.text)) {
+                    if (part.math === undefined || part.from === undefined || part.to === undefined) continue;
+                    const from = line.from + part.from;
+                    const to = line.from + part.to;
+                    if (overlapsUsed(from, to)) continue;
+                    ranges.push(Decoration.replace({
+                        widget: new InlineMathWidget(part.math, part.text),
+                    }).range(from, to));
+                }
+            }
+
             return Decoration.set([...ranges, ...lineDecos], true);
     }
 }
@@ -876,6 +1235,15 @@ function buildDecorations(state: EditorState, opts: Cm6RenderOptions): Decoratio
 /** 预加载 KaTeX(公式首次渲染前调用;结果挂 window.__syfeKatex 供 widget 同步取用) */
 export function preloadCm6Katex(): void {
     void loadKatex().then(k => {
-        (window as any).__syfeKatex = k;
+        (window as any).__syfeKatex = k || null;
+        // 就绪后统一重建装饰:TableWidget.eq 带 katexReady,首屏显示过源码占位
+        // 的表格会真的换 DOM,单元格公式随即同步渲染(公式块 MathWidget 自带兜底)。
+        for (const view of [...activeRenderViews]) {
+            if (!view.dom.isConnected) {
+                activeRenderViews.delete(view);
+                continue;
+            }
+            view.dispatch({effects: forceRenderEffect.of(null)});
+        }
     });
 }

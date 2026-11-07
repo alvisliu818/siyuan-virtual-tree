@@ -126,7 +126,7 @@ function appendFontFamily(input: HTMLInputElement, font: string): void {
 
 // 当前打开的字体选择浮层(同一时间只有一个)
 let fontPanel: HTMLElement | null = null;
-let fontPanelDismiss: (() => void) | null = null;
+let fontPanelDismiss: ((e: Event) => void) | null = null;
 
 function closeFontPanel(): void {
     if (fontPanelDismiss) {

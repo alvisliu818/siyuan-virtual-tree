@@ -199,6 +199,7 @@ const syfeCmTheme = EditorView.theme({
     ".syfe-cm-codeblock-editorhost": {display: "none"},
     ".syfe-cm-tablesrc-line": {backgroundColor: "var(--b3-theme-surface)"},
     ".syfe-cm-mathsrc-line": {backgroundColor: "var(--b3-theme-surface)"},
+    ".syfe-cm-propsrc-line": {backgroundColor: "var(--b3-theme-surface)"},
     ".syfe-cm-img": {
         display: "inline-block",
         padding: "2px 0",
@@ -238,6 +239,15 @@ const syfeCmTheme = EditorView.theme({
         color: "var(--b3-theme-on-surface)",
         whiteSpace: "pre-wrap",
     },
+    // 公式块里被思源导出误塞进来的正文/标题:按普通文本保留,不再喂给 KaTeX
+    ".syfe-cm-math-note": {
+        fontSize: "12px",
+        lineHeight: "1.6",
+        padding: "2px 0",
+        color: "var(--b3-theme-on-surface)",
+        whiteSpace: "pre-wrap",
+        wordBreak: "break-word",
+    },
     ".syfe-cm-table": {
         padding: "4px 0",
         overflowX: "auto",
@@ -256,6 +266,37 @@ const syfeCmTheme = EditorView.theme({
         backgroundColor: "var(--b3-theme-surface)",
         fontWeight: "600",
     },
+    // 单元格内行内公式(KaTeX):允许长公式在单元格内横向滚动,不撑破表格
+    ".syfe-cm-math-inline": {
+        display: "inline-block",
+        maxWidth: "100%",
+        overflowX: "auto",
+        overflowY: "hidden",
+        verticalAlign: "middle",
+    },
+    // KaTeX 未就绪/渲染失败:显示原始 $...$ 源码,不伪装成渲染成功
+    ".syfe-cm-math-inline.is-pending, .syfe-cm-math-inline.is-error": {
+        fontFamily: "var(--b3-font-family-code, monospace)",
+        fontSize: ".92em",
+        color: "var(--b3-theme-on-surface)",
+    },
+    // 行内公式 widget(表格外的普通行):与单元格内公式同款收敛,长公式格内横向滚动
+    ".syfe-cm-inline-math": {
+        display: "inline-block",
+        maxWidth: "100%",
+        overflowX: "auto",
+        overflowY: "hidden",
+        verticalAlign: "middle",
+        cursor: "text",
+    },
+    ".syfe-cm-inline-math.is-pending": {
+        fontFamily: "var(--b3-font-family-code, monospace)",
+        fontSize: ".92em",
+        color: "var(--b3-theme-on-surface)",
+    },
+
+    // 注:属性面板(.syfe-cm-properties*)要同时用于阅读态 Vditor.preview 的
+    // frontmatter,故样式放在全局 index.scss,不能放 EditorView.theme(作用域是 .cm-editor)。
 
     // ===== 行内 WYSIWYM(cm6-inline.ts 的装饰,配色全走思源变量) =====
     // 渲染态链接:主色 + 可点击提示(plain 点击落光标还原源码,Ctrl/Cmd+点击打开)

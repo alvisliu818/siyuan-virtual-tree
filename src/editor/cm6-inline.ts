@@ -424,6 +424,21 @@ function buildInlineDecorations(state: EditorState, opts: Cm6InlineOptions): Inl
     };
     const doc = state.doc;
 
+    // 文档开头 YAML frontmatter 的 "---" 不是分隔线/Setext 标题下划线。
+    // lezer 会把 "updated: ...\n---" 解析成 SetextHeading、把独立 --- 解析成
+    // HorizontalRule,两者原本都会整行替换成横线 widget —— 编辑态(光标进属性块)
+    // 就看不到首行与闭合行的 ---,看起来像属性块缺了一行。这里圈出该区域整体跳过。
+    let frontmatterTo = 0;
+    if (/^\s*---\s*$/.test(doc.line(1).text)) {
+        for (let ln = 2; ln <= doc.lines; ln++) {
+            if (/^\s*---\s*$/.test(doc.line(ln).text)) {
+                frontmatterTo = doc.line(ln).to;
+                break;
+            }
+        }
+    }
+    const inFrontmatter = (from: number): boolean => frontmatterTo > 0 && from < frontmatterTo;
+
     syntaxTree(state).iterate({
         enter(node) {
             const name = node.name;
@@ -461,6 +476,7 @@ function buildInlineDecorations(state: EditorState, opts: Cm6InlineOptions): Inl
 
             // --- Setext 标题:隐藏下划线行(整块替换,避免留空行) ---
             if (name.startsWith("SetextHeading")) {
+                if (inFrontmatter(node.from)) return;
                 if (selectionTouches(state, node.from, node.to)) return;
                 iterSubNodes(node.node, "HeaderMark", (m) => {
                     // block replace 必须覆盖整行,扩到行边界(行尾可能有空白)
@@ -471,10 +487,16 @@ function buildInlineDecorations(state: EditorState, opts: Cm6InlineOptions): Inl
                 return;
             }
 
-            // --- 链接 / 行内图片:只显示文字,隐藏标记与地址 ---
+            // --- 图片:完全交给 cm6-render 的行内图片 widget(真的显示 <img>) ---
+            // 这里若照链接那样隐藏标记与 URL,空 alt 的 "![](a.png)" 会因 alt 为空
+            // 变成一片空白,且隐藏用的 mark 装饰会和 cm6-render 的 replace 装饰打架。
+            // 光标进入该行时 cm6-render 撤销替换,直接显示原始图片语法便于编辑。
+            if (name === "Image") return;
+
+            // --- 链接:只显示文字,隐藏标记与地址 ---
             // ProseMark 的修正:URL 只在 "]" 之后隐藏,否则
             // [http://…](http://…) 这类纯地址链接会被整个吞掉
-            if (name === "Link" || name === "Image") {
+            if (name === "Link") {
                 const reveal = selectionTouches(state, node.from, node.to);
                 let pastLabel = false;
                 for (let child = node.node.firstChild; child; child = child.nextSibling) {
@@ -578,6 +600,7 @@ function buildInlineDecorations(state: EditorState, opts: Cm6InlineOptions): Inl
 
             // --- 分隔线:渲染成横线 ---
             if (name === "HorizontalRule") {
+                if (inFrontmatter(node.from)) return;
                 if (selectionTouches(state, node.from, node.to)) return;
                 const l = doc.lineAt(node.from);
                 const d = Decoration.replace({widget: new HRWidget()})

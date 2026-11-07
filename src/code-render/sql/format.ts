@@ -213,7 +213,8 @@ export function formatSql(sql: string, options: FormatOptions = {}): string {
                 pendingFieldBreak = false;
             } else if (tk.value === "*") {
                 pendingFieldBreak = false;
-            } else if (tk.type !== "keyword") {
+            } else {
+                // keyword 分支在上面已 continue,走到这里的必然不是关键字
                 startLine(depth + 1);
                 pendingFieldBreak = false;
             }

@@ -395,18 +395,20 @@ function convertThemeToMonaco(
     const semTokens = ["method", "function", "variable", "parameter", "property", "class", "type"];
     console.info(`[syfe-semantic] defineTheme ${themeName}: rules=${rules.length} 语义规则=${rules.filter(r => semTokens.some(t => r.token === t)).length} semanticHighlighting=${themeData.semanticHighlighting}`);
 
-    monaco.editor.defineTheme(themeName, {
+    // 关键开关:monaco standalone 编辑器的 semanticHighlighting 默认
+    // "configureByTheme" —— 主题对象不声明 true 时,语义 token 的请求
+    // 与渲染整体关闭(与 LSP/basedpyright 能否解析无关,症状是所有
+    // 语义 token 缺失、只剩 TextMate 颜色)。主题 JSON 显式声明 false
+    // 时尊重之,与 VS Code 行为一致。
+    // d.ts 的 IStandaloneThemeData 没有这个运行时支持的字段,用交叉类型补上。
+    const themeDef: monaco.editor.IStandaloneThemeData & {semanticHighlighting?: boolean} = {
         base,
         inherit: true,
         rules,
         colors,
-        // 关键开关:monaco standalone 编辑器的 semanticHighlighting 默认
-        // "configureByTheme" —— 主题对象不声明 true 时,语义 token 的请求
-        // 与渲染整体关闭(与 LSP/basedpyright 能否解析无关,症状是所有
-        // 语义 token 缺失、只剩 TextMate 颜色)。主题 JSON 显式声明 false
-        // 时尊重之,与 VS Code 行为一致。
         semanticHighlighting: themeData.semanticHighlighting !== false,
-    });
+    };
+    monaco.editor.defineTheme(themeName, themeDef);
 }
 
 // 规范化颜色为 hex(#222 → #222222, white → #ffffff)

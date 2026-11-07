@@ -213,7 +213,7 @@ function ruleRow(rule: RenderRule, refresh: () => void): HTMLElement {
     modeSel.style.width = "120px";
     row.appendChild(modeSel);
 
-    const enableLabel = h("label", "cr-inline", t("enabled"));
+    const enableLabel = h("label", "cr-inline", t("ruleEnabled"));
     enableLabel.prepend(switchInput(rule.enabled, (v) => {
         const rules = getSettings().rules.map((r) => (r.id === rule.id ? { ...r, enabled: v } : r));
         patch({ rules });

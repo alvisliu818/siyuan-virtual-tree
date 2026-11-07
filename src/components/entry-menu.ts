@@ -80,7 +80,7 @@ export async function openSiyuanNotebook(id: string, app?: any): Promise<void> {
     try {
         const kids = await virtualListDir(VIRTUAL_PREFIX + "nb/" + id);
         const e = (kids || [])[0];
-        if (e) first = {name: String(e.name || ""), docId: virtualId(e.path)};
+        if (e?.path) first = {name: String(e.name || ""), docId: virtualId(e.path)};
     } catch {
         // 查询失败按空笔记本处理
     }

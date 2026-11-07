@@ -40,7 +40,7 @@ export function ensureMysqlAlias(): boolean {
  * 把「注册别名之前被渲染成 plaintext」的 mysql 块重渲染一次，拿原生 sql 着色。
  * 每个 protyle 容器只刷一次（WeakSet 记账）。之后新打开/输入的块由内核自动用别名着色。
  */
-const refreshed = new WeakSet<Element>();
+const refreshed = new WeakSet<ParentNode>();
 
 export function refreshMysqlNative(root: ParentNode | null | undefined): void {
     if (!aliasEnsured || !root?.querySelectorAll) return;
