@@ -1227,6 +1227,11 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                         self._hcrumbsHandle?.refresh();
                     },
                     onCursor: () => self._hcrumbsHandle?.refresh(),
+                    // 右键行号复制行链接(与渲染态行号槽 installMdLineGutter 同一格式)
+                    onCopyLine: (line: number) => copyLinkMd(
+                        buildFileRefMd({path, line, label: `${basename(path)}:${line}`}),
+                        "行链接已复制,粘贴到思源文档点击可定位",
+                    ),
                     placeholder: "输入 Markdown 内容...",
                 });
                 self._cm6 = cm;

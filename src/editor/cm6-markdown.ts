@@ -21,6 +21,7 @@ import {search, searchKeymap, highlightSelectionMatches, openSearchPanel} from "
 import {markdown, markdownLanguage} from "@codemirror/lang-markdown";
 import {languages} from "@codemirror/language-data";
 import {tags} from "@lezer/highlight";
+import {Menu} from "siyuan";
 import {cm6MarkdownRender, preloadCm6Katex} from "./cm6-render";
 import {cm6InlineWysiwyg, mdParserExtensions} from "./cm6-inline";
 
@@ -42,6 +43,8 @@ export interface Cm6MarkdownOptions {
      * 不传则图片语法只保留源码高亮。
      */
     resolveImageSrc?(src: string): Promise<string | null>;
+    /** 右键行号时复制该行链接(宿主用 buildFileRefMd 生成;与 Vditor 行号槽/Monaco 一致) */
+    onCopyLine?(line: number): void;
     placeholder?: string;
 }
 
@@ -444,7 +447,39 @@ export function createCm6MarkdownEditor(
     const state = EditorState.create({
         doc: opts.value,
         extensions: [
-            lineNumbers(),
+            lineNumbers({
+                // 右键行号 → 思源菜单「复制第 N 行链接」,与 Vditor 渲染态行号槽
+                // (md-line-gutter)和 Monaco 源码态(monaco.ts)同一套交互。
+                // CM6 回调签名 (view, line: BlockInfo, event),行号取
+                // lineAt(line.from).number —— 对被 replace 吞掉的块(widget 行)
+                // 得到的是块首行号,与显示的数字一致。
+                domEventHandlers: {
+                    contextmenu: (view, line, event) => {
+                        if (!opts.onCopyLine) return false;
+                        const me = event as MouseEvent;
+                        // 行号取值:优先用被右键的 gutter 元素上显示的数字(与所见
+                        // 一致,且对被 replace 吞掉的块天然取块首行号)。CM6 自带的
+                        // lineBlockAtHeight(元素中心) 反查在编辑器刚创建、heightmap
+                        // 与 DOM 短暂失步时会解析到错误的行(实测弹出"第 1 行"),
+                        // 只作文本取不到时的兜底。
+                        const el = me.target as HTMLElement | null;
+                        const shown = el ? parseInt(el.textContent || "", 10) : NaN;
+                        const num = isFinite(shown) && shown > 0
+                            ? shown
+                            : view.state.doc.lineAt(line.from).number;
+                        me.preventDefault();
+                        me.stopPropagation();
+                        const menu = new Menu();
+                        menu.addItem({
+                            icon: "iconLink",
+                            label: `复制第 ${num} 行链接`,
+                            click: () => opts.onCopyLine?.(num),
+                        });
+                        menu.open({x: me.clientX, y: me.clientY});
+                        return true;
+                    },
+                },
+            }),
             highlightActiveLineGutter(),
             highlightActiveLine(),
             history(),
