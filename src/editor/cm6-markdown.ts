@@ -231,6 +231,7 @@ const syfeCmTheme = EditorView.theme({
         padding: "6px 10px",
         margin: "2px 0",
         overflowX: "auto",
+        maxWidth: "100%",
     },
     ".syfe-cm-math.is-error": {
         fontFamily: "var(--b3-font-family-code, monospace)",
@@ -240,6 +241,7 @@ const syfeCmTheme = EditorView.theme({
     ".syfe-cm-table": {
         padding: "4px 0",
         overflowX: "auto",
+        maxWidth: "100%",
     },
     ".syfe-cm-md-table": {
         borderCollapse: "collapse",
