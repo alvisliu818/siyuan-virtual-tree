@@ -98,10 +98,15 @@ const syfeCmTheme = EditorView.theme({
         color: "var(--b3-theme-on-surface)",
         border: "none",
         userSelect: "none",
-        // CM6 的行号槽 spacer 按 content 的 padding 计算,与内容行首仍有约
-        // 10px 的固定差(实测 19 行里 18 行行号比内容行低 9px)。整体上移
-        // 10px 抵消;不用 transform,避免影响 sticky 的命中区域。
-        marginTop: "-10px",
+        // ⚠ 不要在这里加 marginTop 补偿:.cm-editor 的 padding 对 gutter 与
+        // content 两列同时生效,列起点本就重合;再加负 margin 会让整列行号
+        // 比内容行高一个固定值(实测 -26px 里含这 10px)。行号与行的对齐
+        // 完全交给 CM6 高度图,块级 widget 的 margin 要圈进可测量范围
+        // (见 .syfe-cm-properties-host / codeblock padding)。
+    },
+    // 属性面板宿主:flow-root 收住子元素的 margin,让 CM6 高度图量到完整占高
+    ".syfe-cm-properties-host": {
+        display: "flow-root",
     },
     ".cm-activeLine": {backgroundColor: "var(--b3-list-hover, rgba(0,0,0,.03))"},
     ".cm-activeLineGutter": {
@@ -132,7 +137,10 @@ const syfeCmTheme = EditorView.theme({
     // 正文不折行(Logseq parity)+ 常驻 10px 横向条带;编辑态 Monaco 横条同为
     // 10px(monaco-block.ts),两态任何情况下等高。
     ".syfe-cm-codeblock": {
-        margin: "4px 0",
+        // 用 padding 不用 margin:CM6 高度图只量 widget 的 border-box,
+        // 块级 margin 会逃出测量,行号槽 spacer 按少 8px 的块高排布,
+        // 之后的行号整体上浮。根元素无背景,padding 与 margin 视觉等价。
+        padding: "4px 0",
     },
     ".syfe-cm-codeblock-head": {
         display: "flex",

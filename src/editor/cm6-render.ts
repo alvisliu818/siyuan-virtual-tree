@@ -498,9 +498,16 @@ class PropertiesWidget extends WidgetType {
 
     toDOM(view: EditorView): HTMLElement {
         const wrap = createPropertiesElement(this.lines);
+        // CM6 高度图只量 widget 根元素的 border-box,.syfe-cm-properties 的
+        // margin(6px 0 10px)会逃出测量 → 行号槽 spacer 少 16px,其后的行号
+        // 整体上浮(实测全列 -26px 中含这 16px)。用 flow-root 宿主把 margin
+        // 圈进可测量范围,视觉零变化;阅读态共用渲染不受影响(仅 CM6 路径包壳)。
+        const host = document.createElement("div");
+        host.className = "syfe-cm-properties-host";
+        host.appendChild(wrap);
         // 属性面板与 4 行源码高度差很大;尺寸变化必须让 CM6 重新测量行号槽
-        observeWidgetResize(wrap, view);
-        return wrap;
+        observeWidgetResize(host, view);
+        return host;
     }
 
     destroy(dom: HTMLElement): void {
@@ -1178,9 +1185,11 @@ function buildDecorations(state: EditorState, opts: Cm6RenderOptions): Decoratio
                         for (let k = i + 1; k < j; k++) bodyLines.push(doc.line(k).text);
                         const body = splitMathBlockBody(bodyLines);
                         const widget = new MathWidget(body.tex, body.notes, (window as any).__syfeKatex || null);
-                        const replace = Decoration.replace({widget, block: true});
+                        // 非 block 的跨行 replace:视觉上仍是一个公式 widget,但
+                        // CM6 的原生行号槽按原行数逐行生成(不会跳过 3 行再按
+                        // 估算高度补 margin-top),从根上消除公式块之后的行号漂移。
+                        const replace = Decoration.replace({widget});
                         ranges.push(replace.range(from, to));
-                        atomicRanges.push(replace.range(from, to));
                     }
                     i = j + 1;
                 }
