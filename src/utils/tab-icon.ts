@@ -134,6 +134,12 @@ function scheduleFix(): void {
 
 function ensureObserver(): void {
     if (observer || typeof MutationObserver === "undefined") return;
+    // 热重载换届:思源在同一页面重新 window.eval 整份 bundle,上一轮的模块级
+    // observer 不随旧模块作用域消失(它仍 observe 着 document.body),会和新
+    // observer 一起收到同一批 mutation;回调里 replaceWith 又改 DOM,形成
+    // 微任务翻倍放大(实测可让渲染进程涨到 2GB+ 并卡死事件循环)。
+    const prev = (window as any).__syfeTabIconObserver as MutationObserver | undefined;
+    try { prev?.disconnect(); } catch { /* 旧实例可能已断开 */ }
     observer = new MutationObserver((records) => {
         // 只关心页签条里的变动:正文输入会产生大量 mutation,直接跳过
         for (const r of records) {
@@ -154,6 +160,14 @@ function ensureObserver(): void {
         }
     });
     observer.observe(document.body, {childList: true, subtree: true});
+    // 跨 eval 共享的旧实例句柄 + 集中清理登记(见 src/utils/disposal.ts)
+    (window as any).__syfeTabIconObserver = observer;
+    (window as any).__syfeOnDispose?.(() => {
+        try { observer?.disconnect(); } catch { /* ignore */ }
+        observer = null;
+        scheduled = false;
+        (window as any).__syfeTabIconObserver = undefined;
+    });
 }
 
 // 注册:页签 init / 打开时调用。之后页签头的每次出现与重绘都会自动对齐图标

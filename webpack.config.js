@@ -60,6 +60,9 @@ const PLUGIN_NAME = JSON.parse(fs.readFileSync(path.resolve(__dirname, "plugin.j
 const CHUNK_LOADING_GLOBAL = "webpackChunk" + PLUGIN_NAME.replace(/[^a-zA-Z0-9_$]/g, "_");
 const JSONP_RESET_BANNER = `(function(){
 var k=${JSON.stringify(CHUNK_LOADING_GLOBAL)},g=typeof self!=="undefined"?self:globalThis;
+// 换届自愈:上一轮 bundle 挂在 window/document 上的全局监听器与 observer 不会随
+// 旧模块作用域消失,先跑上一轮登记的 disposer(见 src/utils/disposal.ts)。
+try{if(g.__syfeDisposeAllGlobal)g.__syfeDisposeAllGlobal();}catch(e){}
 var reset=function(){var a=g[k];if(Array.isArray(a)){a.length=0;a.push=Array.prototype.push;}else if(a!==undefined){try{delete g[k];}catch(e){g[k]=undefined;}}};
 g.__syfeResetJsonp=reset;reset();})();`;
 

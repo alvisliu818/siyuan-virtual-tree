@@ -87,8 +87,12 @@ export function initCodeRender(host: any): void {
     host.eventBus.on("code-language-update", () => scheduleScan());
 
     // 插件启用时文档可能早已打开,补扫一次
-    window.setTimeout(() => scanAllCodeRender(), 600);
-    window.setTimeout(() => scanAllCodeRender(), 2000);
+    const scanTimer1 = window.setTimeout(() => scanAllCodeRender(), 600);
+    const scanTimer2 = window.setTimeout(() => scanAllCodeRender(), 2000);
+    (window as any).__syfeOnDispose?.(() => {
+        window.clearTimeout(scanTimer1);
+        window.clearTimeout(scanTimer2);
+    });
 }
 
 /** 宿主设置面板调用:代码块渲染设置块定义(外观/规则/数据源),装配进全局设置面板 */

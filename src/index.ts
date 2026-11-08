@@ -11,6 +11,7 @@ import {
 } from "./constants";
 import {EditorConfig, DEFAULT_CONFIG} from "./types";
 import {setupMonaco, applyTheme, getCurrentMode, disposeMonaco} from "./editor/monaco";
+import {disposeAllGlobal, onDispose} from "./utils/disposal";
 import {disposeAll} from "./editor/model-manager";
 import {notifyCm6RenderConfigChanged} from "./editor/cm6-render";
 import {createEditorTabConfig, openFileTab} from "./tabs/editor-tab";
@@ -291,6 +292,8 @@ export default class FileEditorPlugin extends Plugin {
     }
 
     onload(): void {
+        // 换届自愈(与入口 banner 双保险):摘掉上一轮 bundle 残留的全局资源。
+        disposeAllGlobal();
         // 内置 TextMate 语法(python/js/ts 等官方语法接管着色,不依赖扩展)。
         // 放 onload 最前:布局恢复建模型之前就开始取语法,注册完成后对既有
         // 模型强制重分词(见 loadBuiltinGrammars)。内置先注册、扩展后注册 ——
@@ -318,10 +321,12 @@ export default class FileEditorPlugin extends Plugin {
         // 渲染进程退出(关窗口/刷新)时同步清理内核:L杀进程 + 关 zmq 套接字。
         // 不做的话原生句柄随渲染进程异常卸载,实测触发 0xC0000409 崩溃,
         // 思源下次启动会弹安全模式确认框(20:44 / 21:46 两次崩溃均此模式)。
-        window.addEventListener("beforeunload", () => {
+        const onBeforeUnload = () => {
             try { disposeAllKernelsSync(); } catch { /* ignore */ }
             try { stopPythonLanguageServer(); } catch { /* ignore */ }
-        });
+        };
+        window.addEventListener("beforeunload", onBeforeUnload);
+        onDispose(() => window.removeEventListener("beforeunload", onBeforeUnload));
         // 启动即加载持久化的内核选择。之前只有笔记本 Tab 会调 loadKernelChoices,
         // 代码块路径直接 getKernel(docKey) → choices 还是空的 → 永远拿到内置内核,
         // 用户选的 conda/Jupyter 环境对代码块完全无效(实测复现过)。
@@ -418,12 +423,14 @@ export default class FileEditorPlugin extends Plugin {
         // 图标主题就绪/切换:文件树、页签头、新标签页都要按新的主题重画。
         // 扩展是异步加载的,它们首屏渲染时常还没有主题(画出来是思源内置图标),
         // 这里补画一次即可保证「一开始就显示虚拟文档树同款图标」。
-        window.addEventListener(ICON_THEME_CHANGED_EVENT, () => {
+        const onIconThemeChanged = () => {
             // 文件树 / 虚拟文档树
             this.refreshFileTrees();
             // 已经打开的插件页签:重刷页签头图标
             refreshAllTabIcons();
-        });
+        };
+        window.addEventListener(ICON_THEME_CHANGED_EVENT, onIconThemeChanged);
+        onDispose(() => window.removeEventListener(ICON_THEME_CHANGED_EVENT, onIconThemeChanged));
 
         // 命令:全局搜索
         this.addCommand({
@@ -748,6 +755,8 @@ export default class FileEditorPlugin extends Plugin {
     }
 
     onunload(): void {
+        // 摘掉本轮登记的全局监听器/observer(入口 banner 会在下一轮再兜一次)
+        disposeAllGlobal();
         // 习惯与目标:停计时引擎、强制落盘(planner.json 数据保留)
         try {
             destroyPlanner();

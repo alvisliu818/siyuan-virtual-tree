@@ -248,33 +248,38 @@ export function watchContainer(root: HTMLElement | null | undefined): void {
 }
 
 /** 失焦后补一次接管 + IME 组词状态跟踪 */
+// 具名回调:换届时要能 removeEventListener,匿名函数无法注销。
+const onFocusOut = (ev: FocusEvent) => {
+    // 失焦后光标离开代码块，此时可安全接管（之前编辑态被跳过的块）
+    const el = ev.target as Element | null;
+    const block = el?.closest?.(CODE_BLOCK_SELECTOR) as HTMLElement | null;
+    if (block) {
+        dirty.add(block);
+        schedule();
+    }
+};
+const onCompositionStart = () => { composing = true; };
+const onCompositionEnd = (ev: CompositionEvent) => {
+    composing = false;
+    // 组词结束后补一次接管（组词期间的变更都被跳过了）
+    markDirty(ev.target as Element | null);
+    if (dirty.size) schedule();
+};
+
 function bindGlobal(): void {
     if (globalBound) return;
     globalBound = true;
-    document.addEventListener(
-        "focusout",
-        (ev) => {
-            // 失焦后光标离开代码块，此时可安全接管（之前编辑态被跳过的块）
-            const el = ev.target as Element | null;
-            const block = el?.closest?.(CODE_BLOCK_SELECTOR) as HTMLElement | null;
-            if (block) {
-                dirty.add(block);
-                schedule();
-            }
-        },
-        true,
-    );
-    document.addEventListener("compositionstart", () => { composing = true; }, true);
-    document.addEventListener(
-        "compositionend",
-        (ev) => {
-            composing = false;
-            // 组词结束后补一次接管（组词期间的变更都被跳过了）
-            markDirty(ev.target as Element | null);
-            if (dirty.size) schedule();
-        },
-        true,
-    );
+    document.addEventListener("focusout", onFocusOut, true);
+    document.addEventListener("compositionstart", onCompositionStart, true);
+    document.addEventListener("compositionend", onCompositionEnd, true);
+    // 热重载换届:globalBound 是模块级变量,新 bundle 求值后为 false,会再挂
+    // 3 个 document 监听;旧监听却仍在,导致回调按份数重复触发。
+    (window as any).__syfeOnDispose?.(() => {
+        document.removeEventListener("focusout", onFocusOut, true);
+        document.removeEventListener("compositionstart", onCompositionStart, true);
+        document.removeEventListener("compositionend", onCompositionEnd, true);
+        globalBound = false;
+    });
 }
 
 /** 主动扫一遍容器内的代码块（loaded-protyle-* 时调用） */
