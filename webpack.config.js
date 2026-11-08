@@ -108,10 +108,16 @@ function resolvePkgDir(name) {
     // unplugged 的实际位置由 .yarnrc.yml 的 pnpUnpluggedFolder 决定,已指向
     // 全局 E:/HOME/Code/.yarn-global/unplugged;项目内路径保留作旧布局兼容,
     // 换机器或回退配置时仍能找到包。
-    const unpluggedRoots = [
-        path.resolve(__dirname, ".yarn", "unplugged"),
-        path.resolve(__dirname, "..", "..", ".yarn-global", "unplugged"),
-    ];
+    const globalRoot = path.resolve(__dirname, "..", "..", ".yarn-global");
+    const unpluggedRoots = [path.resolve(__dirname, ".yarn", "unplugged")];
+    // 全局目录下每个项目各有独立的 unplugged* 子目录(见 .yarnrc.yml 的
+    // pnpUnpluggedFolder)。扫所有 unplugged* 而不是硬编码某个项目名,
+    // 换项目/改目录名时不用再动这里。
+    if (fs.existsSync(globalRoot)) {
+        for (const dir of fs.readdirSync(globalRoot)) {
+            if (dir.startsWith("unplugged")) unpluggedRoots.push(path.join(globalRoot, dir));
+        }
+    }
     const prefix = `${name.replace(/^@/, "").replace(/\//g, "-")}-npm-`;
     for (const unpluggedRoot of unpluggedRoots) {
         if (!fs.existsSync(unpluggedRoot)) continue;
