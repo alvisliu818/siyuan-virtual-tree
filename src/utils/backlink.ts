@@ -1,18 +1,31 @@
-// 反向链接(backlink)数据层:
-// 给定任意文件,查找引用它的位置,两类来源:
+// 双链(backlink)数据层:
+// 给定任意文件,查找引用它的位置(入链),两类来源:
 // 1. 思源笔记文档(内核 SQL 查询 blocks 表,匹配 assets/ 等文件引用)
-// 2. 文件树挂载根下的 Markdown 文件(相对链接 ![..](../img.png)、<img src=..> 等)
+// 2. 文件树挂载根下的文本文件(Markdown/代码等 —— 默认全部文本文件,设置可回退
+//    仅 Markdown;相对链接 ![..](../img.png)、<img src=..>、[[wikilink]] 等)
+// 以及出链(findOutlinks):给定文件,列出它指向的所有位置。
 // 链接可以带位置(?line=N 行号 / #锚点 标题 / ?t= 音视频时间),位置不参与匹配,
 // 但会记进条目(targetLine/targetAnchor/targetTime),面板与行号槽据此上色定位。
-import {readDir, readTextFile, querySQL} from "../api/file";
-import {basename, dirname, joinPath, sepFor, isSiyuanPath} from "./path";
-import {isBaiduPath} from "./baidu-path";
+// wikilink 短链([[名字]])的解析依赖 wikilink.ts 的文件名索引。
+import {readTextFile, readDir, querySQL} from "../api/file";
+import {basename, dirname, isSiyuanPath} from "./path";
+import {TEXT_EXTENSIONS} from "../constants";
+import {isBacklinkScanAllTextEnabled} from "./config";
+import {
+    MD_LINK_RE, WIKILINK_RE, ATTR_RE,
+    collectScanRoots, walkFiles, isDataRootPath,
+    getLinkIndex, clearWikilinkIndex, lookupInIndex,
+    normPath,
+} from "./wikilink";
+import type {LinkIndex} from "./wikilink";
 import {headingLineOfAnchor, parseFileRef} from "./file-ref";
+import {blockTitle} from "./blocks";
 
 // 反向链接条目
 export interface BacklinkItem {
     kind: "siyuan-doc" | "md-file"; // 引用来源类型
     sourcePath: string;             // md-file: 引用文件绝对路径;siyuan-doc: 文档 root_id
+                                    // (出链条目 = 目标文件路径;未解析短链为 "")
     title: string;                  // 显示名:md 文件名 / 思源文档标题
     docPath?: string;               // siyuan-doc: 文档 hpath(如 /课程/Linux/day02)
     lineNo?: number;                // md-file: 引用所在行号(引用来源文件里的行)
@@ -22,14 +35,10 @@ export interface BacklinkItem {
     targetLine?: number;            // 链接指向的行号(?line=N;锚点会先解析成标题行)
     targetAnchor?: string;          // 链接指向的标题锚点(#slug 原文)
     targetTime?: number;            // 音视频时间点(?t= / #t=,秒)
+    unresolvedName?: string;        // 出链:无法解析的 wikilink 短名(灰显,不可跳转)
 }
 
 // ===== 通用工具 =====
-
-// 路径归一化:统一分隔符/去尾斜杠/忽略大小写,用于比较
-function normPath(p: string): string {
-    return p.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
-}
 
 // 剥掉引用末尾的位置后缀(?line= ?t= #锚点 / #t=),只留路径本体参与匹配。
 // 带位置的链接此前整串进匹配,`demo.mp4?t=12.5` 对不上 `demo.mp4`,
@@ -72,7 +81,7 @@ function resolveRef(baseDir: string, rawRef: string): string | null {
     if (/^[A-Za-z]:[\\/]/.test(ref) || ref.startsWith("\\\\") || ref.startsWith("/")) return ref;
     // 相对路径:基于基准目录解析 ./ 与 ../
     if (!baseDir) return null;
-    const sep = sepFor(baseDir);
+    const sep = baseDir.includes("\\") && !baseDir.startsWith("/") ? "\\" : "/";
     const parts = baseDir.split(/[\\/]+/).filter(Boolean);
     for (const seg of ref.split(/[\\/]+/)) {
         if (!seg || seg === ".") continue;
@@ -91,8 +100,15 @@ function resolveRef(baseDir: string, rawRef: string): string | null {
 // 1. 精确:解析后的绝对路径相等
 // 2. 后缀:引用是相对路径时,剥离前导 ../ 段后作为路径尾部匹配
 //    (Obsidian/思源 wikilink 的 ../ 基准在文件被移动或跨库后会失效,后缀匹配兜底)
-function refMatches(ref: ExtractedRef, target: string): boolean {
-    if (normPath(ref.target) === target) return true;
+// 3. 短链:裸名 wikilink([[名字]])按文件名索引解析后精确匹配
+function refMatches(ref: ExtractedRef, target: string, index?: LinkIndex): boolean {
+    if (ref.target && normPath(ref.target) === target) return true;
+    // 裸名 wikilink:走索引短链解析(索引里只有真实文件,解析命中即存在)
+    if (ref.wikiname) {
+        if (!index) return false;
+        const hit = lookupInIndex(index, ref.wikiname);
+        return !!hit && normPath(hit.path) === target;
+    }
     const raw = ref.rawPath || "";
     // 绝对路径引用只走精确匹配(后缀匹配过于宽松)
     if (!raw || /^[A-Za-z]:[\\/]/.test(raw) || raw.startsWith("\\\\") || raw.startsWith("/")) return false;
@@ -112,8 +128,10 @@ function refMatches(ref: ExtractedRef, target: string): boolean {
 
 // 引用提取结果
 interface ExtractedRef {
-    target: string;   // 解析后的绝对路径(未归一化;已剥位置后缀)
+    target: string;   // 解析后的绝对路径(未归一化;已剥位置后缀;裸名 wikilink 为 "")
     rawPath: string;  // 原始引用路径(剥 ?query/#锚点 后,后缀匹配用)
+    wikiname?: string; // 裸名 wikilink 的名字(路径解析让位给索引短链)
+    syBlockId?: string; // 思源外部块引用 [..](siyuan://blocks/<id>) 的块 ID
     lineNo: number;
     line: string;     // 引用所在行文本
     posLine?: number;   // 链接指向的行号(?line=N)
@@ -121,22 +139,28 @@ interface ExtractedRef {
     posTime?: number;   // 音视频时间点(?t= / #t=,秒)
 }
 
-// Markdown 链接 ![](x) / [](x)。url 支持两种形态:
-//   (url) —— url 不含空白/尖括号;(url 里可以带 ?line= ?t= 等位置参数)
-//   (<url>) —— url 含空格时用尖括号包裹(内含空白也整段捕获)
-const MD_LINK_RE = /(!?)\[[^\]\n]*\]\(\s*(?:<([^()<>\n]*)>|([^()<>\s]+))(?:\s+"[^"]*")?\s*\)/g;
-// Obsidian/思源 wikilink [[path|alias]] / ![[path]] / [[path#锚点]]
-const WIKILINK_RE = /!?\[\[([^\]|]+)(?:\|[^\]]*)?\]\]/g;
-// HTML 标签属性 src= / href=
-const ATTR_RE = /\b(?:src|href)\s*=\s*["']([^"']+)["']/g;
+// 思源外部块引用地址 → 块 ID(siyuan://blocks/20060102150405-1a2b3c4)
+const SY_BLOCK_REF_RE = /^siyuan:\/\/blocks\/([0-9]{14}-[0-9a-z]+)$/i;
 
-// 从内容中提取全部文件引用
+// 从内容中提取全部文件引用(MD 链接 / wikilink / HTML src-href)
 function extractRefs(baseDir: string, content: string): ExtractedRef[] {
     const refs: ExtractedRef[] = [];
-    const take = (matchIndex: number, raw: string) => {
+    const take = (matchIndex: number, raw: string, isWikilink = false) => {
         const core = splitPosSuffix(raw);
-        const target = resolveRef(baseDir, core);
-        if (!target) return;
+        let target: string | null = null;
+        let wikiname: string | undefined;
+        let syBlockId: string | undefined;
+        const syMatch = SY_BLOCK_REF_RE.exec(core);
+        if (syMatch) {
+            // 思源外部块引用:按块 ID 建引用(路径语义不适用)
+            syBlockId = syMatch[1];
+        } else if (isWikilink && !/[\\/]/.test(core)) {
+            // 裸名 wikilink:[[名字]] —— 不按相对路径硬解析,留给索引短链匹配
+            wikiname = core;
+        } else {
+            target = resolveRef(baseDir, core);
+            if (!target) return;
+        }
         // 链接里的位置参数(?line= / #锚点 / ?t=):不影响匹配,记下来给 UI 定位
         const pos = parseFileRef(raw);
         // 行号与所在行文本
@@ -146,8 +170,10 @@ function extractRefs(baseDir: string, content: string): ExtractedRef[] {
         const lineEnd = content.indexOf("\n", matchIndex);
         const lineText = content.slice(lineStart, lineEnd === -1 ? content.length : lineEnd).trim();
         refs.push({
-            target,
+            target: target || "",
             rawPath: core,
+            wikiname,
+            syBlockId,
             lineNo,
             line: lineText.length > 160 ? lineText.slice(0, 160) + "…" : lineText,
             posLine: pos?.line,
@@ -162,7 +188,7 @@ function extractRefs(baseDir: string, content: string): ExtractedRef[] {
     }
     WIKILINK_RE.lastIndex = 0;
     while ((m = WIKILINK_RE.exec(content)) !== null) {
-        take(m.index, m[1].trim());
+        take(m.index, m[1].trim(), true);
     }
     ATTR_RE.lastIndex = 0;
     while ((m = ATTR_RE.exec(content)) !== null) {
@@ -178,10 +204,11 @@ function extractRefs(baseDir: string, content: string): ExtractedRef[] {
 // 同一块出现在多个来源时按块 ID 去重。
 async function findSiyuanDocRefsWhere(
     likeNames: string[],
-    match: (refs: ExtractedRef[]) => boolean,
+    match: (ref: ExtractedRef, index: LinkIndex) => boolean,
 ): Promise<BacklinkItem[]> {
     const items: BacklinkItem[] = [];
     const seen = new Set<string>(); // 同一块出现在多个来源时去重
+    const index = await getLinkIndex();
 
     const pushItem = (blockId: string, rootId: string, hpath: string, snippet: string, ref?: ExtractedRef) => {
         if (!blockId || seen.has(blockId)) return;
@@ -210,7 +237,7 @@ async function findSiyuanDocRefsWhere(
                 const md: string = row.markdown || "";
                 // 块内引用以 assets/ 等形式存储,相对工作空间 data 根解析
                 const refs = extractRefs("/data", md);
-                const hit = refs.find(r => match([r]));
+                const hit = refs.find(r => match(r, index));
                 if (hit) {
                     const firstLine = md.split("\n").find((l: string) => l.trim()) || "";
                     pushItem(row.id, row.root_id, row.hpath || "", firstLine, hit);
@@ -231,7 +258,7 @@ async function findSiyuanDocRefsWhere(
             for (const row of rows) {
                 const value: string = row.value || "";
                 const refs = extractRefs("/data", value);
-                const hit = refs.find(r => match([r]));
+                const hit = refs.find(r => match(r, index));
                 if (hit) {
                     pushItem(row.block_id, row.root_id, row.hpath || "", `${row.attr_name || "属性"}: ${value}`, hit);
                 }
@@ -261,76 +288,34 @@ function siyuanLikeClause(col: string, names: string[]): string {
 }
 
 // 查询思源文档中引用该文件的位置(按文件名 LIKE 粗筛,再解析验证:
-// 精确匹配 + ../ 失效时的路径尾部匹配)
+// 精确匹配 + ../ 失效时的路径尾部匹配 + wikilink 短链匹配)
 async function findSiyuanDocRefs(path: string): Promise<BacklinkItem[]> {
     const name = basename(path);
     const target = normPath(path);
-    return findSiyuanDocRefsWhere(siyuanLikeNames(name), refs => refs.some(r => refMatches(r, target)));
+    return findSiyuanDocRefsWhere(siyuanLikeNames(name), (r, index) => refMatches(r, target, index));
 }
 
-// ===== 来源 2:Markdown 文件引用 =====
+// ===== 来源 2:挂载根下的文本文件引用 =====
 
-// 扫描时跳过的目录(噪声/超大)
-const SKIP_DIRS = new Set([
-    "node_modules", ".git", ".svn", ".hg", ".Trash", "$RECYCLE.BIN", "System Volume Information",
-]);
-// /data 根下额外跳过的思源系统目录
-const SIYUAN_SKIP_DIRS = new Set([
-    "plugins", "widgets", "themes", "icons", "snippets", "remnants", "history", "temp", "push", "storage", "conf",
-]);
+// 扫描文件大小上限(单文件;超大文件读入+正则的代价不值)
+const MAX_SCAN_BYTES = 2 * 1024 * 1024;
+// 回退模式的扩展名(设置关闭「扫描所有文本文件」时仅扫 Markdown)
+const MD_ONLY_EXTS = new Set([".md", ".markdown"]);
 
-interface MdFileInfo {
-    path: string;
-    size: number;
-    updated: string;
-}
-
-// 递归收集 Markdown 文件
-async function collectMdFiles(dir: string, out: MdFileInfo[], isDataRoot: boolean): Promise<void> {
-    let entries;
-    try {
-        entries = await readDir(dir);
-    } catch {
-        return;
-    }
-    if (!Array.isArray(entries)) return;
-    for (const entry of entries) {
-        if (entry.isDir) {
-            if (SKIP_DIRS.has(entry.name) || entry.name.startsWith(".")) continue;
-            if (isDataRoot && SIYUAN_SKIP_DIRS.has(entry.name)) continue;
-            await collectMdFiles(joinPath(dir, entry.name), out, false);
-        } else if (/\.(md|markdown)$/i.test(entry.name) && entry.size <= 2 * 1024 * 1024) {
-            out.push({path: joinPath(dir, entry.name), size: entry.size, updated: entry.updated});
-        }
-    }
-}
-
-// 内容引用缓存:mdPath → {key(size:updated), refs},避免重复读取解析
+// 内容引用缓存:filePath → {key(size:updated), refs},避免重复读取解析
 const refCache = new Map<string, {key: string; refs: ExtractedRef[]}>();
 
-// 收集文件树挂载根(多个树去重;虚拟文档树/百度网盘根不参与文件扫描)
-function collectScanRoots(): string[] {
-    const roots = new Set<string>();
-    document.querySelectorAll<HTMLElement>(".syfe-tree__root[data-path]").forEach(el => {
-        const p = el.dataset.path;
-        if (p && !p.startsWith("sydoc://") && !isBaiduPath(p)) roots.add(p);
-    });
-    return Array.from(roots);
-}
-
-// 对全部挂载根下的 md 文件扫描引用,match 决定某条引用是否命中目标
-// (normTarget 为归一化后的目标路径;srcPath 为引用所在文件,供调用方做自引用/范围过滤)
-async function scanMdRefs(
-    normTarget: string,
-    match: (ref: ExtractedRef, srcPath: string, normTarget: string) => boolean,
-): Promise<BacklinkItem[]> {
+// 遍历全部挂载根下文本文件的引用(读盘+refCache 共享层,各查询共用):
+// handler 对每条 (ref, 所在文件) 调用。
+async function forEachFileRef(handler: (ref: ExtractedRef, srcPath: string) => void): Promise<void> {
     const roots = collectScanRoots();
-    if (roots.length === 0) return [];
-    const files: MdFileInfo[] = [];
+    if (roots.length === 0) return;
+    const files: {path: string; size: number; updated: string}[] = [];
+    const exts = isBacklinkScanAllTextEnabled() ? TEXT_EXTENSIONS : MD_ONLY_EXTS;
     for (const root of roots) {
-        await collectMdFiles(root, files, isSiyuanPath(root) && normPath(root) === "/data");
+        // 每根配额:超大挂载(盘根/同步盘全库)不至于把扫描拖死
+        await walkFiles(root, files, {exts, maxBytes: MAX_SCAN_BYTES, maxFiles: 5000, maxDirs: 8000}, isDataRootPath(root));
     }
-    const items: BacklinkItem[] = [];
     // 分批并发读取,避免大目录一次发出过多请求
     const BATCH = 16;
     for (let i = 0; i < files.length; i += BATCH) {
@@ -348,31 +333,42 @@ async function scanMdRefs(
                 if (refCache.size > 5000) refCache.clear();
                 refCache.set(f.path, entry);
             }
-            for (const ref of entry.refs) {
-                if (match(ref, f.path, normTarget)) {
-                    items.push({
-                        kind: "md-file",
-                        sourcePath: f.path,
-                        title: basename(f.path),
-                        lineNo: ref.lineNo,
-                        snippet: ref.line,
-                        targetLine: ref.posLine,
-                        targetAnchor: ref.posAnchor,
-                        targetTime: ref.posTime,
-                    });
-                }
-            }
+            for (const ref of entry.refs) handler(ref, f.path);
         }));
     }
+}
+
+// 对全部挂载根下的文本文件扫描引用,match 决定某条引用是否命中目标
+// (normTarget 为归一化后的目标路径;srcPath 为引用所在文件,供调用方做自引用/范围过滤)
+async function scanFileRefs(
+    normTarget: string,
+    match: (ref: ExtractedRef, srcPath: string, normTarget: string, index: LinkIndex) => boolean,
+): Promise<BacklinkItem[]> {
+    const index = await getLinkIndex();
+    const items: BacklinkItem[] = [];
+    await forEachFileRef((ref, f) => {
+        if (match(ref, f, normTarget, index)) {
+            items.push({
+                kind: "md-file",
+                sourcePath: f,
+                title: basename(f),
+                lineNo: ref.lineNo,
+                snippet: ref.line,
+                targetLine: ref.posLine,
+                targetAnchor: ref.posAnchor,
+                targetTime: ref.posTime,
+            });
+        }
+    });
     return items;
 }
 
-// 查询文件树内引用该文件的所有 Markdown 文件
-async function findMdFileRefs(path: string): Promise<BacklinkItem[]> {
+// 查询文件树内引用该文件的所有文本文件
+async function findFileRefs(path: string): Promise<BacklinkItem[]> {
     const target = normPath(path);
-    return scanMdRefs(target, (ref, srcPath, t) =>
+    return scanFileRefs(target, (ref, srcPath, t, index) =>
         // 跳过自引用(文件链接自身)
-        normPath(srcPath) !== t && refMatches(ref, t));
+        normPath(srcPath) !== t && refMatches(ref, t, index));
 }
 
 // ===== 总入口 =====
@@ -395,11 +391,11 @@ async function resolveAnchorLines(path: string, items: BacklinkItem[]): Promise<
     }
 }
 
-// 查找引用指定文件的所有位置(思源文档 + Markdown 文件)
+// 查找引用指定文件的所有位置(思源文档 + 挂载根文本文件)
 export async function findBacklinks(path: string): Promise<BacklinkItem[]> {
     const [docRefs, fileRefs] = await Promise.all([
         findSiyuanDocRefs(path),
-        findMdFileRefs(path),
+        findFileRefs(path),
     ]);
     // 思源文档引用在前
     const items = [...docRefs, ...fileRefs];
@@ -408,13 +404,20 @@ export async function findBacklinks(path: string): Promise<BacklinkItem[]> {
 }
 
 // ===== 结果缓存 =====
-// 全量扫描(读全部挂载根的 md + 两次 SQL)开销大,而行号槽标记与引用面板需要同一份数据,
+// 全量扫描(读全部挂载根的文件 + 两次 SQL)开销大,而行号槽标记与引用面板需要同一份数据,
 // 这里按「目标路径 + 挂载根集合」缓存最终结果;引用面板的刷新按钮 / syfe:backlink-refresh
 // 事件强制绕过(refCache 本身按 size:mtime 失效,单文件改动后重扫也不至于全冷)。
 const backlinkCache = new Map<string, {key: string; items: BacklinkItem[]}>();
+// 出链结果单独缓存(同一 key 策略)
+const outlinkCache = new Map<string, {key: string; items: BacklinkItem[]}>();
+// 块引用(文件→siyuan://blocks)结果缓存
+const blockRefCache = new Map<string, BacklinkItem[]>();
 
-export function clearBacklinkCache(): void {
+export function clearBacklinkCache(clearIndex = false): void {
     backlinkCache.clear();
+    outlinkCache.clear();
+    blockRefCache.clear();
+    if (clearIndex) clearWikilinkIndex();
 }
 
 export async function findBacklinksCached(path: string, opts?: {force?: boolean}): Promise<BacklinkItem[]> {
@@ -431,10 +434,267 @@ export async function findBacklinksCached(path: string, opts?: {force?: boolean}
     return items;
 }
 
+// ===== 出链 =====
+
+// 批量校验文件是否存在(按父目录分组,每目录一次 readDir)
+async function filterExisting(paths: string[]): Promise<Set<string>> {
+    const byDir = new Map<string, string[]>();
+    for (const p of paths) {
+        const dir = dirname(p);
+        const list = byDir.get(dir);
+        if (list) list.push(p);
+        else byDir.set(dir, [p]);
+    }
+    const exists = new Set<string>();
+    await Promise.all(Array.from(byDir.entries()).map(async ([dir, list]) => {
+        let entries;
+        try {
+            entries = await readDir(dir);
+        } catch {
+            entries = null;
+        }
+        if (!Array.isArray(entries)) return;
+        const names = new Set(entries.filter((e: any) => !e.isDir).map((e: any) => e.name));
+        for (const p of list) {
+            if (names.has(basename(p))) exists.add(p);
+        }
+    }));
+    return exists;
+}
+
+// 出链锚点解析:条目各自指向不同文件,按目标分组读文件换算锚点行
+async function resolveAnchorLinesMulti(items: BacklinkItem[]): Promise<void> {
+    const need = items.filter(it =>
+        it.targetAnchor && !it.targetLine && it.sourcePath && /\.(md|markdown)$/i.test(it.sourcePath));
+    if (need.length === 0) return;
+    const byFile = new Map<string, BacklinkItem[]>();
+    for (const it of need) {
+        const k = normPath(it.sourcePath);
+        const list = byFile.get(k);
+        if (list) list.push(it);
+        else byFile.set(k, [it]);
+    }
+    await Promise.all(Array.from(byFile.values()).map(async (list) => {
+        let content: string;
+        try {
+            content = await readTextFile(list[0].sourcePath);
+        } catch {
+            return;
+        }
+        for (const it of list) {
+            const line = headingLineOfAnchor(content, it.targetAnchor!);
+            if (line) it.targetLine = line;
+        }
+    }));
+}
+
+// 给定文件,列出它指向的所有位置(出链)。
+// 路径/短链均解析;路径形态解析后不存在的丢弃(与入链的「目标必在扫描结果里」一致);
+// 解析失败的 wikilink 短名保留(unresolvedName 灰显,提示用户改链)。
+export async function findOutlinks(path: string): Promise<BacklinkItem[]> {
+    let content: string;
+    try {
+        content = await readTextFile(path);
+    } catch {
+        return [];
+    }
+    const refs = extractRefs(dirname(path), content);
+    if (refs.length === 0) return [];
+    const index = await getLinkIndex();
+    const normSelf = normPath(path);
+    const items: BacklinkItem[] = [];
+    const resolvedPaths: string[] = [];
+    const pending: {ref: ExtractedRef; target: string}[] = [];
+    const syRefs: ExtractedRef[] = [];
+    for (const ref of refs) {
+        // 思源外部块引用:块信息走 SQL(内容作标题),不走文件存在性校验
+        if (ref.syBlockId) {
+            syRefs.push(ref);
+            continue;
+        }
+        let target = ref.target;
+        if (!target && ref.wikiname && index) {
+            const hit = lookupInIndex(index, ref.wikiname);
+            if (hit) target = hit.path;
+        }
+        if (!target) {
+            // 解析失败:wikilink 保留名字灰显;路径形态解析失败的直接跳过(噪声太大)
+            if (ref.wikiname) {
+                items.push({
+                    kind: "md-file",
+                    sourcePath: "",
+                    title: ref.wikiname,
+                    lineNo: ref.lineNo,
+                    snippet: ref.line,
+                    targetLine: ref.posLine,
+                    targetAnchor: ref.posAnchor,
+                    targetTime: ref.posTime,
+                    unresolvedName: ref.wikiname,
+                });
+            }
+            continue;
+        }
+        if (normPath(target) === normSelf) continue; // 自引用不算出链
+        pending.push({ref, target});
+        resolvedPaths.push(target);
+    }
+    if (pending.length > 0) {
+        const exists = await filterExisting(resolvedPaths);
+        for (const {ref, target} of pending) {
+            if (!exists.has(target)) continue;
+            items.push({
+                kind: "md-file",
+                sourcePath: target,
+                title: basename(target),
+                lineNo: ref.lineNo,
+                snippet: ref.line,
+                targetLine: ref.posLine,
+                targetAnchor: ref.posAnchor,
+                targetTime: ref.posTime,
+            });
+        }
+    }
+    if (syRefs.length > 0) {
+        const briefs = await getBlockBriefs(syRefs.map(r => r.syBlockId!));
+        for (const ref of syRefs) {
+            const brief = briefs.get(ref.syBlockId!);
+            items.push({
+                kind: "siyuan-doc",
+                sourcePath: brief?.rootId || "",
+                title: brief?.title || `块 ${ref.syBlockId}`,
+                docPath: brief?.hpath || "",
+                blockId: ref.syBlockId,
+                lineNo: ref.lineNo,
+                snippet: ref.line,
+            });
+        }
+    }
+    await resolveAnchorLinesMulti(items);
+    return items;
+}
+
+export async function findOutlinksCached(path: string, opts?: {force?: boolean}): Promise<BacklinkItem[]> {
+    const norm = normPath(path);
+    const key = collectScanRoots().join("|");
+    const hit = outlinkCache.get(norm);
+    if (!opts?.force && hit && hit.key === key) return hit.items;
+    const items = await findOutlinks(path);
+    outlinkCache.set(norm, {key, items});
+    if (outlinkCache.size > 40) {
+        const first = outlinkCache.keys().next();
+        if (!first.done) outlinkCache.delete(first.value);
+    }
+    return items;
+}
+
+// ===== 思源块的外部引用(文件 → siyuan://blocks/<id>)=====
+
+export interface BlockBrief {
+    id: string;
+    rootId: string;
+    title: string;
+    hpath: string;
+}
+
+// (( 块引用补全的候选搜索(与思源 (( 同语义:内容 LIKE,短内容优先)。
+// 供 CM6/Monaco 补全源共用;空查询返回空(思源 (( 后也要求输入)。
+export async function searchBlocksForRef(query: string, limit = 24): Promise<BlockBrief[]> {
+    const q = String(query || "").trim();
+    if (!q) return [];
+    const esc = q.replace(/'/g, "''").replace(/[\\%_]/g, ch => "\\" + ch);
+    try {
+        const rows = await querySQL(
+            `SELECT id, root_id, content, hpath, type FROM blocks ` +
+            `WHERE content LIKE '%${esc}%' ORDER BY length(content) LIMIT ${limit}`);
+        return (Array.isArray(rows) ? rows : []).map(row => ({
+            id: String(row.id || ""),
+            rootId: String(row.root_id || ""),
+            title: blockTitle(String(row.content || ""), String(row.type || "p")).slice(0, 60) || String(row.id || ""),
+            hpath: String(row.hpath || ""),
+        })).filter(b => b.id);
+    } catch {
+        return [];
+    }
+}
+
+// 批量取块简报(SQL;坏 ID/内核不可用静默跳过)
+async function getBlockBriefs(ids: string[]): Promise<Map<string, BlockBrief>> {
+    const out = new Map<string, BlockBrief>();
+    const unique = [...new Set(ids)].filter(Boolean).slice(0, 64);
+    if (unique.length === 0) return out;
+    try {
+        const list = unique.map(id => `'${id.replace(/'/g, "''")}'`).join(",");
+        const rows = await querySQL(
+            `SELECT id, root_id, content, hpath, type FROM blocks WHERE id IN (${list})`);
+        if (Array.isArray(rows)) {
+            for (const row of rows) {
+                const content = String(row.content || "");
+                out.set(String(row.id || ""), {
+                    id: String(row.id || ""),
+                    rootId: String(row.root_id || ""),
+                    title: blockTitle(content, String(row.type || "p")).slice(0, 60) || content.slice(0, 60),
+                    hpath: String(row.hpath || ""),
+                });
+            }
+        }
+    } catch {
+        // SQL 不可用:静默,条目以块 ID 兜底显示
+    }
+    return out;
+}
+
+// 引用某思源块/文档的所有文本文件(外部引用格式 siyuan://blocks/<id>)。
+// asDoc=true 时文档级语义:引用块 ID 等于目标,或引用块所在文档(root)等于目标。
+export async function findFileBlockRefs(targetId: string, asDoc: boolean): Promise<BacklinkItem[]> {
+    const id = targetId.replace(/'/g, "''");
+    const key = `${asDoc ? "doc" : "blk"}:${id}|${collectScanRoots().join("|")}`;
+    const hit = blockRefCache.get(key);
+    if (hit) return hit;
+    const hitRefs: {ref: ExtractedRef; srcPath: string}[] = [];
+    await forEachFileRef((ref, srcPath) => {
+        if (ref.syBlockId) hitRefs.push({ref, srcPath});
+    });
+    const items: BacklinkItem[] = [];    if (hitRefs.length > 0) {
+        const briefs = await getBlockBriefs(hitRefs.map(h => h.ref.syBlockId!));
+        const seen = new Set<string>();
+        for (const {ref, srcPath} of hitRefs) {
+            const blockId = ref.syBlockId!;
+            const brief = briefs.get(blockId);
+            const matched = asDoc
+                ? (blockId === targetId || brief?.rootId === targetId)
+                : blockId === targetId;
+            if (!matched) continue;
+            const dedupe = `${srcPath}|${ref.lineNo}|${blockId}`;
+            if (seen.has(dedupe)) continue;
+            seen.add(dedupe);
+            items.push({
+                kind: "md-file",
+                sourcePath: srcPath,
+                title: basename(srcPath),
+                lineNo: ref.lineNo,
+                snippet: ref.line,
+                blockId,
+            });
+        }
+    }
+    blockRefCache.set(key, items);
+    if (blockRefCache.size > 64) {
+        const first = blockRefCache.keys().next();
+        if (!first.done) blockRefCache.delete(first.value);
+    }
+    return items;
+}
+
 // ===== 文件夹反链 =====
 
 // 引用是否落在目录内:解析后的绝对路径位于 dirPath 之下
-function refInDir(ref: ExtractedRef, dirPath: string): boolean {
+// (裸名 wikilink 先按索引解析成路径再判前缀)
+function refInDir(ref: ExtractedRef, dirPath: string, index?: LinkIndex): boolean {
+    if (ref.wikiname && index) {
+        const hit = lookupInIndex(index, ref.wikiname);
+        if (!hit) return false;
+        return normPath(hit.path).startsWith(normPath(dirPath) + "/");
+    }
     return normPath(ref.target).startsWith(normPath(dirPath) + "/");
 }
 
@@ -442,16 +702,16 @@ function refInDir(ref: ExtractedRef, dirPath: string): boolean {
 async function findSiyuanDocRefsForDir(dirPath: string): Promise<BacklinkItem[]> {
     const name = basename(dirPath);
     if (!name) return [];
-    return findSiyuanDocRefsWhere(siyuanLikeNames(name), refs => refs.some(r => refInDir(r, dirPath)));
+    return findSiyuanDocRefsWhere(siyuanLikeNames(name), (r, index) => refInDir(r, dirPath, index));
 }
 
-// 查找引用指定文件夹内文件的所有位置(思源文档 + Markdown 文件)。
-// md 扫描排除文件夹自身的 md 文件:内部互链不算文件夹的外部反链。
+// 查找引用指定文件夹内文件的所有位置(思源文档 + 文本文件)。
+// 扫描排除文件夹自身的文件:内部互链不算文件夹的外部反链。
 export async function findDirBacklinks(dirPath: string): Promise<BacklinkItem[]> {
     const dirNorm = normPath(dirPath) + "/";
     const [docRefs, fileRefs] = await Promise.all([
         findSiyuanDocRefsForDir(dirPath),
-        scanMdRefs(dirNorm, (ref, srcPath) =>
+        scanFileRefs(dirNorm, (ref, srcPath) =>
             !normPath(srcPath).startsWith(dirNorm) && refInDir(ref, dirPath)),
     ]);
     // 思源文档引用在前

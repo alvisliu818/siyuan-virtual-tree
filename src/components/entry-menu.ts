@@ -3,6 +3,7 @@
 import {Menu, showMessage, openTab} from "siyuan";
 import {openFileTab} from "../tabs/editor-tab";
 import {toFileLink, toMarkdownFileLink} from "../utils/system-path";
+import {buildWikilink} from "../utils/wikilink";
 import {copyText, revealInFileTree} from "./file-tree";
 import {removeRecent} from "../recent-files";
 import {isPinned, isFavorite, itemFromPath, itemFromDoc, toggleInGroup} from "../start-page";
@@ -199,6 +200,16 @@ export function showEntryMenu(opts: {
             click: () => copyWithToast(
                 toMarkdownFileLink(target.path!)?.md ?? null, "Markdown 链接已复制", "无法获取工作空间路径,复制链接失败",
             ),
+        });
+        // 复制 wikilink:[[文件名]](名字全库唯一时)或 [[相对路径]]
+        menu.addItem({
+            icon: "iconLink",
+            label: "复制 wikilink",
+            click: () => {
+                void buildWikilink(target.path!, target.path!).then(md => copyWithToast(
+                    md || null, "wikilink 已复制,粘贴到文件里 Ctrl+点击可打开", "无法生成 wikilink",
+                ));
+            },
         });
         menu.addSeparator();
         menu.addItem({

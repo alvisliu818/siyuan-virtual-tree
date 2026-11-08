@@ -4,6 +4,7 @@ import {deleteToTrash, getTrashMode} from "../utils/trash";
 import {isImportMdSourceAssetEnabled} from "../utils/config";
 import {joinPath, basename, dirname, pathDepth, extname, isSiyuanPath, isKernelPath} from "../utils/path";
 import {toFileLink, toMarkdownFileLink, getWorkspacePath, toSystemPath} from "../utils/system-path";
+import {buildWikilink} from "../utils/wikilink";
 import {openWithExternalApp, revealInSystemExplorer, openTreeFileWithExternalApp, launchOpenWith} from "../utils/external-app";
 import {BINARY_EXTENSIONS, isImageFile, isOfficeFile, isMarkdownFile, isMediaFile, getMediaKind} from "../constants";
 import {isVirtualPath, getMountsUnder, getMountList, normDirKey} from "../utils/virtual-tree";
@@ -1450,6 +1451,28 @@ openWith.push({
             );
         },
     });
+    // 复制 wikilink:[[文件名]](名字全库唯一时)或 [[相对路径]];粘贴到任意
+    // 支持双链的文件里,插件编辑器 Ctrl+点击可直接打开
+    if (!isDir) {
+        menu.addItem({
+            icon: "iconLink",
+            label: "复制 wikilink",
+            click: () => {
+                // fromPath 用目标自身所在目录:短名判定只看索引,相对路径兜底落同目录
+                void buildWikilink(path, path).then(md => {
+                    if (!md) {
+                        showMessage("无法生成 wikilink", 3000, "error");
+                        return;
+                    }
+                    copyText(md).then(
+                        ok => ok
+                            ? showMessage("wikilink 已复制,粘贴到文件里 Ctrl+点击可打开", 2500, "info")
+                            : showMessage("复制失败", 2000, "error"),
+                    );
+                });
+            },
+        });
+    }
     // 文件:在父目录中打开终端(目录已在上方添加终端选项)
     if (!isDir) {
         menu.addItem({

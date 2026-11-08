@@ -10,6 +10,11 @@ export function isImportMdSourceAssetEnabled(): boolean {
     return configCache?.importMdSourceAsset === true;
 }
 
+// 双链扫描是否把所有文本文件当链接源(默认开;关=仅 Markdown,回退旧性能)
+export function isBacklinkScanAllTextEnabled(): boolean {
+    return configCache?.filesBacklinkScanAllText !== false;
+}
+
 // 加载配置(合并默认值)
 export async function loadConfig(plugin: Plugin): Promise<EditorConfig> {
     try {

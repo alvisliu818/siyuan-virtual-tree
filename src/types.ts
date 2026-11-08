@@ -79,6 +79,9 @@ export interface EditorConfig {
     //   plugin = 移入插件回收站(工作空间 .siyuan/virtual-tree-trash,按原路径镜像,可一键恢复,默认)
     //   system = 移入操作系统回收站
     deleteMode: "plugin" | "system";
+    // 双链扫描的链接源范围:开(默认)= 挂载根下所有文本文件(Markdown/代码等)都参与
+    // 反链扫描;关 = 仅 Markdown(回退旧性能,超大库可用)
+    filesBacklinkScanAllText: boolean;
     // 音视频播放器自定义快捷键(规范串见 utils/hotkey.ts;空 = 禁用)
     mediaHotkeyMark: string;   // 在当前时间打点
     mediaHotkeyInsert: string; // 时间戳链接插入可见笔记页签的光标处
@@ -292,6 +295,8 @@ export const DEFAULT_CONFIG: EditorConfig = {
     versionKeepCount: 10,
     // 删除默认走插件回收站(可一键恢复)
     deleteMode: "plugin",
+    // 双链扫描默认包含所有文本文件(关=仅 Markdown)
+    filesBacklinkScanAllText: true,
     // 音视频播放器快捷键默认值(K 打点;Shift+K 把时间戳链接插入可见笔记)
     mediaHotkeyMark: "K",
     mediaHotkeyInsert: "Shift+K",

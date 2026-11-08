@@ -8,6 +8,9 @@ import {EditorConfig, DirEntry} from "../types";
 import {createEditor, getLanguageByPath} from "../editor/monaco";
 import {readDir} from "../api/file";
 import {BINARY_EXTENSIONS, isImageFile, isOfficeFile, isMediaFile, isNotebookFile} from "../constants";
+// 双链:插入双链(文件选择器 → [[wikilink]])
+import {buildWikilink} from "../utils/wikilink";
+import {openFilePicker} from "../components/file-picker";
 import {openMediaTab} from "./media-tab";
 import {openImageTab} from "./image-tab";
 import {openOfficeTab} from "./office-tab";
@@ -359,7 +362,7 @@ export function createEditorTabConfig(plugin: IPluginForTab) {
                     const model = await getModel(path);
                     const editor = createEditor(container, model, path, plugin.config, async () => {
                         await (self as any).save();
-                    });
+                    }, plugin);
                     self._editor = editor;
                     // Python 文件登记到 LSP 桥接层。
                     // 为什么要登记而不是靠 monaco model 的 URI 反查:monaco 给的
@@ -412,6 +415,31 @@ export function createEditorTabConfig(plugin: IPluginForTab) {
                                     ok ? "行链接已复制,粘贴到思源文档点击可定位" : "复制失败",
                                     2500, ok ? "info" : "error",
                                 ));
+                            },
+                        }).dispose);
+                        // 插入双链:文件选择器选中后在光标处写入 [[文件名]](歧义时相对路径)
+                        self._disposables!.push(editor.addAction({
+                            id: "syfe.insertLink",
+                            label: "插入双链…",
+                            contextMenuGroupId: "navigation",
+                            contextMenuOrder: 8,
+                            run: (ed: any) => {
+                                openFilePicker({
+                                    rootPath: (plugin as any).getFileTreeRoot?.() ?? (plugin.config?.fileTreeRoot || "/data"),
+                                    title: "插入双链",
+                                    onPick: (p: string) => {
+                                        void buildWikilink(p, path).then(text => {
+                                            const sel = ed?.getSelection?.();
+                                            if (!text || !ed || !sel) return;
+                                            ed.executeEdits("syfe-insert-link", [{
+                                                range: sel,
+                                                text,
+                                                forceMoveMarkers: true,
+                                            }]);
+                                            ed.focus();
+                                        });
+                                    },
+                                });
                             },
                         }).dispose);
                     } catch {

@@ -857,6 +857,16 @@ export const PLUGIN_DEFS: SettingDef[] = [
         set: (c, v) => { c.deleteMode = v === "system" ? "system" : "plugin"; },
     },
     {
+        key: "files.backlinkScanAllText",
+        kind: "boolean",
+        group: G_FILES,
+        title: "双链:扫描所有文本文件",
+        description: "反向链接扫描把挂载根下所有文本文件(代码/配置等)里的文件路径与 [[链接]] 都算作引用;关闭后仅扫描 Markdown 文件(超大库可关以提升扫描速度)",
+        default: true,
+        get: (c) => c.filesBacklinkScanAllText,
+        set: (c, v) => { c.filesBacklinkScanAllText = v !== false; },
+    },
+    {
         key: "files.closeUnsavedAction",
         kind: "enum",
         group: G_FILES,

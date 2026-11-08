@@ -4,7 +4,8 @@
 //  - **粗体** / *斜体* / ~~删除线~~ / ==高亮== / `行内码` 的标记符号在光标
 //    离开时隐藏,光标/选区触到节点即还原源码(Obsidian 同款编辑模型)
 //  - 标题行首 `# ` 隐藏、引用块 `>` 隐藏 + 左侧竖条、任务清单真实复选框、
-//    分隔线渲染成横线、链接只显示文字(Ctrl/Cmd+点击打开)
+//    分隔线渲染成横线、链接只显示文字(Ctrl/Cmd+点击打开)、wikilink [[..]]
+//    收起为链接名/别名(光标进入还原源码,Ctrl/Cmd+点击打开)
 //  - Ctrl+B/I/E、Ctrl+Shift+X/H、Ctrl+K 快捷切换格式,Enter 延续列表/引用
 //
 // 实现移植自两个 MIT 开源库的算法(按本插件约定重写,零运行时依赖):
@@ -29,6 +30,7 @@ import {
 import {indentUnit, syntaxTree} from "@codemirror/language";
 import {markdownLanguage} from "@codemirror/lang-markdown";
 import type {SyntaxNode, SyntaxNodeRef} from "@lezer/common";
+import {findLinkInLine} from "../utils/wikilink";
 
 export interface Cm6InlineOptions {
     /** Ctrl/Cmd+点击链接时打开;不传则 window.open(宿主可接 shell.openExternal) */
@@ -383,6 +385,10 @@ const mdQuoteLineDeco = Decoration.line({class: "syfe-cm-md-quote-line"});
 const mdBulletMarkDeco = Decoration.mark({class: "syfe-cm-md-listmark-bullet"});
 const mdOrderedMarkDeco = Decoration.mark({class: "syfe-cm-md-listmark-ordered"});
 
+// wikilink:[[路径#锚点|别名]] / ![[嵌入]](lezer 不解析,装饰与点击都按行正则)
+// m[1]=! m[2]=路径 m[3]=别名
+const WIKI_LINE_RE = /(!?)\[\[([^\]|]+)(?:\|([^\]]*))?\]\]/g;
+
 // Callout:> [!type] 标题 —— 两库都没有,按 Obsidian 语义自研(类型映射见 CSS)
 const RE_CALLOUT = /\[!(\w+)\]([+-]?)/;
 
@@ -411,6 +417,8 @@ function buildInlineDecorations(state: EditorState, opts: Cm6InlineOptions): Inl
     const deco: Range<Decoration>[] = [];
     const atomic: Range<Decoration>[] = [];
     const seen = new Set<string>();
+    // 行内码区间(wikilink 装饰跳过,避免在代码底色里叠链接样式)
+    const inlineCodeRanges: BaseRange[] = [];
     const push = (d: Range<Decoration>, isAtomic: boolean) => {
         const key = `${d.from}:${d.to}:${d.value.spec.class ?? "widget"}`;
         if (seen.has(key)) return;
@@ -439,6 +447,34 @@ function buildInlineDecorations(state: EditorState, opts: Cm6InlineOptions): Inl
     }
     const inFrontmatter = (from: number): boolean => frontmatterTo > 0 && from < frontmatterTo;
 
+    // 先收集 wikilink 区间([[..]]):语法树不认这个语法,按行正则扫。
+    // 用途有三:① Obsidian 同款「收起」——光标不在时隐藏 [[ ]] 语法、只显示
+    // 链接名/别名;② 语法树遍历时跳过 wikilink 内部的节点 —— lezer 会把
+    // [[readme]] 的内层 [readme] 解析成「引用式链接」,若按 Link 处理会再叠
+    // 一层 mark 并隐藏内层括号,与外层装饰打架(实测收尾 ] 露出无色底);
+    // ③ 点击跳转按坐标检测(见 linkClickHandler)。
+    interface WikiHit extends BaseRange { target: string; alias?: string }
+    const wikiHits: WikiHit[] = [];
+    for (let ln = 1; ln <= doc.lines; ln++) {
+        const line = doc.line(ln);
+        const text = line.text;
+        WIKI_LINE_RE.lastIndex = 0;
+        let m: RegExpExecArray | null;
+        while ((m = WIKI_LINE_RE.exec(text)) !== null) {
+            if (m[0].length === 0) {
+                WIKI_LINE_RE.lastIndex++;
+                continue;
+            }
+            const from = line.from + m.index;
+            const to = from + m[0].length;
+            if (isInsideFencedCode(state, from)) continue;
+            wikiHits.push({from, to, target: m[2], alias: m[3]});
+        }
+    }
+    const wikiRanges: BaseRange[] = wikiHits;
+    const inWikiRange = (from: number, to: number): boolean =>
+        wikiRanges.some(r => from >= r.from && to <= r.to);
+
     syntaxTree(state).iterate({
         enter(node) {
             const name = node.name;
@@ -458,6 +494,7 @@ function buildInlineDecorations(state: EditorState, opts: Cm6InlineOptions): Inl
             // --- 行内码:底色样式 + 隐藏反引号(围栏代码块内不处理) ---
             if (name === "InlineCode") {
                 if (isInsideFencedCode(state, node.from)) return;
+                inlineCodeRanges.push({from: node.from, to: node.to});
                 if (!selectionTouches(state, node.from, node.to)) {
                     iterSubNodes(node.node, "CodeMark", (m) => hideRange(m.from, m.to));
                 }
@@ -497,6 +534,9 @@ function buildInlineDecorations(state: EditorState, opts: Cm6InlineOptions): Inl
             // ProseMark 的修正:URL 只在 "]" 之后隐藏,否则
             // [http://…](http://…) 这类纯地址链接会被整个吞掉
             if (name === "Link") {
+                // wikilink 内层被 lezer 误认的「引用式链接」([[readme]] 的 [readme]):
+                // 整段让位给 wikilink 的统一装饰,不再叠加 mark/隐藏
+                if (inWikiRange(node.from, node.to)) return;
                 const reveal = selectionTouches(state, node.from, node.to);
                 let pastLabel = false;
                 for (let child = node.node.firstChild; child; child = child.nextSibling) {
@@ -621,6 +661,31 @@ function buildInlineDecorations(state: EditorState, opts: Cm6InlineOptions): Inl
         },
     });
 
+    // --- wikilink 收起(Obsidian 同款):光标不在区间内时,隐藏 ![[ 与 ]] 语法,
+    // 显示别名(有 |别名)或路径本身,显示文本加链接样式;光标/选区触到即整段
+    // 还原源码(与 md 链接同模型)。等 inlineCodeRanges 集齐后再落装饰。
+    for (const w of wikiHits) {
+        if (inlineCodeRanges.some(c => w.from < c.to && c.from < w.to)) continue;
+        if (selectionTouches(state, w.from, w.to)) continue;
+        const text = doc.sliceString(w.from, w.to);
+        const openLen = text.indexOf("[[") + 2; // 可选 ! + [[
+        if (openLen < 2) continue;
+        const closeFrom = w.to - 2;
+        // 别名:显示 | 后的内容,藏 [[target|
+        const pipeIdx = text.lastIndexOf("|");
+        let labelFrom: number;
+        if (pipeIdx >= 0 && w.alias !== undefined && w.alias.length > 0) {
+            labelFrom = closeFrom - w.alias.length;
+            if (labelFrom <= w.from + openLen) continue; // 结构异常,保持源码
+            hideRange(w.from, labelFrom);
+        } else {
+            labelFrom = w.from + openLen;
+            hideRange(w.from, labelFrom);
+        }
+        hideRange(closeFrom, w.to);
+        if (closeFrom > labelFrom) push(mdLinkDeco.range(labelFrom, closeFrom), false);
+    }
+
     return {
         decorations: Decoration.set(deco, true),
         atomic: Decoration.set(atomic, true),
@@ -672,15 +737,30 @@ function linkClickHandler(opts: Cm6InlineOptions): Extension {
     return EditorView.domEventHandlers({
         mousedown(event, view) {
             if (!(event.ctrlKey || event.metaKey)) return false;
+            // 1) 语法树认得的链接/图片:取节点 URL(与装饰同款「] 之后的 URL」规则)
             const target = event.target as HTMLElement;
             const el = target.closest(".syfe-cm-md-link") as HTMLElement | null;
-            if (!el) return false;
-            const pos = view.posAtDOM(el);
-            const url = findLinkUrl(view.state, pos);
-            if (!url) return false;
+            if (el) {
+                const pos = view.posAtDOM(el);
+                const url = findLinkUrl(view.state, pos);
+                if (url) {
+                    event.preventDefault();
+                    if (opts.onOpenLink) opts.onOpenLink(url);
+                    else window.open(url, "_blank");
+                    return true;
+                }
+            }
+            // 2) 语法树不认的链接(wikilink [[...]] / HTML 属性等):按点击坐标
+            //    所在行列正则检测(与 Monaco 源码态同一套 findLinkInLine)
+            const coords = {x: event.clientX, y: event.clientY};
+            const pos = view.posAtCoords(coords);
+            if (pos == null) return false;
+            const line = view.state.doc.lineAt(pos);
+            const hit = findLinkInLine(line.text, pos - line.from);
+            if (!hit) return false;
             event.preventDefault();
-            if (opts.onOpenLink) opts.onOpenLink(url);
-            else window.open(url, "_blank");
+            if (opts.onOpenLink) opts.onOpenLink(hit.raw);
+            else window.open(hit.raw, "_blank");
             return true;
         },
     });

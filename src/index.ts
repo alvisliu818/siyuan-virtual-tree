@@ -8,6 +8,7 @@ import {
     TAG_DOCK_TYPE,
     MOUNT_TREE_DOCK_TYPE,
     TERMINAL_DOCK_TYPE,
+    BACKLINK_DOCK_TYPE,
 } from "./constants";
 import {EditorConfig, DEFAULT_CONFIG} from "./types";
 import {setupMonaco, applyTheme, getCurrentMode, disposeMonaco} from "./editor/monaco";
@@ -60,14 +61,17 @@ import {loadStartPage, itemFromPath, itemFromDoc, toggleInGroup} from "./start-p
 import {isVirtualPath, virtualId, initMountStore, getMountList, dropSyDocMounts} from "./utils/virtual-tree";
 import {initBaiduPanStore} from "./api/baidu-pan";
 import {openBaiduPanDialog} from "./components/baidu-pan-dialog";
-import {registerSlashCommands} from "./protyle/slash-commands";
+import {registerSlashCommands, emitBacklinkRefresh} from "./protyle/slash-commands";
+import {onDidSaveModel} from "./editor/model-manager";
+import {clearBacklinkCache} from "./utils/backlink";
 import {registerLinkReveal} from "./protyle/link-reveal";
 import {registerDocExternalFilesMenu} from "./protyle/doc-external-files";
 import {registerMountMenu} from "./protyle/mount-menu";
 import {registerCodeBlockRun, disposeCodeBlockRun} from "./protyle/code-block-run";
 import {loadCodeBlockRunData, flushCodeBlockRunData} from "./protyle/code-block-run-store";
-import {initMountTree, reloadMountTreeIfChanged, migrateSyDocMounts, SYFE_RELATION_TREE_CHANGED_EVENT} from "./mount-tree";
+import {initMountTree, reloadMountTreeIfChanged, migrateSyDocMounts, SYFE_RELATION_TREE_CHANGED_EVENT, getRoots} from "./mount-tree";
 import {createMountTreeDockConfig} from "./dock/mount-tree-dock";
+import {createBacklinkDockConfig} from "./dock/backlink-dock";
 import {createTerminalDockConfig} from "./dock/terminal-dock";
 import {openExtensionMarket} from "./extensions/market-ui";
 import {clearAllGrammars} from "./extensions/grammar-loader";
@@ -182,6 +186,8 @@ export default class FileEditorPlugin extends Plugin {
     private newTabShowFavoritesInput?: HTMLInputElement;
     // 导入 md 到思源时,是否在文档顶部插入源文件资源引述块
     private importMdSourceAssetInput?: HTMLInputElement;
+    // 双链扫描:所有文本文件作为链接源(关=仅 Markdown)
+    private backlinkScanAllTextInput?: HTMLInputElement;
     // 接管思源文档内文件打开:模式下拉 + 扩展名白名单
     private docOpenTakeoverSelect?: HTMLSelectElement;
     private docOpenTakeoverExtsInput?: HTMLInputElement;
@@ -240,7 +246,7 @@ export default class FileEditorPlugin extends Plugin {
     private pruneStalePluginDocks(): void {
         // 当前代码会注册的 dock type;文件 dock 即使默认不注册也保留(设置里可开)
         const registered = [
-            DOCK_TYPE, RECENT_DOCK_TYPE, TAG_DOCK_TYPE, MOUNT_TREE_DOCK_TYPE, TERMINAL_DOCK_TYPE, PLANNER_DOCK_TYPE,
+            DOCK_TYPE, RECENT_DOCK_TYPE, TAG_DOCK_TYPE, MOUNT_TREE_DOCK_TYPE, TERMINAL_DOCK_TYPE, PLANNER_DOCK_TYPE, BACKLINK_DOCK_TYPE,
         ];
         // 本插件用过的旧名字(改名前的命名空间,整个都该清);
         // siyuan-planner = 已并入的习惯与目标模块的独立插件期命名空间,它的 dock 记录一并清掉
@@ -399,9 +405,18 @@ export default class FileEditorPlugin extends Plugin {
         this.addDockOnce(createMountTreeDockConfig(this as any));
         // 侧边栏「终端」面板(复用终端 Tab 的 xterm 实现,常驻底部,与终端 Tab 互相独立)
         this.addDockOnce(createTerminalDockConfig(this as any));
+        // 侧边栏「双链」面板(入链/出链,跟随当前活动的文件页签)
+        this.addDockOnce(createBacklinkDockConfig(this as any));
 
         // 注册思源编辑器斜杆命令(输入 /file 或 /文件 插入文件链接)
         registerSlashCommands(this, () => this.getFileTreeRoot());
+
+        // 双链:文件保存后失效反链/出链缓存,并让目标文件已打开的双链面板立即重扫
+        // (onDidSaveModel 是统一保存出口:Ctrl+S / 关闭确认 / 命令面板都走这里)
+        onDidSaveModel((path) => {
+            clearBacklinkCache();
+            emitBacklinkRefresh(path);
+        });
 
         // 思源正文 file:// 链接右键菜单:追加「在文件夹树中定位」等
         registerLinkReveal(this);
@@ -629,6 +644,11 @@ export default class FileEditorPlugin extends Plugin {
         // 加载虚拟文档树的挂载节点(初始为空树;面板已注册,加载后自动重绘)
         try {
             await initMountTree(this);
+            // wikilink 索引读挂载根的 window 注册桥:webpack 分块可能把 mount-tree
+            // 模块求值两份,副本的 getRoots() 恒空(loaded=false),补全/索引会拿到
+            // 空根 —— 这里把「已加载那份」的读取函数挂到 window 上兜底
+            // (project_memory「webpack 分块双实例」同款修法,参 __syfeMonacoBlock)
+            (window as any).__syfeMountTreeGetRoots = getRoots;
         } catch (e) {
             console.error("[siyuan-file-editor] 加载虚拟文档树失败:", e);
         }
@@ -1113,6 +1133,12 @@ export default class FileEditorPlugin extends Plugin {
         this.importMdSourceAssetInput.className = "b3-switch";
         addRow("openFiles", "导入 Markdown:插入源文件资源引述块", "导入 .md 到思源后,把源文件上传为资源,并在文档顶部插入一个引述块链接到它(保留出处,便于回溯原文件);仅对单个 Markdown 文件生效,导入文件夹时不处理", this.importMdSourceAssetInput);
 
+        // 双链扫描:链接源范围(所有文本文件 / 仅 Markdown)
+        this.backlinkScanAllTextInput = document.createElement("input");
+        this.backlinkScanAllTextInput.type = "checkbox";
+        this.backlinkScanAllTextInput.className = "b3-switch";
+        addRow("openFiles", "双链:扫描所有文本文件", "反向链接扫描把挂载根下所有文本文件(代码/配置等)里的文件路径与 [[链接]] 都算作引用;关闭后仅扫描 Markdown 文件(超大库可关以提升扫描速度)", this.backlinkScanAllTextInput);
+
         // 右键「新建思源文档」:目标位置(笔记本 + 子路径)与文件同名默认
         this.newDocNotebookSelect = document.createElement("select");
         this.newDocNotebookSelect.className = "b3-select";
@@ -1574,6 +1600,7 @@ export default class FileEditorPlugin extends Plugin {
         if (this.closeUnsavedSelect) this.closeUnsavedSelect.value = this.config.closeUnsavedAction || "ask";
         if (this.takeoverSplitOpenInput) this.takeoverSplitOpenInput.checked = this.config.takeoverSplitOpen === true;
         if (this.treeBacklinkIconInput) this.treeBacklinkIconInput.checked = this.config.treeBacklinkIcon !== false;
+        if (this.backlinkScanAllTextInput) this.backlinkScanAllTextInput.checked = this.config.filesBacklinkScanAllText !== false;
         if (this.searchMaxSizeInput) {
             this.searchMaxSizeInput.value = String(Math.round(this.config.searchMaxFileSize / 1024));
         }
@@ -1681,6 +1708,7 @@ export default class FileEditorPlugin extends Plugin {
             globalReadingMode: this.globalReadingModeInput?.checked ?? true,
             versionKeepCount: Math.max(0, parseInt(this.versionKeepCountInput?.value || "10", 10) || 0),
             deleteMode: ((this.deleteModeSelect?.value || "plugin") as "plugin" | "system"),
+            filesBacklinkScanAllText: this.backlinkScanAllTextInput?.checked ?? true,
             mediaHotkeyMark: normalizeHotkeyText(this.mediaHotkeyMarkInput?.value ?? ""),
             mediaHotkeyInsert: normalizeHotkeyText(this.mediaHotkeyInsertInput?.value ?? ""),
             newTabReplacePlus: this.newTabReplacePlusInput?.checked ?? true,
@@ -1738,6 +1766,8 @@ export default class FileEditorPlugin extends Plugin {
         setVersionKeepCount(this.config.versionKeepCount ?? 10);
         // 删除方式跟随设置生效
         setTrashMode(this.config.deleteMode || "plugin");
+        // 双链:设置保存后全量失效反链/出链缓存(含文件名索引,扫描范围可能已变)
+        clearBacklinkCache(true);
         // 关闭未保存行为跟随设置生效
         setCloseUnsavedAction(this.config.closeUnsavedAction);
         // 文档面包屑细分设置:收集控件值(开关=布尔,数字=夹紧范围,下拉=字符串)写模块设置文件

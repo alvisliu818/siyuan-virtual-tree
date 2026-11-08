@@ -1338,6 +1338,88 @@ button.syfe-editor__arrow--exp:hover {
     white-space: nowrap;
 }
 
+// 双链面板的 入链/出链 小 tab(收起时一并隐藏)
+.syfe-backlink__tabs {
+    display: flex;
+    gap: 2px;
+    padding: 2px 12px;
+    border-top: 1px dashed var(--b3-border-color);
+}
+
+.syfe-backlink--collapsed .syfe-backlink__tabs {
+    display: none;
+}
+
+.syfe-backlink__tab {
+    padding: 1px 8px;
+    font-size: 11px;
+    border-radius: 3px;
+    color: var(--b3-theme-on-surface-light);
+    cursor: pointer;
+    user-select: none;
+}
+
+.syfe-backlink__tab:hover {
+    background: var(--b3-list-hover);
+    color: var(--b3-theme-on-surface);
+}
+
+.syfe-backlink__tab.is-active {
+    background: var(--b3-theme-primary-lightest);
+    color: var(--b3-theme-primary);
+}
+
+// 未解析的出链(短名不存在或有歧义):灰显 + 不可点
+.syfe-backlink__item--unresolved,
+.syfe-bldlg__item--unresolved {
+    cursor: default;
+    opacity: 0.55;
+}
+
+.syfe-backlink__item--unresolved:hover,
+.syfe-bldlg__item--unresolved:hover {
+    background: transparent;
+}
+
+// Vditor 阅读态渲染的 wikilink(渲染后处理注入的可点击链接)
+.syfe-vd-wikilink {
+    color: var(--b3-theme-primary);
+    cursor: pointer;
+
+    &:hover {
+        text-decoration: underline;
+    }
+}
+
+// 侧边 dock 的双链面板:撑满高度,复用页签内嵌面板组件
+.syfe-bldock {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 0;
+
+    .syfe-backlink {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+        border-bottom: none;
+    }
+
+    .syfe-backlink__tabs {
+        border-top: 1px dashed var(--b3-border-color);
+    }
+
+    // 条目保持纵向块级堆叠(body 不可设 flex,否则条目横排)
+    .syfe-backlink__body {
+        flex: 1;
+        min-height: 0;
+        max-height: none;
+        overflow: auto;
+        display: block;
+    }
+}
+
 /* === 反向链接弹窗(虚拟文档树行末「查看引用」图标)=== */
 .syfe-bldlg {
     display: flex;
@@ -1361,6 +1443,32 @@ button.syfe-editor__arrow--exp:hover {
     font-family: var(--b3-font-family-code);
     font-size: 11px;
     color: var(--b3-theme-on-surface-light);
+}
+
+// 弹窗的 入链/出链 小 tab(bar 右侧、刷新按钮左边)
+.syfe-bldlg__tabs {
+    display: flex;
+    gap: 2px;
+    flex-shrink: 0;
+}
+
+.syfe-bldlg__tab {
+    padding: 1px 8px;
+    font-size: 12px;
+    border-radius: 3px;
+    color: var(--b3-theme-on-surface-light);
+    cursor: pointer;
+    user-select: none;
+}
+
+.syfe-bldlg__tab:hover {
+    background: var(--b3-list-hover);
+    color: var(--b3-theme-on-surface);
+}
+
+.syfe-bldlg__tab.is-active {
+    background: var(--b3-theme-primary-lightest);
+    color: var(--b3-theme-primary);
 }
 
 .syfe-bldlg__body {

@@ -7,6 +7,9 @@ import {setGlobalCodeTheme} from "./monaco-block";
 import {buildEditorOptions} from "../settings/user-settings";
 // 带行号的文件链接(Markdown 源码态与代码文件的「复制当前行链接」共用)
 import {buildFileRefMd} from "../utils/file-ref";
+// 双链:行内链接检测(Ctrl+click)与 [[ 补全数据源
+import {findLinkInLine, openLinkFromEditor, getLinkIndex} from "../utils/wikilink";
+import {searchBlocksForRef} from "../utils/backlink";
 
 let initialized = false;
 
@@ -162,12 +165,14 @@ export function applyTheme(mode: 0 | 1): void {
 // 创建编辑器实例
 // 注:config 保留在签名里(调用方统一传 plugin.config),但编辑器选项已全部改由
 // 设置注册表提供 —— 见下方 buildEditorOptions。
+// plugin(可选):双链 Ctrl+click 打开链接用;不传时点击链接退化为系统打开
 export function createEditor(
     container: HTMLElement,
     model: monaco.editor.ITextModel,
     path: string,
     config: EditorConfig,
     onSave: () => void,
+    plugin?: {app: any; name: string},
 ): monaco.editor.IStandaloneCodeEditor {
     // 编辑器选项全部来自设置注册表(settings.json 的 editor.* 键,缺省用注册表默认值),
     // 不再在这里写死 —— 否则"设置里加了项但新开的编辑器没反应",是最难排查的一类问题
@@ -333,12 +338,110 @@ export function createEditor(
         }, true);
     }
 
+    // ===== Ctrl/Cmd+点击链接:解析并打开(双链)=====
+    // Markdown 源码态与代码文件共用 createEditor,一次注册两边生效。
+    // 检测用 findLinkInLine(与 CM6 live 同一套):md 链接 / [[wikilink]] / src-href。
+    // 未命中链接时不拦默认行为(Python 等语言的 Ctrl+click 仍走「转到定义」)。
+    if (plugin) {
+        editor.onMouseDown((e) => {
+            const ev = e.event as any;
+            if (!(ev.ctrlKey || ev.metaKey) || ev.rightButton || ev.middleButton) return;
+            const pos = e.target.position;
+            if (!pos) return; // 行号槽等非正文区域不处理
+            const lineText = model.getLineContent(pos.lineNumber);
+            const hit = findLinkInLine(lineText, pos.column - 1);
+            if (!hit) return;
+            e.event.preventDefault();
+            void openLinkFromEditor(plugin, path, hit.raw);
+        });
+    }
+
     // 编辑器销毁时移除监听器,避免内存泄漏
     editor.onDidDispose(() => {
         window.removeEventListener('keydown', keydownHandler, true);
     });
 
+    // [[ 双链补全:Monaco provider 是全局单例注册,所有编辑器实例共享(只注册一次)。
+    // plaintext 一并注册:txt 等不在 LANG_MAP 里的文本文件也能补全。
+    registerWikilinkCompletionOnce();
+
     return editor;
+}
+
+// [[ 补全 provider 的全局注册标记(模块级;Monaco 语言服务全局共享)
+let wikilinkCompletionRegistered = false;
+// 空查询/未过滤时的候选上限(超大库不把下拉撑爆)
+const WIKILINK_COMPLETE_LIMIT = 64;
+
+function registerWikilinkCompletionOnce(): void {
+    if (wikilinkCompletionRegistered) return;
+    wikilinkCompletionRegistered = true;
+    const langs = Array.from(new Set(Object.values(LANG_MAP)));
+    langs.push("plaintext");
+    monaco.languages.registerCompletionItemProvider(langs, {
+        triggerCharacters: ["[", "("],
+        async provideCompletionItems(model, position) {
+            const lineText = model.getLineContent(position.lineNumber);
+            const before = lineText.slice(0, position.column - 1);
+            const range = (qlen: number) => new monaco.Range(
+                position.lineNumber,
+                position.column - qlen,
+                position.lineNumber,
+                position.column,
+            );
+            // (( 思源块引用补全:仅 markdown(代码文件里的 (( 是括号,不触发)。
+            // range 覆盖 ((query 整段,insertText 为完整引用链接 —— 选中后触发符整体替换
+            const bm = /\(\(([^()]*)$/.exec(before);
+            if (bm && model.getLanguageId() === "markdown") {
+                const query = bm[1].trim();
+                const briefs = await searchBlocksForRef(query);
+                const suggestions: monaco.languages.CompletionItem[] = [];
+                for (const b of briefs) {
+                    const label = b.title.replace(/[\[\]()]/g, " ").replace(/\s+/g, " ").trim().slice(0, 48) || b.id;
+                    suggestions.push({
+                        label,
+                        detail: b.hpath || "思源块",
+                        kind: monaco.languages.CompletionItemKind.Reference,
+                        insertText: `[${label}](siyuan://blocks/${b.id})`,
+                        range: range(bm[0].length),
+                    });
+                }
+                return {suggestions};
+            }
+            const m = /\[\[([^\[\]]*)$/.exec(before);
+            if (!m) return {suggestions: []};
+            const query = m[1].trim().toLowerCase();
+            const index = await getLinkIndex();
+            // 光标后若已是 "]]"(Monaco 自动闭合括号产生),插入时不补 "]]",避免叠成 ]]]]
+            const after = lineText.slice(position.column - 1);
+            const suffix = after.startsWith("]]") ? "" : "]]";
+            const suggestions: monaco.languages.CompletionItem[] = [];
+            const seen = new Set<string>();
+            const collect = (map: Map<string, string[]>) => {
+                for (const [key, paths] of map) {
+                    if (query && !key.includes(query)) continue;
+                    for (const p of paths) {
+                        if (suggestions.length >= WIKILINK_COMPLETE_LIMIT) return;
+                        if (seen.has(p)) continue;
+                        seen.add(p);
+                        const name = p.split("/").pop() || key;
+                        suggestions.push({
+                            label: name,
+                            detail: p.slice(0, p.lastIndexOf("/")),
+                            kind: monaco.languages.CompletionItemKind.File,
+                            insertText: `${name}${suffix}`,
+                            range: range(m[1].length),
+                            sortText: key === query ? "0000" : undefined,
+                        });
+                    }
+                    if (suggestions.length >= WIKILINK_COMPLETE_LIMIT) return;
+                }
+            };
+            collect(index.byName);
+            if (suggestions.length < WIKILINK_COMPLETE_LIMIT) collect(index.byStem);
+            return {suggestions};
+        },
+    });
 }
 
 // 本模块专用的剪贴板写入(带 execCommand 降级)。

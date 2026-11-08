@@ -32,7 +32,7 @@ import {openTrashDialog} from "../components/trash-dialog";
 // 顶栏横向滚动(悬停滚轮转横向),复用面包屑同款
 import {enableCrumbScroll} from "../components/path-crumbs";
 import {showBacklinkDialog} from "../components/backlink-dialog";
-import {BacklinkItem, findBacklinks, findDirBacklinks, findSiyuanRefBacklinks} from "../utils/backlink";
+import {BacklinkItem, findBacklinks, findDirBacklinks, findSiyuanRefBacklinks, findOutlinks, findFileBlockRefs} from "../utils/backlink";
 import {showDocMenu, showNotebookMenu, addPinFavEntries, DocMenuItem} from "../components/doc-menu";
 import {openSiyuanTagDialog} from "../components/siyuan-tag-dialog";
 import {openFileTab, syncOpenEditors} from "../tabs/editor-tab";
@@ -1828,12 +1828,13 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 render();
             };
 
-            // 行末「查看引用」链接图标:按行类型构造数据加载,弹出反链对话框
+            // 行末「查看引用」链接图标:按行类型构造数据加载,弹出双链对话框
             const openBacklinkDialogForRow = (row: Row): void => {
                 if (row.kind === "loading" || row.kind === "empty") return;
                 let title = "";
                 let subtitle = "";
                 let load: () => Promise<BacklinkItem[]>;
+                let loadOut: (() => Promise<BacklinkItem[]>) | undefined;
                 if (row.kind === "mount") {
                     const it = row.item;
                     title = it.name || (it.path ? basename(it.path) : it.targetId || "");
@@ -1842,6 +1843,8 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                         load = it.isDir
                             ? () => findDirBacklinks(it.path!)
                             : () => findBacklinks(it.path!);
+                        // 真实文件才查出链(出链 = 该文件内容里的链接指向)
+                        if (!it.isDir) loadOut = () => findOutlinks(it.path!);
                     } else if (it.kind === "notebook" && it.targetId) {
                         subtitle = `笔记本 ${it.targetId}`;
                         load = () => findSiyuanRefBacklinks(it.targetId!, it.targetId);
@@ -1855,19 +1858,36 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                     load = row.isDir
                         ? () => findDirBacklinks(row.path)
                         : () => findBacklinks(row.path);
+                    if (!row.isDir) loadOut = () => findOutlinks(row.path);
                 } else if (row.kind === "doc" || row.kind === "auto") {
                     title = row.name;
                     subtitle = `思源文档 ${row.docId}`;
-                    load = () => findSiyuanRefBacklinks(row.docId);
+                    // 思源原生反链 + 文件里的外部引用(siyuan://blocks)合并展示
+                    const docId = row.docId;
+                    load = async () => {
+                        const [native, fromFiles] = await Promise.all([
+                            findSiyuanRefBacklinks(docId),
+                            findFileBlockRefs(docId, true),
+                        ]);
+                        return [...native, ...fromFiles];
+                    };
                 } else {
                     title = row.name;
                     subtitle = `思源块 ${row.blockId}`;
-                    load = () => findSiyuanRefBacklinks(row.blockId);
+                    const blockId = row.blockId;
+                    load = async () => {
+                        const [native, fromFiles] = await Promise.all([
+                            findSiyuanRefBacklinks(blockId),
+                            findFileBlockRefs(blockId, false),
+                        ]);
+                        return [...native, ...fromFiles];
+                    };
                 }
                 showBacklinkDialog(plugin as any, {
                     title: `引用 — ${title}`,
                     subtitle,
                     load,
+                    loadOut,
                 });
             };
 

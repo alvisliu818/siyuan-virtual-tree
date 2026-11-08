@@ -20,6 +20,9 @@ import {buildFileRefMd, slugifyHeading, headingLineOfAnchor, consumePendingRef, 
 import {installMdLineGutter, mdBlockStarts, type MdLineGutterHandle} from "../editor/md-line-gutter";
 // 反链:面板展示 + 行号槽标记共用同一份扫描结果(带缓存)
 import {BacklinkItem, findBacklinksCached} from "../utils/backlink";
+// 双链:链接点击打开 + 插入双链(文件选择器 → [[wikilink]])+ 行内检测(ir 渲染态点击)
+import {openLinkFromEditor, buildWikilink, findLinkInLine} from "../utils/wikilink";
+import {openFilePicker} from "../components/file-picker";
 import {openFileTab} from "./editor-tab";
 import {wantsSplitOpen, pickTabOutsideActiveWnd} from "./split-open";
 import {showVersionHistory} from "../version-control/version-ui";
@@ -71,6 +74,8 @@ export interface MarkdownTabInstance {
     _keydownHandler?: (e: KeyboardEvent) => void;
     _backlink?: BacklinkPanel;
     _backlinkRefreshHandler?: (e: Event) => void;
+    // 渲染态(Vditor)链接点击委托(双链;destroyVditor 时摘除)
+    _vditorLinkClick?: (e: MouseEvent) => void;
     // ===== 文档内查找(渲染态)状态 =====
     _findHits?: HTMLElement[];   // 当前所有命中元素(按文档顺序)
     _findIndex?: number;         // 当前项下标,-1 = 无命中
@@ -162,6 +167,116 @@ function resolveAssetSrc(mdPath: string, src: string): string | null {
 function processImages(tab: MarkdownTabInstance): void {
     processMdImages(tab);
     processHtmlInlineImages(tab);
+}
+
+// 阅读态 wikilink 渲染:把 .vditor-reset 文本里的 [[目标#锚点|别名]] 替换成可点击链接。
+// 仅阅读态做(静态 DOM):ir 编辑态的渲染节点会被 Vditor 序列化回源码,DOM 注入有损 ——
+// 编辑态的 [[ 展示由 CM6 收起装饰负责;ir(Vditor live)渲染态不动 DOM,点击走坐标检测。
+// 代码块/行内码/标记符/已处理节点跳过。
+const WIKI_TEXT_TEST_RE = /\[\[/;
+const WIKI_TEXT_RE = /(!?)\[\[([^\]|]+)(?:\|([^\]]*))?\]\]/g;
+
+function processWikilinks(tab: MarkdownTabInstance): void {
+    const contentEl = tab._contentEl;
+    if (!contentEl || tab._mode !== "reading") return;
+    const walker = document.createTreeWalker(contentEl, NodeFilter.SHOW_TEXT, {
+        acceptNode(node: Text): number {
+            const parent = node.parentElement;
+            if (!parent) return NodeFilter.FILTER_REJECT;
+            if (parent.closest("pre, code, .hljs, [data-syfe-wikilink], .vditor-ir__marker, .vditor-sv")) {
+                return NodeFilter.FILTER_REJECT;
+            }
+            return WIKI_TEXT_TEST_RE.test(node.nodeValue || "") ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+        },
+    });
+    const targets: Text[] = [];
+    let cur: Node | null;
+    while ((cur = walker.nextNode())) targets.push(cur as Text);
+    for (const textNode of targets) {
+        const text = textNode.nodeValue || "";
+        const frag = document.createDocumentFragment();
+        let last = 0;
+        let replaced = false;
+        let m: RegExpExecArray | null;
+        WIKI_TEXT_RE.lastIndex = 0;
+        while ((m = WIKI_TEXT_RE.exec(text)) !== null) {
+            replaced = true;
+            if (m.index > last) frag.appendChild(document.createTextNode(text.slice(last, m.index)));
+            const label = (m[3] !== undefined && m[3] !== "" ? m[3] : m[2]).trim();
+            const span = document.createElement("span");
+            span.className = "syfe-vd-wikilink";
+            // 原始目标(可含 #锚点)存 data,点击时经 openLinkFromEditor 解析(短名/路径/思源块)
+            span.dataset.syfeWikilink = m[2].trim();
+            span.textContent = label;
+            frag.appendChild(span);
+            last = m.index + m[0].length;
+        }
+        if (!replaced) continue;
+        if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
+        textNode.parentNode?.replaceChild(frag, textNode);
+    }
+}
+
+// 链接点击委托:挂在渲染容器上,四种命中依次处理 —
+//   1) 阅读态注入的 .syfe-vd-wikilink:普通点击打开(Obsidian 阅读态同款)
+//   2) ir 编辑态渲染行里的 [[..]]/md 链接:Ctrl/Cmd+点击,坐标反查(不动 DOM,序列化安全)
+//   3) a[href] 本地文件/思源块链接:接管打开
+// enterVditor(live/reading)与 enterCm6Reading 两条渲染路径都要挂(CM6 阅读态不走 enterVditor)。
+function attachLinkClickDelegate(tab: MarkdownTabInstance, plugin: IPluginForMarkdownTab, path: string): void {
+    const linkHost = tab._contentEl;
+    if (!linkHost) return;
+    const linkClick = (e: MouseEvent) => {
+        // 阅读态注入的 wikilink:普通点击即打开
+        const wiki = (e.target as HTMLElement).closest("[data-syfe-wikilink]") as HTMLElement | null;
+        if (wiki && linkHost.contains(wiki)) {
+            e.preventDefault();
+            e.stopPropagation();
+            void openLinkFromEditor(plugin as any, path, wiki.dataset.syfeWikilink || "");
+            return;
+        }
+        // ir 编辑态渲染行里的 [[..]]:Ctrl/Cmd+点击,按坐标反查(不动 DOM,序列化安全)
+        if ((e.ctrlKey || e.metaKey) && tab._mode === "live") {
+            const hit = wikilinkAtPoint(e);
+            if (hit) {
+                e.preventDefault();
+                e.stopPropagation();
+                void openLinkFromEditor(plugin as any, path, hit);
+                return;
+            }
+        }
+        const a = (e.target as HTMLElement).closest("a[href]") as HTMLAnchorElement | null;
+        if (!a || !linkHost.contains(a)) return;
+        const href = a.getAttribute("href") || "";
+        if (!href || /^(https?:|mailto:|javascript:)/i.test(href) || href.startsWith("#")) return;
+        e.preventDefault();
+        e.stopPropagation();
+        void openLinkFromEditor(plugin as any, path, href);
+    };
+    linkHost.addEventListener("click", linkClick);
+    tab._vditorLinkClick = linkClick;
+}
+
+// ir(Vditor live)渲染态:点击坐标 → 所在 [data-block] 行文本 → 行内链接检测。
+// 只认 [[wikilink]] 与 md 链接/思源块链接(与 Monaco/CM6 源码态同一套 findLinkInLine)。
+function wikilinkAtPoint(e: MouseEvent): string | null {
+    const docAny = document as Document & {caretRangeFromPoint?: (x: number, y: number) => Range | null};
+    const range = docAny.caretRangeFromPoint?.(e.clientX, e.clientY);
+    if (!range || !range.startContainer || range.startContainer.nodeType !== Node.TEXT_NODE) return null;
+    const textNode = range.startContainer as Text;
+    const host = textNode.parentElement?.closest("[data-block]") as HTMLElement | null;
+    const lineText = (host ? host.textContent : textNode.nodeValue) || "";
+    // 光标文本节点在行内的起点(行内可能被 Vditor 拆成多个 span)
+    let start = 0;
+    if (host && textNode.parentElement) {
+        const w = document.createTreeWalker(host, NodeFilter.SHOW_TEXT);
+        let n: Node | null;
+        while ((n = w.nextNode())) {
+            if (n === textNode) break;
+            start += (n.nodeValue || "").length;
+        }
+    }
+    const hit = findLinkInLine(lineText, start + range.startOffset);
+    return hit?.raw || null;
 }
 
 // 把跨行的 <img ...> 标签压成单行。
@@ -650,7 +765,7 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                 <div class="syfe-md">
                     <div class="syfe-md__bar">
                         <span class="syfe-md__dirty" style="display:none;">●</span>
-                        <span class="syfe-md__path syfe-md__crumbs syfe-crumbs-scroll">${renderPathSegments(path)}</span>
+                        <span class="syfe-md__path syfe-md__crumbs syfe-crumbs-scroll" data-path="${escapeHTML(path)}">${renderPathSegments(path)}</span>
                         <span class="fn__flex-1"></span>
                         <button class="b3-button b3-button--small b3-button--outline syfe-md__findbtn" title="在文档内查找(Ctrl+F)">
                             <svg class="syfe-md__findicon"><use xlink:href="#iconSearch"></use></svg>
@@ -826,7 +941,10 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
             this._imgObserver = new MutationObserver(() => {
                 // 防抖:用户粘贴大块内容时 Vditor 分块渲染,等 DOM 稳定后再处理
                 if (self._imgDebounce) window.clearTimeout(self._imgDebounce);
-                self._imgDebounce = window.setTimeout(() => processImages(self), 150);
+                self._imgDebounce = window.setTimeout(() => {
+                    processImages(self);
+                    processWikilinks(self);
+                }, 150);
             });
 
             const updateDirtyUI = (dirty: boolean) => {
@@ -1060,7 +1178,7 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                 // 这里不再 setValue —— 重复写会把光标/滚动状态打回文档头
                 self._mode = "source";
                 syncModeButtons();
-                const editor = createEditor(self._contentEl!, self._model!, path, plugin.config, save);
+                const editor = createEditor(self._contentEl!, self._model!, path, plugin.config, save, plugin);
                 self._editor = editor;
                 editor.onDidChangeModelContent(() => {
                     markDirty(path, true);
@@ -1170,6 +1288,7 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                             }
                         }
                         processImages(self);
+                        processWikilinks(self);
                         // 初始渲染完成,启动观察器捕获后续编辑插入的图片(阅读模式无编辑)
                         if (self._contentEl && !readOnly) {
                             self._imgObserver?.observe(self._contentEl, {childList: true, subtree: true});
@@ -1187,6 +1306,11 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                     },
                 });
                 self._vditor = vditor;
+                // 双链:渲染态链接点击接管。本地文件链接(相对路径/file://)与
+                // [[wikilink]] 渲染产物走插件页签打开并定位;http(s)/文档内锚点交给
+                // vditor/浏览器默认行为。live(ir)模式光标行是源码、其余行渲染,同样命中。
+                // 链接点击委托(阅读态注入 wikilink / ir 坐标检测 / a[href] 接管)
+                attachLinkClickDelegate(self, plugin, path);
                 // 构造后立即尝试 patch(lute 可能已就绪;未就绪由 after 回调兜底)
                 patchLuteDOM2Md(self, vditor);
                 // 兜底扫描(after 可能早于图片 DOM 插入;观察器此时未启动需手动扫一次)
@@ -1232,6 +1356,23 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                         buildFileRefMd({path, line, label: `${basename(path)}:${line}`}),
                         "行链接已复制,粘贴到思源文档点击可定位",
                     ),
+                    // Ctrl/Cmd+点击链接打开:文件链接/wikilink 走插件页签(http 交给系统)
+                    onOpenLink: (url: string) => {
+                        void openLinkFromEditor(plugin as any, path, url);
+                    },
+                    // Ctrl/Cmd+Shift+L:弹文件选择器插入双链([[名]] 或相对路径链接)
+                    onInsertLink: () => {
+                        openFilePicker({
+                            rootPath: (plugin as any).getFileTreeRoot?.() ?? (plugin.config?.fileTreeRoot || "/data"),
+                            title: "插入双链",
+                            allowDir: false,
+                            onPick: (p: string) => {
+                                void buildWikilink(p, path).then(text => {
+                                    if (text) self._cm6?.insertAtCursor(text);
+                                });
+                            },
+                        });
+                    },
                     placeholder: "输入 Markdown 内容...",
                 });
                 self._cm6 = cm;
@@ -1311,9 +1452,11 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                 // preview 是异步管线(lute 渲染 + hljs/math 懒加载),给一拍再装槽位/定位
                 setTimeout(() => {
                     processImages(self);
+                    processWikilinks(self);
                     self._hcrumbsHandle?.refresh();
                     installGutter();
                     applyBacklinkMarkers(self, path);
+                    attachLinkClickDelegate(self, plugin, path);
                     const ref = consumePendingRef(path);
                     if (ref) applyFileRef(self, ref);
                 }, 300);
@@ -1496,7 +1639,10 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                     updateDirtyUI(true);
                     self._hcrumbsHandle?.refresh();
                 },
-                refreshImages: () => processImages(self),
+                refreshImages: () => {
+                    processImages(self);
+                    processWikilinks(self);
+                },
                 // 渲染用的 img.src 可能是 blob URL,反查回 md 里写的原始路径
                 rawSrcFor: (img: HTMLImageElement) => {
                     const src = img.getAttribute("src") || "";
@@ -1649,6 +1795,11 @@ function destroyVditor(tab: MarkdownTabInstance): void {
         // 忽略
     }
     tab._gutterHandle = undefined;
+    // 双链点击委托挂在容器自身上(innerHTML 清空不会移除),必须显式摘除
+    if (tab._vditorLinkClick && tab._contentEl) {
+        tab._contentEl.removeEventListener("click", tab._vditorLinkClick);
+    }
+    tab._vditorLinkClick = undefined;
     if (tab._vditor) {
         try {
             tab._vditor.destroy();

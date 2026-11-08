@@ -18,12 +18,15 @@ import {
 import {defaultKeymap, history, historyKeymap, indentWithTab} from "@codemirror/commands";
 import {indentOnInput, bracketMatching, syntaxHighlighting, HighlightStyle} from "@codemirror/language";
 import {search, searchKeymap, highlightSelectionMatches, openSearchPanel} from "@codemirror/search";
+import {autocompletion, CompletionContext, Completion, CompletionResult} from "@codemirror/autocomplete";
 import {markdown, markdownLanguage} from "@codemirror/lang-markdown";
 import {languages} from "@codemirror/language-data";
 import {tags} from "@lezer/highlight";
 import {Menu} from "siyuan";
 import {cm6MarkdownRender, preloadCm6Katex} from "./cm6-render";
 import {cm6InlineWysiwyg, mdParserExtensions} from "./cm6-inline";
+import {getLinkIndex} from "../utils/wikilink";
+import {searchBlocksForRef} from "../utils/backlink";
 
 export interface Cm6MarkdownOptions {
     /** 初始内容(Markdown 全文) */
@@ -45,6 +48,8 @@ export interface Cm6MarkdownOptions {
     resolveImageSrc?(src: string): Promise<string | null>;
     /** 右键行号时复制该行链接(宿主用 buildFileRefMd 生成;与 Vditor 行号槽/Monaco 一致) */
     onCopyLine?(line: number): void;
+    /** Ctrl/Cmd+Shift+L 插入双链:宿主弹文件选择器,选中后经 insertAtCursor 写入 */
+    onInsertLink?(): void;
     placeholder?: string;
 }
 
@@ -438,6 +443,75 @@ const syfeMdHighlight = HighlightStyle.define([
     {tag: tags.keyword, color: "var(--b3-theme-on-surface)"},                  // 列表标记等
 ]);
 
+// ===== [[ 双链补全 =====
+// 输入 [[ 触发:列出文件名索引(全部挂载根、所有类型文件,见 utils/wikilink.ts),
+// 选中插入 [[文件名]](含扩展名,解析端全名优先)。详情列显示所在目录消歧。
+// 空查询时只列前 64 个,避免超大库把下拉撑爆;键入即过滤。
+// ⚠ from 必须返回在触发符 [[ **之后**(obsidian-my-obsidian md-editor 的实测教训):
+//   CM6 内置过滤拿 from→光标 之间的文本对每个 label 做模糊匹配,若把 [[ 算进去
+//   ("[[read"),label 里没有 [ 字符,全部选项被过滤光 —— 永远不弹 tooltip。
+//   因此 apply 也只补 "名]]"(触发符 [[ 已在文档里,保留)。
+const WIKILINK_COMPLETE_LIMIT = 64;
+
+const wikilinkCompletionSource = async (context: CompletionContext): Promise<CompletionResult | null> => {
+    const before = context.matchBefore(/\[\[([^\[\]]*)$/);
+    if (!before) return null;
+    const queryFrom = before.from + 2; // 越过 [[:补全/过滤都只针对触发符后的输入
+    const query = context.state.sliceDoc(queryFrom, before.to).trim().toLowerCase();
+    const index = await getLinkIndex();
+    const options: Completion[] = [];
+    const seen = new Set<string>(); // 同一文件在 byName/byStem 都出现,按路径去重
+    const collect = (map: Map<string, string[]>) => {
+        for (const [key, paths] of map) {
+            if (query && !key.includes(query)) continue;
+            for (const p of paths) {
+                if (options.length >= WIKILINK_COMPLETE_LIMIT) return;
+                if (seen.has(p)) continue;
+                seen.add(p);
+                const name = p.split("/").pop() || key;
+                options.push({
+                    label: name,
+                    detail: p.slice(0, p.lastIndexOf("/")),
+                    apply: `${name}]]`,
+                    type: "file",
+                    boost: key === query ? 99 : 0,
+                });
+            }
+            if (options.length >= WIKILINK_COMPLETE_LIMIT) return;
+        }
+    };
+    collect(index.byName);
+    if (options.length < WIKILINK_COMPLETE_LIMIT) collect(index.byStem);
+    return {from: queryFrom, options, validFor: /^[^\[\]]*$/};
+};
+
+// ===== (( 块引用补全(思源外部引用格式)=====
+// 与思源文档里 (( 同语义:内容搜索块,选中插入 [内容](siyuan://blocks/<id>)。
+// from 同样必须在触发符 (( 之后(见上方 wikilink 补全的教训注释)。
+const BLOCKREF_COMPLETE_LIMIT = 24;
+
+const blockRefCompletionSource = async (context: CompletionContext): Promise<CompletionResult | null> => {
+    const before = context.matchBefore(/\(\(([^()]*)$/);
+    if (!before) return null;
+    const query = context.state.sliceDoc(before.from + 2, before.to).trim();
+    const briefs = await searchBlocksForRef(query, BLOCKREF_COMPLETE_LIMIT);
+    const options: Completion[] = briefs.map(b => {
+        // label 里的 []() 会破坏 markdown 链接结构,插入前清掉
+        const label = b.title.replace(/[\[\]()]/g, " ").replace(/\s+/g, " ").trim().slice(0, 48) || b.id;
+        return {
+            label,
+            detail: b.hpath || "思源块",
+            apply: `[${label}](siyuan://blocks/${b.id})`,
+            type: "block",
+        };
+    });
+    if (options.length === 0) return null;
+    // from 在触发符 (( 处:选中后整体替换掉 ((query(与思源一致,触发符不残留)。
+    // 内置过滤对含 (( 的 pattern 必然全灭(md-editor 教训),SQL 已筛过 → filter:false。
+    // 不带 validFor:每键入一字符重新搜索(与思源 (( 行为一致)。
+    return {from: before.from, options, filter: false};
+};
+
 export function createCm6MarkdownEditor(
     container: HTMLElement,
     opts: Cm6MarkdownOptions,
@@ -494,13 +568,24 @@ export function createCm6MarkdownEditor(
             markdown({base: markdownLanguage, codeLanguages: languages, extensions: mdParserExtensions}),
             cm6MarkdownRender({resolveImageSrc: opts.resolveImageSrc}),
             cm6InlineWysiwyg({onOpenLink: opts.onOpenLink}),
+            // [[ 文件双链补全 + (( 思源块引用补全(override = 本编辑器仅有的补全源;
+            // TTL 缓存索引/SQL 搜索,键入不重扫)
+            autocompletion({override: [wikilinkCompletionSource, blockRefCompletionSource]}),
             EditorView.lineWrapping,
             syfeCmTheme,
-            // Ctrl/Cmd+S:默认键位不含保存,最高优先级拦给宿主
+            // Ctrl/Cmd+S:默认键位不含保存,最高优先级拦给宿主;
+            // Ctrl/Cmd+Shift+L:插入双链(宿主弹文件选择器)
             Prec.highest(keymap.of([{
                 key: "Mod-s",
                 run: () => {
                     opts.onSave();
+                    return true;
+                },
+            }, {
+                key: "Mod-Shift-l",
+                run: () => {
+                    if (!opts.onInsertLink) return false;
+                    opts.onInsertLink();
                     return true;
                 },
             }])),
