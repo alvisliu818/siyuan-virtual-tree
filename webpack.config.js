@@ -104,10 +104,17 @@ function resolvePkgDir(name) {
     } catch {
         // 解析失败(包不在依赖树)→ 走兜底
     }
-    // 兜底:扫 unplug 目录(命名形如 <pkg>-npm-<ver>-<hash>,scoped 包把 / 换 -)
-    const unpluggedRoot = path.resolve(__dirname, ".yarn", "unplugged");
-    if (fs.existsSync(unpluggedRoot)) {
-        const prefix = `${name.replace(/^@/, "").replace(/\//g, "-")}-npm-`;
+    // 兜底:扫 unplug 目录(命名形如 <pkg>-npm-<ver>-<hash>,scoped 包把 / 换 -)。
+    // unplugged 的实际位置由 .yarnrc.yml 的 pnpUnpluggedFolder 决定,已指向
+    // 全局 E:/HOME/Code/.yarn-global/unplugged;项目内路径保留作旧布局兼容,
+    // 换机器或回退配置时仍能找到包。
+    const unpluggedRoots = [
+        path.resolve(__dirname, ".yarn", "unplugged"),
+        path.resolve(__dirname, "..", "..", ".yarn-global", "unplugged"),
+    ];
+    const prefix = `${name.replace(/^@/, "").replace(/\//g, "-")}-npm-`;
+    for (const unpluggedRoot of unpluggedRoots) {
+        if (!fs.existsSync(unpluggedRoot)) continue;
         for (const dir of fs.readdirSync(unpluggedRoot)) {
             if (!dir.startsWith(prefix)) continue;
             const candidate = path.join(unpluggedRoot, dir, "node_modules", name);
