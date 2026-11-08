@@ -804,6 +804,20 @@ export default class FileEditorPlugin extends Plugin {
         this.themeObserver?.disconnect();
         // 最近使用防抖落盘:卸载前强制写入,避免丢失防抖窗口内的记录
         void flushRecents();
+
+        // 热重载内存泄漏兜底:与 webpack.config.js 的入口 banner 配套。
+        // banner 管「新 bundle 被 window.eval 求值之前」,这里管「旧实例卸载时」,
+        // 两处都是幂等的软重置(清空数组 + 把 push 恢复成原生方法),目的都是让
+        // 上一份 webpack runtime 的 jsonp 回调闭包失去全局引用、可被 GC。
+        // 注意**不能 delete 这个全局数组**:飞行中的异步 chunk 脚本形如
+        // `(self.webpackChunkXXX = self.webpackChunkXXX || []).push(...)`,删掉后
+        // 它会新建一个不受新 runtime 劫持的数组,该 chunk 将永远不被 resolve。
+        // 部署旧产物时 banner 不存在,此处是可选调用,静默跳过即可。
+        try {
+            (self as any).__syfeResetJsonp?.();
+        } catch {
+            // ignore
+        }
     }
 
     // 打开文件编辑 Tab

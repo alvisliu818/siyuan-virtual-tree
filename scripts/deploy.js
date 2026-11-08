@@ -9,9 +9,17 @@
  * 注意:必须在去掉 NODE_OPTIONS 钩子(会把 fs 删除改道外部回收站并卡死)的干净
  * 环境中运行,即通过 `node tools/clean-env-run.js scripts/deploy.js` 调用。
  *
+ * 部署完成后会通知思源**整页刷新**(/api/ui/reloadUI),不再用
+ * /api/petal/setPetalEnabled 热重载 —— 后者会在同一页面反复 window.eval 整份
+ * bundle,即使 webpack.config.js 的 jsonp 重置 banner 已经消除了 runtime 累积,
+ * 整页刷新仍能一次性清掉 V8 inspector 保留的旧 eval 源码与所有残留单例。
+ *
  * 用法:
  *   node tools/clean-env-run.js scripts/deploy.js
  *   SYFI_PLUGIN_DIR=<目录> node tools/clean-env-run.js scripts/deploy.js
+ *   SYFI_SKIP_RELOAD=1 ...        # 只同步文件,不刷新界面
+ *   SYFI_API_PORT=6806 ...        # 内核端口(默认 6806)
+ *   SYFI_API_TOKEN=<token> ...    # 可选;本地请求默认免鉴权
  */
 const fs = require("fs");
 const path = require("path");
@@ -131,3 +139,69 @@ if (locked.length > 0) {
     }
 }
 warnStale();
+
+/**
+ * 通知思源整页刷新。
+ *
+ * 这里刻意**不**用 setPetalEnabled:它会广播 reloadPlugin,让每个窗口在同一
+ * JS 上下文里重新 eval 插件代码;反复部署就会不断叠加旧的 webpack runtime
+ * (2026-11-08 实测第 2 次热重载即可把渲染进程推到 4.8GB 并卡死)。
+ * /api/ui/reloadUI 走的是 window.location.reload(),上下文整体重建。
+ *
+ * 思源没开、端口不同、版本较老没有该端点都只警告,绝不让部署失败 ——
+ * 文件已经同步完成,用户手动刷新即可。
+ */
+function reloadUI() {
+    if (process.env.SYFI_SKIP_RELOAD === "1") {
+        console.log("[deploy] 已跳过界面刷新(SYFI_SKIP_RELOAD=1)");
+        return;
+    }
+    const http = require("http");
+    const port = Number(process.env.SYFI_API_PORT || 6806);
+    const body = "{}";
+    const headers = {
+        "Content-Type": "application/json",
+        "Content-Length": Buffer.byteLength(body),
+    };
+    if (process.env.SYFI_API_TOKEN) {
+        headers.Authorization = `Token ${process.env.SYFI_API_TOKEN}`;
+    }
+    let settled = false;
+    const warn = (msg) => {
+        if (!settled) {
+            settled = true;
+            console.warn(`[deploy] ${msg};文件已部署,手动刷新界面即可`);
+        }
+    };
+    const req = http.request({
+        host: "127.0.0.1",
+        port,
+        path: "/api/ui/reloadUI",
+        method: "POST",
+        headers,
+        timeout: 3000,
+    }, res => {
+        let data = "";
+        res.setEncoding("utf8");
+        res.on("data", chunk => { data += chunk; });
+        res.on("end", () => {
+            if (settled) return;
+            settled = true;
+            let code = "?";
+            try { code = JSON.parse(data).code; } catch { /* 非 JSON 响应 */ }
+            if (res.statusCode === 200 && code === 0) {
+                console.log("[deploy] 已通知思源整页刷新(/api/ui/reloadUI)");
+            } else {
+                console.warn(`[deploy] 界面刷新未成功(HTTP ${res.statusCode}, code=${code}): ${data.slice(0, 160)}`);
+            }
+        });
+    });
+    req.on("timeout", () => {
+        warn("通知思源刷新超时");
+        req.destroy();
+    });
+    req.on("error", err => warn(`无法通知思源刷新(${err.code || err.message})`));
+    req.end(body);
+}
+
+reloadUI();

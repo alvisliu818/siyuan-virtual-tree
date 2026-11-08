@@ -28,6 +28,41 @@ const monacoFeatures = [
 // 语言 Monarch 注册不上 → 所有代码一个颜色(mtk1),且不报错,极难排查。
 const PLUGIN_NAME = JSON.parse(fs.readFileSync(path.resolve(__dirname, "plugin.json"), "utf8")).name;
 
+/**
+ * 热重载内存泄漏根治:webpack 的 jsonp 异步分块全局数组。
+ *
+ * 思源用 `window.eval` 加载插件(app/src/plugin/loader.ts 的 runCode),每次
+ * 「禁用/启用」或 setPetalEnabled 热重载都会**重新求值整份 index.js**。webpack
+ * 的 jsonp runtime 开头是这样的:
+ *
+ *   e = self.webpackChunkXXX = self.webpackChunkXXX || [];
+ *   e.forEach(webpackJsonpCallback.bind(null, 0));   // 重放历史 chunk
+ *   e.push = webpackJsonpCallback.bind(null, e.push.bind(e));  // 包一层拦截
+ *
+ * 由于全局数组跨 eval 存活,第 N 次重载就会留下 N 层 push 拦截链:旧 runtime 的
+ * 闭包(含整份模块表)被全局数组永久引用无法 GC,且一次 chunk push 会被所有历史
+ * runtime 依次处理、历史 chunk 被反复重放,副作用按 N 倍放大。实测第 2 次热重载
+ * 即可让渲染进程涨到 4.8GB 并卡死事件循环(2026-10-31 那次 14.4GB V8 OOM 同源)。
+ *
+ * 对策:在入口 chunk 的**最前面**(webpack runtime 之前)注入一段幂等重置代码 ——
+ * 清空数组内容、把 push 恢复成原生 Array.prototype.push。这样:
+ *   - 新 runtime 的 forEach 无历史可重放;
+ *   - 它的 parentChunkLoadingFunction 是原生 push,而不是上一份 runtime 的回调,
+ *     拦截链深度恒为 1;
+ *   - 旧 runtime 的闭包失去全局引用,卸载后可被 GC。
+ *
+ * 只清空 + 恢复 push,**不能 delete 全局数组**:飞行中的异步 chunk 脚本形如
+ * `(self.webpackChunkXXX = self.webpackChunkXXX || []).push(...)`,删掉后它会新建
+ * 一个不受新 runtime 劫持的数组,导致该 chunk 永远不被 resolve。
+ *
+ * 该 banner 必须 `entryOnly: true`,否则异步 chunk 每次加载都会重置数组。
+ */
+const CHUNK_LOADING_GLOBAL = "webpackChunk" + PLUGIN_NAME.replace(/[^a-zA-Z0-9_$]/g, "_");
+const JSONP_RESET_BANNER = `(function(){
+var k=${JSON.stringify(CHUNK_LOADING_GLOBAL)},g=typeof self!=="undefined"?self:globalThis;
+var reset=function(){var a=g[k];if(Array.isArray(a)){a.length=0;a.push=Array.prototype.push;}else if(a!==undefined){try{delete g[k];}catch(e){g[k]=undefined;}}};
+g.__syfeResetJsonp=reset;reset();})();`;
+
 // 思源插件目录(开发模式直接输出到此目录,避免手动复制 chunk 文件)
 // 可通过环境变量 SYFI_PLUGIN_DIR 覆盖;默认路径也跟着 PLUGIN_NAME 走
 const SIYUAN_PLUGIN_DIR = process.env.SYFI_PLUGIN_DIR
@@ -191,6 +226,14 @@ module.exports = (env, argv) => {
     const outputPath = production ? path.resolve(__dirname, "dist") : path.resolve(SIYUAN_PLUGIN_DIR);
 
     const plugins = [
+        // 热重载根治:入口 chunk 最前面重置 jsonp 全局数组(见文件头注释)。
+        // raw + entryOnly 缺一不可:raw 保证是可执行代码而非注释,entryOnly 保证
+        // 异步分块不会被注入(否则每加载一个 chunk 都会清空数组、拆掉拦截)。
+        new webpack.BannerPlugin({
+            banner: JSONP_RESET_BANNER,
+            raw: true,
+            entryOnly: true,
+        }),
         new MiniCssExtractPlugin({
             filename: "index.css",
         }),
@@ -299,6 +342,9 @@ module.exports = (env, argv) => {
             // 从根上避免陈旧缓存;改名/重部署场景同理受益。
             chunkFilename: production ? "[id].[contenthash].index.js" : "[id].index.js",
             path: outputPath,
+            // 显式固定 jsonp 全局名,与 JSONP_RESET_BANNER 里的 key 严格同源,
+            // 避免 webpack 版本升级改变 uniqueName → 标识符规则后两边失配。
+            chunkLoadingGlobal: CHUNK_LOADING_GLOBAL,
             // 生产模式:构建前清空 dist/,确保其中只有本次打包产物
             // (zip 等二次产物不输出到此目录,由 scripts/zip-dist.js 输出到 build/)
             clean: production,
