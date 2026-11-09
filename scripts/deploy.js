@@ -61,6 +61,7 @@ if (path.basename(DEST) !== PLUGIN_NAME) {
 // 同名,copyFileSync 会覆盖内容),最后再汇总提示。真正需要担心的
 // 是「旧 chunk 没被清掉」这种堆积问题,那由 warnStale 单独报出来。
 const locked = [];
+const copyLocked = [];
 
 function emptyDir(dir) {
     for (const entry of fs.readdirSync(dir, {withFileTypes: true})) {
@@ -86,7 +87,19 @@ function copyDir(from, to) {
         if (entry.isDirectory()) {
             copyDir(srcFull, destFull);
         } else {
-            fs.copyFileSync(srcFull, destFull);
+            try {
+                fs.copyFileSync(srcFull, destFull);
+            } catch (e) {
+                // Windows 上已被渲染进程加载的 .node(pyright / node-pty 常驻目录)
+                // 禁止覆盖,删除阶段也会留着它们。目标里同名旧文件仍在且内容通常
+                // 与本次构建一致 —— 跳过即可,不能让整次部署崩在半路(会把插件目录
+                // 清空到一半)。目标里没有同名文件才是真缺文件,继续抛。
+                if (["EBUSY", "EPERM", "EACCES"].includes(e.code) && fs.existsSync(destFull)) {
+                    copyLocked.push({path: destFull, code: e.code});
+                } else {
+                    throw e;
+                }
+            }
         }
     }
 }
@@ -137,6 +150,12 @@ if (locked.length > 0) {
             `内容已是最新,不影响本次验证;想彻底清干净就重启思源后再跑一次。`,
         );
     }
+}
+if (copyLocked.length > 0) {
+    console.warn(`[deploy] 有 ${copyLocked.length} 个文件被进程占用、无法覆盖,已保留目标里的同名旧文件:`);
+    for (const l of copyLocked.slice(0, 5)) console.warn(`         - ${l.code} ${l.path}`);
+    if (copyLocked.length > 5) console.warn(`         … 其余 ${copyLocked.length - 5} 个`);
+    console.warn(`[deploy] 提示:重启思源后再跑一次本脚本即可彻底同步;不影响本次验证。`);
 }
 warnStale();
 
