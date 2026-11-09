@@ -107,29 +107,16 @@ export interface MarkdownTabInstance {
 }
 
 // Vditor 静态资源目录(webpack 已复制 vditor/dist 到插件目录)
-// 导出供 Notebook Tab 复用(md 单元格渲染 / 样式)
-//
-// 插件名由 webpack DefinePlugin 注入(见 webpack.config.js),**不要写死**:
-// 写死的话插件改名后这个目录就 404,vditor 的 CSS/JS 加载不到,
-// markdown 编辑器会变成没有样式的裸 textarea,且不报错。
-declare const __SYFE_PLUGIN_NAME__: string;
-export const VDITOR_CDN = `/plugins/${__SYFE_PLUGIN_NAME__}/vditor`;
+// Vditor 资源路径/样式注入移到 utils/vditor-assets.ts(独立模块),这里 re-export
+// 保持 Notebook Tab 等既有引用不变;CM6 图表渲染也用同一处常量,不产生循环依赖。
+import {VDITOR_CDN, ensureVditorCSS} from "../utils/vditor-assets";
+export {VDITOR_CDN, ensureVditorCSS};
 
 // 超过此大小(字节)的 Markdown 强制源码模式(Vditor 大内容性能差)
 const WYSIWYG_MAX_SIZE = 512 * 1024;
 
 function escapeHTML(s: string): string {
     return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-}
-
-// 注入 Vditor 主样式(幂等;导出供 Notebook Tab 复用)
-export function ensureVditorCSS(): void {
-    if (document.querySelector(`link[data-syfe-vditor]`)) return;
-    const link = document.createElement("link");
-    link.rel = "stylesheet";
-    link.href = `${VDITOR_CDN}/dist/index.css`;
-    link.setAttribute("data-syfe-vditor", "1");
-    document.head.appendChild(link);
 }
 
 // ===== 图片本地化渲染 =====

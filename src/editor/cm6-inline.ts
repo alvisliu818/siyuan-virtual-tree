@@ -744,9 +744,9 @@ function findLinkUrl(state: EditorState, pos: number): string | null {
 function linkClickHandler(opts: Cm6InlineOptions): Extension {
     return EditorView.domEventHandlers({
         mousedown(event, view) {
-            // 可编辑态沿用 Obsidian 习惯(需 Ctrl/Cmd+点击);只读阅读态
-            // 普通点击即打开链接(Obsidian Reading 同款)
-            if (!(event.ctrlKey || event.metaKey) && !view.state.readOnly) return false;
+            // 两态一致:沿用 Obsidian 习惯,需 Ctrl/Cmd+点击打开链接
+            // (只读阅读态不再放宽为普通点击 —— 它与 live 只差禁止进入编辑)
+            if (!(event.ctrlKey || event.metaKey)) return false;
             // 1) 语法树认得的链接/图片:取节点 URL(与装饰同款「] 之后的 URL」规则)
             const target = event.target as HTMLElement;
             const el = target.closest(".syfe-cm-md-link") as HTMLElement | null;

@@ -844,35 +844,10 @@ button.syfe-editor__arrow--exp:hover {
         padding: 16px 24px 64px;
     }
 
-    // CM6 只读阅读态(阅读模式引擎 = cm6) = 编辑态 + 禁止进入编辑:
-    // 行号/富渲染/高亮全部复用 live 编辑态那一套扩展,这里只收掉光标与
-    // 焦点反馈,不给行号槽加任何阅读态专属样式。
-    .cm-editor {
-        background: transparent;
-
-        .cm-scroller {
-            padding-left: 24px !important;
-            padding-right: 24px !important;
-        }
-
-        .cm-content {
-            caret-color: transparent !important;
-            cursor: default;
-        }
-
-        .cm-line {
-            cursor: default;
-        }
-
-        .cm-cursor,
-        .cm-dropCursor {
-            display: none !important;
-        }
-
-        &.cm-focused {
-            outline: none !important;
-        }
-    }
+    // CM6 只读阅读态 = 同一个 CM6 编辑器 + 禁止点击进入编辑:
+    // 不给 .cm-editor 加任何阅读态专属样式 —— 行号 / 活动行 / 光标 / 焦点框 /
+    // scroller 内边距 / 背景全部与 live 一致。两态唯一差异是 contenteditable=false
+    // 与富渲染层按 state.readOnly 拦住「点击进入编辑」。
 }
 
 // ===== Markdown 渲染态行号槽(实时预览 / 阅读)=====
@@ -5587,6 +5562,51 @@ button.syfe-editor__arrow--exp:hover {
     font-family: Consolas, "Courier New", monospace;
     font-size: 13px;
     line-height: 21px;
+}
+
+/* CM6 图表代码块:Vditor 渲染器把 SVG/Canvas 写进 .language-xxx 元素,
+   自实现三类(mindmap tree JSON / markmap 固定尺寸 SVG / plantuml 内核代理)
+   也把图放进同一层。容器居中、可横向滚动;源码占位与失败降级左对齐。
+   echarts/mindmap 需要明确高度,否则 echarts.init 拿到 0 高容器。 */
+.syfe-cm-codeblock-colorize.syfe-cm-diagram {
+    padding: 10px 12px;
+    overflow-x: auto;
+    text-align: center;
+    font-family: Consolas, "Courier New", monospace;
+    font-size: 13px;
+
+    > [class^='language-'] {
+        display: inline-block;
+        box-sizing: border-box;
+        min-width: 100%;
+        white-space: pre-wrap;      // echarts adapter 读 innerText,需保留换行
+        text-align: center;
+        background: transparent;
+
+        svg,
+        canvas,
+        img {
+            max-width: 100%;
+            height: auto;
+        }
+
+        // 渲染前/资源失败(离线 PlantUML 等)时显示源码,左对齐更易读
+        &:not([data-processed='true']),
+        &[data-processed='fallback'] {
+            text-align: left;
+        }
+    }
+
+    > .language-echarts,
+    > .language-mindmap {
+        height: 320px;
+    }
+
+    .vditor-reset--error {
+        color: var(--b3-theme-error, #d23f31);
+        text-align: left;
+        white-space: pre-wrap;
+    }
 }
 
 /* 阅读态横向条带定高(与编辑态 Monaco 横条 10px 等高) */

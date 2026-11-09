@@ -568,17 +568,18 @@ export function createCm6MarkdownEditor(
                     },
                 },
             }),
-            // 只读阅读态:只留富渲染 + 查找 + 行号,编辑态 UI(活动行/历史/拖拽/
-            // 自动补全/编辑快捷键)全部不挂。EditorView.editable.of(false) 让
-            // contenteditable=false —— 点击不会把光标送回源码;富渲染层再用
-            // state.readOnly 二次确认(见 cm6-render / cm6-inline)。
+            // 只读阅读态 = **完全相同的 CM6 编辑器**(所有扩展两态一致),只额外
+            // 加 3 个 facet 禁止编辑。「禁止点击进入编辑」由富渲染层按
+            // state.readOnly 早退实现(cm6-render / cm6-inline),不再另起一套精简
+            // 配置 —— 否则两态的行号/活动行/选区/查找/补全/键位会不一致
+            // (用户 2026-11-10:两个应该是一样的,阅读态只是加了禁止点击进入编辑)。
             ...(readOnly ? [
                 EditorState.readOnly.of(true),
                 EditorView.editable.of(false),
                 // 双保险:任何 docChanged 事务(快捷键/命令/程序 dispatch)一律丢弃,
                 // 阅读态绝不会被改出脏标记。selection/effect 事务照常(查找/定位可用)
                 EditorState.transactionFilter.of(tr => (tr.docChanged ? [] : tr)),
-            ] : [
+            ] : []),
             highlightActiveLineGutter(),
             highlightActiveLine(),
             history(),
@@ -587,7 +588,6 @@ export function createCm6MarkdownEditor(
             EditorState.allowMultipleSelections.of(true),
             indentOnInput(),
             bracketMatching(),
-            ]),
             syntaxHighlighting(syfeMdHighlight, {fallback: true}),
             search({top: true}),
             highlightSelectionMatches(),
@@ -595,34 +595,28 @@ export function createCm6MarkdownEditor(
             cm6MarkdownRender({resolveImageSrc: opts.resolveImageSrc}),
             cm6InlineWysiwyg({onOpenLink: opts.onOpenLink}),
             // [[ 文件双链补全 + (( 思源块引用补全(override = 本编辑器仅有的补全源;
-            // TTL 缓存索引/SQL 搜索,键入不重扫)
-            ...(readOnly ? [] : [
-                autocompletion({override: [wikilinkCompletionSource, blockRefCompletionSource]}),
-            ]),
+            // TTL 缓存索引/SQL 搜索,键入不重扫)——两态同挂,只读态无键入自然不触发
+            autocompletion({override: [wikilinkCompletionSource, blockRefCompletionSource]}),
             EditorView.lineWrapping,
             syfeCmTheme,
-            // Ctrl/Cmd+S 保存 / Ctrl/Cmd+Shift+L 插入双链:只读阅读态不挂
-            ...(readOnly ? [] : [
-                Prec.highest(keymap.of([{
-                    key: "Mod-s",
-                    run: () => {
-                        opts.onSave();
-                        return true;
-                    },
-                }, {
-                    key: "Mod-Shift-l",
-                    run: () => {
-                        if (!opts.onInsertLink) return false;
-                        opts.onInsertLink();
-                        return true;
-                    },
-                }])),
-            ]),
-            // 只读态只保留查找快捷键,不挂编辑/历史/缩进键位
-            readOnly
-                ? keymap.of([...searchKeymap])
-                : keymap.of([...defaultKeymap, ...historyKeymap, ...searchKeymap, indentWithTab]),
-            ...(readOnly ? [] : [placeholder(opts.placeholder ?? "")]),
+            // Ctrl/Cmd+S 保存 / Ctrl/Cmd+Shift+L 插入双链 —— 两态同挂
+            // (阅读态宿主传入的 onSave/onInsertLink 本身就是 no-op)
+            Prec.highest(keymap.of([{
+                key: "Mod-s",
+                run: () => {
+                    opts.onSave();
+                    return true;
+                },
+            }, {
+                key: "Mod-Shift-l",
+                run: () => {
+                    if (!opts.onInsertLink) return false;
+                    opts.onInsertLink();
+                    return true;
+                },
+            }])),
+            keymap.of([...defaultKeymap, ...historyKeymap, ...searchKeymap, indentWithTab]),
+            placeholder(opts.placeholder ?? ""),
             EditorView.updateListener.of((u) => {
                 if (u.docChanged) opts.onInput();
                 if ((u.docChanged || u.selectionSet) && opts.onCursor) opts.onCursor();
@@ -658,7 +652,7 @@ export function createCm6MarkdownEditor(
                 changes: {from: 0, to: view.state.doc.length, insert: v},
             });
         },
-        focus: () => { if (!readOnly) view.focus(); },
+        focus: () => view.focus(),
         currentLine: () => view.state.doc.lineAt(view.state.selection.main.head).number,
         insertAtCursor(md: string): boolean {
             if (readOnly) return false;
@@ -684,14 +678,14 @@ export function createCm6MarkdownEditor(
                     selection: {anchor: l.from},
                     effects: EditorView.scrollIntoView(l.from, {y: "center"}),
                 });
-                if (focus && !readOnly) view.focus();
+                if (focus) view.focus();
             } catch {
                 // 忽略:行号越界等不影响主流程
             }
         },
         openSearch: () => {
             openSearchPanel(view);
-            if (!readOnly) view.focus();
+            view.focus();
         },
         destroy: () => view.destroy(),
     };

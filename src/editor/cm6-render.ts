@@ -52,6 +52,7 @@ import {
     setEditingKey,
     unmountBlockEditor,
 } from "./monaco-block";
+import {isDiagramLang, renderDiagram} from "./cm6-diagram";
 
 export interface Cm6RenderOptions {
     /** 解析图片地址 → 可加载 URL(blob URL / 绝对路径);返回 null 表示不处理 */
@@ -273,12 +274,19 @@ class CodeBlockWidget extends WidgetType {
         const colorizeDiv = document.createElement("div");
         colorizeDiv.className = "syfe-cm-codeblock-colorize";
         body.appendChild(colorizeDiv);
-        colorizeDiv.textContent = this.code;
-        void colorizeCached(this.lang, this.code).then(html => {
-            if (!colorizeDiv.isConnected) return;
-            colorizeDiv.innerHTML = buildNumberedLines(html);
-            view.requestMeasure();
-        });
+        // 图表类语言(mermaid/flowchart/graphviz/echarts/markmap/plantuml/abc/
+        // wavedrom/mindmap/smiles)走 Vditor 本地图表资源渲染成图;其余仍走
+        // Monaco colorize 源码卡片。两者都异步完成 → 重测卡片高度。
+        const isDiagram = isDiagramLang(this.lang) &&
+            renderDiagram(colorizeDiv, this.lang, this.code, () => view.requestMeasure());
+        if (!isDiagram) {
+            colorizeDiv.textContent = this.code;
+            void colorizeCached(this.lang, this.code).then(html => {
+                if (!colorizeDiv.isConnected) return;
+                colorizeDiv.innerHTML = buildNumberedLines(html);
+                view.requestMeasure();
+            });
+        }
         // 编辑态宿主:点击卡片后由 editMounter 把全局单例 Monaco 安置进来
         const host = document.createElement("div");
         host.className = "syfe-cm-codeblock-editorhost";
