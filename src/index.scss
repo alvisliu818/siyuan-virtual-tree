@@ -5764,6 +5764,11 @@ button.syfe-editor__arrow--exp:hover {
 
 .syfe-dp__title {
     font-weight: 600;
+
+    // 当前正在看「焦点块」的属性,与文档级属性区分
+    &.is-block {
+        color: var(--b3-theme-primary);
+    }
 }
 
 .syfe-dp__count {

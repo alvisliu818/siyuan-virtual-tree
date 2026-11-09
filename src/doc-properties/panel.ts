@@ -20,10 +20,12 @@ export interface DocPropertiesPanelHandle {
 
 export interface DocPropertiesPanelOptions {
     plugin: any;
-    /** 每次刷新现读:侧边 dock 跟随当前文档,文档内面板固定为该 protyle 的 id */
+    /** 每次刷新现读:焦点所在块优先,无焦点块时回退当前文档(块 id 同样适用于 getBlockAttrs) */
     getDocId: () => string | null;
     /** 外部宿主元素;不传则自己建一个 div */
     host?: HTMLElement;
+    /** 面板标题(如「块属性」/「文档属性」),让使用者知道当前正在看谁的属性 */
+    getLabel?: () => string;
 }
 
 function esc(s: unknown): string {
@@ -88,9 +90,10 @@ export function createDocPropertiesPanel(opts: DocPropertiesPanelOptions): DocPr
     }
 
     function render(): void {
+        const label = opts.getLabel?.() || "文档属性";
         element.innerHTML = `
-            <div class="syfe-dp__head">
-                <span class="syfe-dp__title">文档属性</span>
+            <div class="syfe-dp__head" title="${esc(docId || "")}">
+                <span class="syfe-dp__title${label === "块属性" ? " is-block" : ""}">${esc(label)}</span>
                 <span class="syfe-dp__count">${entries.length}</span>
                 <span class="fn__flex-1"></span>
                 <button class="syfe-dp__icon" data-act="refresh" title="重新读取">⟳</button>

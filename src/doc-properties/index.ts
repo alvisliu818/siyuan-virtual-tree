@@ -9,15 +9,22 @@ import {createDocPropertiesPanel, DocPropertiesPanelHandle} from "./panel";
 
 let g_plugin: any = null;
 let g_currentDocId = "";
+let g_currentTargetId = "";   // 面板目标:焦点块 id 或当前文档 id
 let g_registered = false;
 let g_scanTimer: number | undefined;
 let g_focusTimer: number | undefined;
+let g_selectionTimer: number | undefined;
 const g_initialTimers: number[] = [];
 const inlinePanels = new Map<HTMLElement, {host: HTMLElement; panel: DocPropertiesPanelHandle; docId: string}>();
 let dockPanel: DocPropertiesPanelHandle | null = null;
 
 export function getCurrentDocId(): string {
     return g_currentDocId;
+}
+
+/** 面板当前目标:光标所在块优先,无焦点块时回退当前文档。 */
+export function getCurrentTargetId(): string {
+    return g_currentTargetId || g_currentDocId;
 }
 
 function activeDocIdFromDOM(): string {
@@ -27,9 +34,37 @@ function activeDocIdFromDOM(): string {
     return el?.getAttribute("data-node-id") || "";
 }
 
+/** 光标所在的思源块 id。scope 给定时只认该 protyle 内的焦点(文档内面板用)。 */
+function focusedBlockId(scope?: HTMLElement): string | null {
+    const node = window.getSelection()?.anchorNode;
+    if (!node) return null;
+    const el = (node.nodeType === Node.ELEMENT_NODE ? node as HTMLElement : node.parentElement) as HTMLElement | null;
+    const wys = el?.closest?.(".protyle-wysiwyg") as HTMLElement | null;
+    if (!wys || (scope && !scope.contains(wys))) return null;
+    return el?.closest?.("[data-node-id]")?.getAttribute("data-node-id") || null;
+}
+
+/** 面板目标由模块状态维护(不现读 selection):焦点在面板输入框里时不会漂回文档。 */
+function inlineTarget(protyleEl: HTMLElement, docId: string): string {
+    const target = getCurrentTargetId();
+    if (!target || target === docId) return docId;
+    return protyleEl.querySelector(`[data-node-id="${target}"]`) ? target : docId;
+}
+
+/** 目标变化才广播,避免光标在块内移动时反复重建面板。 */
+function updateTarget(): void {
+    // 焦点在面板自己的输入框里时不改变目标,否则刷新会打断正在输入的值
+    if ((document.activeElement as HTMLElement | null)?.closest?.(".syfe-dp")) return;
+    const next = focusedBlockId() || activeDocIdFromDOM() || g_currentDocId;
+    if (!next || next === g_currentTargetId) return;
+    g_currentTargetId = next;
+    window.dispatchEvent(new CustomEvent(DOC_PROPERTIES_CHANGED_EVENT, {detail: {targetChanged: true}}));
+}
+
 export function setCurrentDocId(id: string): void {
     if (!id || id === g_currentDocId) return;
     g_currentDocId = id;
+    g_currentTargetId = focusedBlockId() || id;
     window.dispatchEvent(new CustomEvent(DOC_PROPERTIES_CHANGED_EVENT, {detail: {docChanged: true}}));
 }
 
@@ -70,7 +105,9 @@ function scanInline(): void {
         host.className = "syfe-dp-inline";
         title.insertAdjacentElement("afterend", host);
         const panel = createDocPropertiesPanel({
-            plugin: g_plugin, host, getDocId: () => docId,
+            plugin: g_plugin, host,
+            getDocId: () => inlineTarget(protyleEl, docId),
+            getLabel: () => inlineTarget(protyleEl, docId) === docId ? "文档属性" : "块属性",
         });
         inlinePanels.set(protyleEl, {host, panel, docId});
     });
@@ -94,8 +131,19 @@ const onFocusClick = () => {
     g_focusTimer = window.setTimeout(() => {
         const id = activeDocIdFromDOM();
         if (id) setCurrentDocId(id);
+        updateTarget();
         scheduleScan();
     }, 200);
+};
+
+// 光标在块之间移动时切换面板目标;同时补扫一次 —— 思源重渲染 protyle 会把
+// 插在标题区的面板一起冲掉,已有且位置正确的面板不会重建,只补回丢失的。
+const onSelectionChange = () => {
+    window.clearTimeout(g_selectionTimer);
+    g_selectionTimer = window.setTimeout(() => {
+        updateTarget();
+        scheduleScan();
+    }, 120);
 };
 
 export function initDocProperties(plugin: any): void {
@@ -103,10 +151,12 @@ export function initDocProperties(plugin: any): void {
     g_registered = true;
     g_plugin = plugin;
     g_currentDocId = activeDocIdFromDOM();
+    g_currentTargetId = g_currentDocId;
     plugin.eventBus.on("loaded-protyle-static", onProtyleEvent);
     plugin.eventBus.on("loaded-protyle-dynamic", onProtyleEvent);
     plugin.eventBus.on("switch-protyle", onProtyleEvent);
     document.addEventListener("click", onFocusClick, true);
+    document.addEventListener("selectionchange", onSelectionChange);
     // 布局恢复的文档晚于 onload:600ms / 2000ms 双补扫(同 code-render 的惯例)
     g_initialTimers.push(window.setTimeout(() => {
         setCurrentDocId(activeDocIdFromDOM());
@@ -135,12 +185,15 @@ export function destroyDocProperties(): void {
         g_plugin.eventBus.off("switch-protyle", onProtyleEvent);
     }
     document.removeEventListener("click", onFocusClick, true);
+    document.removeEventListener("selectionchange", onSelectionChange);
     clearInline();
     dockPanel = null;   // dock 实例自己会在 destroy 里 dispose
     for (const t of g_initialTimers) window.clearTimeout(t);
     g_initialTimers.length = 0;
     window.clearTimeout(g_scanTimer);
     window.clearTimeout(g_focusTimer);
+    window.clearTimeout(g_selectionTimer);
+    g_currentTargetId = "";
     g_plugin = null;
 }
 
@@ -164,7 +217,9 @@ export function createDocPropertiesDockConfig(plugin: any) {
             host.className = "syfe-dp-dock__body fn__flex-1";
             this.element.appendChild(host);
             dockPanel = createDocPropertiesPanel({
-                plugin, host, getDocId: () => getCurrentDocId(),
+                plugin, host,
+                getDocId: () => getCurrentTargetId(),
+                getLabel: () => getCurrentTargetId() === g_currentDocId ? "文档属性" : "块属性",
             });
             this._dpPanel = dockPanel;
         },
