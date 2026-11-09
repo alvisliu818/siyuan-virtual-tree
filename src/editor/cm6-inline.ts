@@ -122,12 +122,15 @@ const rangeTouchesRange = (a: BaseRange, b: BaseRange): boolean =>
  *  与 ProseMark/PurrMD/Obsidian 对齐:节点外缘(紧贴标记左右一格)也算"在内",
  *  光标停在格式文本旁源码即显示;离开节点才隐藏。 */
 const selectionTouches = (state: EditorState, from: number, to: number): boolean => {
+    // 只读阅读态:即使有选区也不还原源码(禁止点击进入编辑)
+    if (state.readOnly) return false;
     if (!hasFocus(state)) return false;
     return state.selection.ranges.some((r) => rangeTouchesRange({from, to}, r));
 };
 
 /** 选区是否覆盖 [from,to] 所在的行(引用块 > 标记按行还原用) */
 const selectionTouchesLine = (state: EditorState, pos: number): boolean => {
+    if (state.readOnly) return false;
     if (!hasFocus(state)) return false;
     const doc = state.doc;
     const ln = doc.lineAt(pos).number;
@@ -343,6 +346,11 @@ class TaskCheckboxWidget extends WidgetType {
         el.onchange = (e) => {
             e.preventDefault();
             e.stopPropagation();
+            // 只读阅读态:复选框只展示状态,不写回文档
+            if (view.state.readOnly) {
+                (e.target as HTMLInputElement).checked = this.checked;
+                return;
+            }
             const next = (e.target as HTMLInputElement).checked;
             // 勾选状态直接写回文档([x] ↔ [ ]);doc 变更会触发装饰重建
             view.dispatch({
@@ -736,7 +744,9 @@ function findLinkUrl(state: EditorState, pos: number): string | null {
 function linkClickHandler(opts: Cm6InlineOptions): Extension {
     return EditorView.domEventHandlers({
         mousedown(event, view) {
-            if (!(event.ctrlKey || event.metaKey)) return false;
+            // 可编辑态沿用 Obsidian 习惯(需 Ctrl/Cmd+点击);只读阅读态
+            // 普通点击即打开链接(Obsidian Reading 同款)
+            if (!(event.ctrlKey || event.metaKey) && !view.state.readOnly) return false;
             // 1) 语法树认得的链接/图片:取节点 URL(与装饰同款「] 之后的 URL」规则)
             const target = event.target as HTMLElement;
             const el = target.closest(".syfe-cm-md-link") as HTMLElement | null;

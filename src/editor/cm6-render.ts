@@ -226,10 +226,12 @@ class CodeBlockWidget extends WidgetType {
         lang.textContent = this.lang || "text";
         // 点语言 → 亮/收围栏(Obsidian 同款)。mousedown 即响应 + stopPropagation:
         // 阻断 CM6 的光标放置(否则光标被放到块边界又触发一次态翻转)。
-        lang.title = "点击显示/隐藏围栏";
+        lang.title = view.state.readOnly ? "阅读模式" : "点击显示/隐藏围栏";
         lang.onmousedown = (e) => {
             e.stopPropagation();
             e.preventDefault();
+            // 只读阅读态:点语言标签不显围栏(那是进入编辑的入口)
+            if (view.state.readOnly) return;
             toggleFenceReveal(view, this.key);
         };
         head.appendChild(lang);
@@ -956,6 +958,9 @@ export function cm6MarkdownRender(opts: Cm6RenderOptions): Extension {
     }, {
         eventHandlers: {
             mousedown(event, view) {
+                // 只读阅读态:点渲染物不再把光标送回源码(禁止点击进入编辑)。
+                // 复制按钮自带 onmousedown 且 stopPropagation,仍可正常复制
+                if (view.state.readOnly) return false;
                 const target = event.target as HTMLElement;
                 // 复制按钮是独立交互区
                 if (target.closest(".syfe-cm-codeblock-copy")) return false;
@@ -1058,7 +1063,9 @@ export function cm6MarkdownRender(opts: Cm6RenderOptions): Extension {
     const editMounter = ViewPlugin.fromClass(class {
         constructor(readonly view: EditorView) {}
         update() {
-            if (!getEditingKey()) return;
+            // 只读阅读态绝不挂载 Monaco 代码块编辑器(全局 editingKey 可能被
+            // 其它可编辑页签设置,这里必须按本视图的 readOnly 早退)
+            if (this.view.state.readOnly || !getEditingKey()) return;
             queueMicrotask(() => this.sync());
         }
         sync() {
@@ -1107,7 +1114,9 @@ function buildDecorations(state: EditorState, opts: Cm6RenderOptions): Decoratio
             // 全部装饰先收集再 Decoration.set(自动按位置排序,避免 RangeSetBuilder 的乱序抛错)
             const ranges: Array<Range<Decoration>> = [];
             const atomicRanges: Array<Range<Decoration>> = [];
-            const cursor = view.state.selection.main.head;
+            // 只读阅读态:光标永不算「进块」,始终保留富渲染(卡片/公式/表格/
+            // 属性面板),不会因为一次点击或定位就退回源码
+            const cursor = view.state.readOnly ? 0 : view.state.selection.main.head;
             const doc = view.state.doc;
             const lineDecos: Array<Range<Decoration>> = [];
             const usedRanges: Array<{from: number; to: number}> = [];
@@ -1153,7 +1162,7 @@ function buildDecorations(state: EditorState, opts: Cm6RenderOptions): Decoratio
             //    数学/表格/图片等非 Monaco 渲染不受影响
             for (const info of fencedCodeInfos(state)) {
                 if (!isCodeBlockMonacoEnabled()) continue;
-                const editing = getEditingKey() === String(info.from);
+                const editing = !view.state.readOnly && getEditingKey() === String(info.from);
                 if (!editing && cursorInRange(info.from, info.to)) continue;
                 usedRanges.push({from: info.from, to: info.to});
                 const widget = new CodeBlockWidget(info.lang, info.code, String(info.from));

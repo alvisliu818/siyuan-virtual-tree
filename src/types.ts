@@ -1,3 +1,5 @@
+import {DEFAULT_INDEX_BLACKLIST, DEFAULT_INDEX_WHITELIST} from "./utils/index-filter";
+
 // 思源内核 /api/file/readDir 返回的目录项
 export interface DirEntry {
     name: string;
@@ -45,6 +47,9 @@ export interface EditorConfig {
     // Markdown 编辑器引擎:vditor = 所见即所得(实时预览/阅读);cm6 = CodeMirror 6
     // 源码编辑(实时预览)+ Vditor.preview 静态渲染(阅读)。默认 vditor
     markdownEditor: "vditor" | "cm6";
+    // 阅读模式的渲染引擎(独立于实时预览的 markdownEditor):
+    // vditor = Vditor wysiwyg 只读;cm6 = CM6 只读富渲染,禁止点击进入编辑
+    markdownReadingEngine: "vditor" | "cm6";
     // CM6 编辑面代码块是否用 Monaco 渲染/编辑(colorize 卡片 + 单例编辑器);
     // 关闭后代码块回落为 CM6 原生源码行(与点语言标签的围栏态一致)
     cm6CodeBlockMonaco: boolean;
@@ -82,6 +87,13 @@ export interface EditorConfig {
     // 双链扫描的链接源范围:开(默认)= 挂载根下所有文本文件(Markdown/代码等)都参与
     // 反链扫描;关 = 仅 Markdown(回退旧性能,超大库可用)
     filesBacklinkScanAllText: boolean;
+    // 思源原生文档里用独立触发符 [[: 启用本插件的双链补全(任意文件 →
+    // file:// markdown 链接);纯 [[ 始终是思源原生文档/块引用。关 = 只有原生 [[
+    docWikilinkHint: boolean;
+    // 文件名索引的过滤规则(多行文本,每行一条;支持正则,见 utils/index-filter.ts)
+    // 白名单非空时只索引命中规则的文件;黑名单命中即排除(目录命中跳过整棵子树)
+    indexWhitelist: string;
+    indexBlacklist: string;
     // 音视频播放器自定义快捷键(规范串见 utils/hotkey.ts;空 = 禁用)
     mediaHotkeyMark: string;   // 在当前时间打点
     mediaHotkeyInsert: string; // 时间戳链接插入可见笔记页签的光标处
@@ -276,6 +288,7 @@ export const DEFAULT_CONFIG: EditorConfig = {
     marketTopBarIcon: true, // 顶栏默认显示「扩展市场」图标
     markdownDefaultMode: "live", // 实时预览(类 Obsidian Live Preview)
     markdownEditor: "vditor",    // Markdown 编辑器引擎:vditor(所见即所得)默认;cm6 备选
+    markdownReadingEngine: "vditor", // 阅读态引擎:vditor(保持旧行为)/ cm6(CM6 只读富渲染)
     cm6CodeBlockMonaco: true,     // CM6 代码块 Monaco 渲染/编辑默认开
     newTabReplacePlus: true,        // 默认接管顶部「+」
     newTabShowPinned: true,
@@ -297,6 +310,11 @@ export const DEFAULT_CONFIG: EditorConfig = {
     deleteMode: "plugin",
     // 双链扫描默认包含所有文本文件(关=仅 Markdown)
     filesBacklinkScanAllText: true,
+    // 思源文档 [[: 双链补全默认开(设置里可关,关后只有原生 [[)
+    docWikilinkHint: true,
+    // 索引规则:白名单默认空(不限制),黑名单默认忽略 node_modules 等噪声目录
+    indexWhitelist: DEFAULT_INDEX_WHITELIST,
+    indexBlacklist: DEFAULT_INDEX_BLACKLIST,
     // 音视频播放器快捷键默认值(K 打点;Shift+K 把时间戳链接插入可见笔记)
     mediaHotkeyMark: "K",
     mediaHotkeyInsert: "Shift+K",

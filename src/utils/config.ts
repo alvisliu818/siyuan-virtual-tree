@@ -1,6 +1,7 @@
 import {EditorConfig, DEFAULT_CONFIG} from "../types";
 import {STORAGE_CONFIG} from "../constants";
 import type {Plugin} from "siyuan";
+import {compileFilter, IndexFilter} from "./index-filter";
 
 // 内存里的配置缓存:供**无 plugin 参数**的深层模块读取设置
 // (如 components/file-tree.ts 的导入流程,拿不到 plugin 实例)
@@ -13,6 +14,19 @@ export function isImportMdSourceAssetEnabled(): boolean {
 // 双链扫描是否把所有文本文件当链接源(默认开;关=仅 Markdown,回退旧性能)
 export function isBacklinkScanAllTextEnabled(): boolean {
     return configCache?.filesBacklinkScanAllText !== false;
+}
+
+// 索引白/黑名单(按规则文本缓存编译结果;保存设置后 saveConfig 更新 configCache,
+// 文本一变自动重编译,无需手动失效)
+let indexFilterCache: {white: string; black: string; rules: IndexFilter} | null = null;
+
+export function getIndexFilter(): IndexFilter {
+    const white = configCache?.indexWhitelist ?? DEFAULT_CONFIG.indexWhitelist;
+    const black = configCache?.indexBlacklist ?? DEFAULT_CONFIG.indexBlacklist;
+    if (!indexFilterCache || indexFilterCache.white !== white || indexFilterCache.black !== black) {
+        indexFilterCache = {white, black, rules: compileFilter(white, black)};
+    }
+    return indexFilterCache.rules;
 }
 
 // 加载配置(合并默认值)

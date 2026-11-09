@@ -25,6 +25,7 @@ import {tags} from "@lezer/highlight";
 import {Menu} from "siyuan";
 import {cm6MarkdownRender, preloadCm6Katex} from "./cm6-render";
 import {cm6InlineWysiwyg, mdParserExtensions} from "./cm6-inline";
+import {BLOCK_FONT_FAMILY, BLOCK_FONT_SIZE, BLOCK_LINE_HEIGHT} from "./monaco-block";
 import {getLinkIndex} from "../utils/wikilink";
 import {searchBlocksForRef} from "../utils/backlink";
 
@@ -51,6 +52,9 @@ export interface Cm6MarkdownOptions {
     /** Ctrl/Cmd+Shift+L 插入双链:宿主弹文件选择器,选中后经 insertAtCursor 写入 */
     onInsertLink?(): void;
     placeholder?: string;
+    /** 只读阅读态:保留全部富渲染(代码块/公式/表格/图片/属性面板),但禁止
+     *  点击进入编辑、不挂 Monaco 代码块编辑器、不显示行号等编辑态 UI */
+    readOnly?: boolean;
 }
 
 export interface Cm6MarkdownHandle {
@@ -207,9 +211,13 @@ const syfeCmTheme = EditorView.theme({
         whiteSpace: "pre",          // 不折行(Logseq parity),长行横向滚
         backgroundColor: "var(--b3-theme-surface)",
         borderRadius: "0 0 var(--b3-border-radius, 6px) var(--b3-border-radius, 6px)",
-        fontFamily: "var(--b3-font-family-code, monospace)",
-        fontSize: "13px",
-        lineHeight: "21px",         // 与编辑态 monaco lineHeight 21 严格一致
+        // 字体三件套与块内编辑态 Monaco 严格同源(monaco-block 的 BLOCK_FONT_*)。
+        // 用户 2026-11-09 决策「卡片用 Monaco 字体」:两态统一 Consolas 栈,
+        // 不再用 var(--b3-font-family-code)——此前编辑态(JetBrains/monaco)与
+        // 卡片字形不一致,进出编辑整块跳动
+        fontFamily: BLOCK_FONT_FAMILY,
+        fontSize: `${BLOCK_FONT_SIZE}px`,
+        lineHeight: `${BLOCK_LINE_HEIGHT}px`,
         fontVariantLigatures: "none",
         tabSize: 4,
     },
@@ -518,9 +526,21 @@ export function createCm6MarkdownEditor(
 ): Cm6MarkdownHandle {
     // KaTeX 预热(本地资源,百毫秒级;首个公式渲染时基本已就绪)
     preloadCm6Katex();
+    const readOnly = opts.readOnly === true;
     const state = EditorState.create({
         doc: opts.value,
         extensions: [
+            // 只读阅读态:只留富渲染 + 查找,编辑态 UI(行号/活动行/历史/拖拽/
+            // 自动补全/编辑快捷键)全部不挂。EditorView.editable.of(false) 让
+            // contenteditable=false —— 点击不会把光标送回源码;富渲染层再用
+            // state.readOnly 二次确认(见 cm6-render / cm6-inline)。
+            ...(readOnly ? [
+                EditorState.readOnly.of(true),
+                EditorView.editable.of(false),
+                // 双保险:任何 docChanged 事务(快捷键/命令/程序 dispatch)一律丢弃,
+                // 阅读态绝不会被改出脏标记。selection/effect 事务照常(查找/定位可用)
+                EditorState.transactionFilter.of(tr => (tr.docChanged ? [] : tr)),
+            ] : [
             lineNumbers({
                 // 右键行号 → 思源菜单「复制第 N 行链接」,与 Vditor 渲染态行号槽
                 // (md-line-gutter)和 Monaco 源码态(monaco.ts)同一套交互。
@@ -562,6 +582,7 @@ export function createCm6MarkdownEditor(
             EditorState.allowMultipleSelections.of(true),
             indentOnInput(),
             bracketMatching(),
+            ]),
             syntaxHighlighting(syfeMdHighlight, {fallback: true}),
             search({top: true}),
             highlightSelectionMatches(),
@@ -570,27 +591,33 @@ export function createCm6MarkdownEditor(
             cm6InlineWysiwyg({onOpenLink: opts.onOpenLink}),
             // [[ 文件双链补全 + (( 思源块引用补全(override = 本编辑器仅有的补全源;
             // TTL 缓存索引/SQL 搜索,键入不重扫)
-            autocompletion({override: [wikilinkCompletionSource, blockRefCompletionSource]}),
+            ...(readOnly ? [] : [
+                autocompletion({override: [wikilinkCompletionSource, blockRefCompletionSource]}),
+            ]),
             EditorView.lineWrapping,
             syfeCmTheme,
-            // Ctrl/Cmd+S:默认键位不含保存,最高优先级拦给宿主;
-            // Ctrl/Cmd+Shift+L:插入双链(宿主弹文件选择器)
-            Prec.highest(keymap.of([{
-                key: "Mod-s",
-                run: () => {
-                    opts.onSave();
-                    return true;
-                },
-            }, {
-                key: "Mod-Shift-l",
-                run: () => {
-                    if (!opts.onInsertLink) return false;
-                    opts.onInsertLink();
-                    return true;
-                },
-            }])),
-            keymap.of([...defaultKeymap, ...historyKeymap, ...searchKeymap, indentWithTab]),
-            placeholder(opts.placeholder ?? ""),
+            // Ctrl/Cmd+S 保存 / Ctrl/Cmd+Shift+L 插入双链:只读阅读态不挂
+            ...(readOnly ? [] : [
+                Prec.highest(keymap.of([{
+                    key: "Mod-s",
+                    run: () => {
+                        opts.onSave();
+                        return true;
+                    },
+                }, {
+                    key: "Mod-Shift-l",
+                    run: () => {
+                        if (!opts.onInsertLink) return false;
+                        opts.onInsertLink();
+                        return true;
+                    },
+                }])),
+            ]),
+            // 只读态只保留查找快捷键,不挂编辑/历史/缩进键位
+            readOnly
+                ? keymap.of([...searchKeymap])
+                : keymap.of([...defaultKeymap, ...historyKeymap, ...searchKeymap, indentWithTab]),
+            ...(readOnly ? [] : [placeholder(opts.placeholder ?? "")]),
             EditorView.updateListener.of((u) => {
                 if (u.docChanged) opts.onInput();
                 if ((u.docChanged || u.selectionSet) && opts.onCursor) opts.onCursor();
@@ -614,9 +641,10 @@ export function createCm6MarkdownEditor(
                 changes: {from: 0, to: view.state.doc.length, insert: v},
             });
         },
-        focus: () => view.focus(),
+        focus: () => { if (!readOnly) view.focus(); },
         currentLine: () => view.state.doc.lineAt(view.state.selection.main.head).number,
         insertAtCursor(md: string): boolean {
+            if (readOnly) return false;
             try {
                 const pos = view.state.selection.main.head;
                 view.dispatch({
@@ -639,14 +667,14 @@ export function createCm6MarkdownEditor(
                     selection: {anchor: l.from},
                     effects: EditorView.scrollIntoView(l.from, {y: "center"}),
                 });
-                if (focus) view.focus();
+                if (focus && !readOnly) view.focus();
             } catch {
                 // 忽略:行号越界等不影响主流程
             }
         },
         openSearch: () => {
             openSearchPanel(view);
-            view.focus();
+            if (!readOnly) view.focus();
         },
         destroy: () => view.destroy(),
     };

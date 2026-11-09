@@ -78,6 +78,16 @@ const S: BlockState = G.__syfeMonacoBlock || (G.__syfeMonacoBlock = {
 //   (CM6 重建 → root 瞬时 0 宽/脱离文档)会把 0/2^24 脏值烙进 lines-content 内联
 //   宽且不再自愈(0→0 恒稳 RO 不触发;实测反复复根)。改自管 ResizeObserver 观察
 //   host(见 startHostObserver),发现尺寸变化就双维齐传 layout() 钉回正确值。
+// 卡片(阅读态 colorize)与块内编辑态统一用 **Monaco 字体**(用户 2026-11-09 决策:
+// 卡片用 Monaco 字体,不再跟随思源 --b3-font-family-code/JetBrains Mono)。
+// 字串在两处保持一致:这里(Monaco 选项)+ index.scss 的 .syfe-cm-codeblock-body。
+// ⚠ 也不能把 var(...) 传给 Monaco 的 fontFamily 选项:实测 .view-line 的 computed
+//   font-family 会在变量值之后拼上默认字体串,两态字形来源含糊;显式字面串最稳。
+// 导出给 cm6-markdown 的卡片主题(阅读态 colorize)使用 —— 两态字体单一来源
+export const BLOCK_FONT_FAMILY = "Consolas, 'Courier New', monospace";
+export const BLOCK_FONT_SIZE = 13;
+// BLOCK_LINE_HEIGHT = 21 在文件下方(relayoutTo 计算卡片高度处)已定义,此处复用
+
 function ensureEditor(): monaco.editor.IStandaloneCodeEditor {
     if (S.editor) return S.editor;
     S.stash = document.createElement("div");
@@ -100,7 +110,12 @@ function ensureEditor(): monaco.editor.IStandaloneCodeEditor {
         // 一直在 —— 两态都有行号,视觉不跳
         lineNumbers: "on",
         lineNumbersMinChars: 2,
-        lineDecorationsWidth: 0,
+        // 行号右侧的装饰宽:补齐与阅读卡片行号列的差值 —— 卡片行号列宽 =
+        // padding 0.9em×2(@13px Consolas = 23.4px,见 index.scss .syfe-cm-cl-n),
+        // Monaco 行号数字 2ch = 14px,差 9.4px。不补的话进出编辑代码列整体
+        // 横移 9.4px(用户反馈「行号位置变了」)。测试库 lineDecorationsWidth=9.4
+        // 实验实测 def token x 14.0 → 23.0,与卡片 23.4 对齐。
+        lineDecorationsWidth: 9.4,
         folding: false,
         renderLineHighlight: "none",
         scrollBeyondLastLine: false,
@@ -120,9 +135,9 @@ function ensureEditor(): monaco.editor.IStandaloneCodeEditor {
             alwaysConsumeMouseWheel: false,
         },
         padding: {top: 8, bottom: 8},
-        fontSize: 13,
-        lineHeight: 21,
-        fontFamily: "var(--b3-font-family-code, monospace)",
+        fontSize: BLOCK_FONT_SIZE,
+        lineHeight: BLOCK_LINE_HEIGHT,
+        fontFamily: BLOCK_FONT_FAMILY,
         // 语义着色开关(monaco standalone 默认关):python 块经 LSP 虚拟文档拿到
         // semanticTokens 后,扩展主题的语义色才能在编辑态生效 —— 与代码文件
         // (monaco.ts createEditor 同款)对齐。思源配色主题无语义规则,开了也无色可施,
@@ -335,7 +350,7 @@ function unbindBlockListeners(): void {
 //   永久卡死(实测坐实:meInline width:0px、手动 layout({width,height}) 双维齐传才活)。
 //   只写容器 CSS(width:100% 由 ensureEditor 设好,height 在这里显式写),me 作为
 //   100% 子元素跟随,RO 全程接管 —— my-logseq 同款(updateHeight 只写 root 高度)。
-const BLOCK_LINE_HEIGHT = 21;
+export const BLOCK_LINE_HEIGHT = 21;
 const BLOCK_V_PAD = 16;
 const BLOCK_HSCROLL_STRIP = 10;
 function relayoutTo(_container: HTMLElement, ed: monaco.editor.IStandaloneCodeEditor): void {

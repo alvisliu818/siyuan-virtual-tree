@@ -19,6 +19,8 @@ tools/_msg.txt
 # 临时探测脚本(_cdp.mjs / pty-helper.js / start-siyuan-debug.ps1 除外,它们要入库)
 tools/_probe-*
 tools/_spawn-*
+tools/_reload-*
+tools/_shot-*
 tools/_verify-*
 tools/_pty-helper-test.js
 # 实机调试用的临时 CDP 脚本 / 内核协议探测脚本(验证完即弃)

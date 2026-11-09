@@ -9,6 +9,7 @@
 // 优先级:settings.json > 插件 config.json。config.json 里的同义字段由
 // user-settings 的 applyUserSettingsToConfig 按此表回写,保证老代码读 plugin.config 依然正确。
 import {EditorConfig} from "../types";
+import {DEFAULT_INDEX_BLACKLIST, DEFAULT_INDEX_WHITELIST} from "../utils/index-filter";
 
 export type SettingKind = "boolean" | "number" | "string" | "enum" | "numberArray";
 
@@ -867,6 +868,36 @@ export const PLUGIN_DEFS: SettingDef[] = [
         set: (c, v) => { c.filesBacklinkScanAllText = v !== false; },
     },
     {
+        key: "files.indexBlacklist",
+        kind: "string",
+        group: G_FILES,
+        title: "双链索引:黑名单规则",
+        description: "每行一条规则,空行与 # 注释忽略;支持 /正则/flags、裸正则、普通子串(不区分大小写)。匹配完整路径、每一级目录名与文件名;目录命中会跳过整棵子树。默认忽略 node_modules/.git/.svn/.hg/.Trash/$RECYCLE.BIN/System Volume Information,以及思源 data 下的 plugins/widgets/themes/icons/snippets/remnants/history/temp/push/storage/conf;隐藏目录与 .sy 块文件始终跳过",
+        default: DEFAULT_INDEX_BLACKLIST,
+        get: (c) => c.indexBlacklist,
+        set: (c, v) => { c.indexBlacklist = String(v ?? ""); },
+    },
+    {
+        key: "files.indexWhitelist",
+        kind: "string",
+        group: G_FILES,
+        title: "双链索引:白名单规则",
+        description: "每行一条规则(语法同黑名单)。留空 = 不限制;非空时只索引命中的文件(如 \\.md$ 只索引 Markdown、^E:/notes/ 只索引某目录)。白名单不挡目录,黑名单始终优先",
+        default: DEFAULT_INDEX_WHITELIST,
+        get: (c) => c.indexWhitelist,
+        set: (c, v) => { c.indexWhitelist = String(v ?? ""); },
+    },
+    {
+        key: "files.docWikilinkHint",
+        kind: "boolean",
+        group: G_FILES,
+        title: "双链:思源文档 [[: 补全",
+        description: "输入 [[ 仍弹思源原生文档/块引用;输入 [[: 后弹本插件补全,可继续输入筛选全部挂载根下的任意文件,选中后落地为 [名称](file:///路径) 的 Markdown 链接;支持 名:行号 / 名#标题 / 思源块。浮层上按 Esc 可让行给思源原生 [[;关闭本开关则完全只有原生 [[",
+        default: true,
+        get: (c) => c.docWikilinkHint,
+        set: (c, v) => { c.docWikilinkHint = v !== false; },
+    },
+    {
         key: "files.closeUnsavedAction",
         kind: "enum",
         group: G_FILES,
@@ -986,6 +1017,18 @@ export const PLUGIN_DEFS: SettingDef[] = [
         set: (c, v) => {
             c.markdownEditor = v === "cm6" ? "cm6" : "vditor";
         },
+    },
+    {
+        key: "markdown.readingEngine",
+        kind: "enum",
+        group: G_MD,
+        title: "Markdown 阅读模式引擎",
+        description: "阅读(只读)模式的渲染引擎,独立于实时预览编辑器:vditor = Vditor wysiwyg 只读;cm6 = CM6 只读富渲染(代码块/公式/表格/图片/属性面板同实时预览,但 contenteditable=false,点击不会进入编辑、不挂 Monaco)。对新开/重进阅读态的页签生效",
+        default: "vditor",
+        enum: ["vditor", "cm6"],
+        enumLabels: {vditor: "Vditor(静态阅读)", cm6: "CodeMirror 6(只读富渲染)"},
+        get: (c) => c.markdownReadingEngine,
+        set: (c, v) => { c.markdownReadingEngine = v === "cm6" ? "cm6" : "vditor"; },
     },
     {
         key: "markdown.cm6CodeBlockMonaco",

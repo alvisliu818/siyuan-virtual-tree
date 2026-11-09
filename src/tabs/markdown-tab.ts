@@ -37,9 +37,11 @@ import {ensureSiyuanLute} from "../utils/lute-guard";
 import {colorizeCached, flushActiveBlock, onMonacoThemeChanged, setEditingKey, unmountBlockEditor} from "../editor/monaco-block";
 
 // Markdown 编辑 Tab:对齐 Obsidian 的三态编辑器
-// - live    实时预览:Vditor ir(即时渲染),光标所在行显示源码、其余实时渲染,可编辑
+// - live    实时预览:Vditor ir(即时渲染)或 CM6 源码态富渲染,可编辑
 // - source  源码模式:Monaco,纯 Markdown 文本(带语法高亮),可编辑
-// - reading 阅读模式:Vditor wysiwyg 完整渲染 + disabled(),只读
+// - reading 阅读模式:只读;引擎由 markdown.readingEngine 独立选择 ——
+//            vditor = Vditor wysiwyg + disabled();cm6 = CM6 只读富渲染
+//            (contenteditable=false,点击渲染物不回源码、不挂 Monaco,禁止点击进入编辑)
 // 内容统一经 model-manager 的 Monaco model 管理(脏标记/保存/多 Tab 共享)。
 // 注意:只有 live 模式会把 Vditor 内容同步回 model(reading 不可编辑,source 直接编辑 model)。
 
@@ -961,6 +963,20 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
             const mdEditorKind = (): "vditor" | "cm6" =>
                 plugin.config.markdownEditor === "cm6" ? "cm6" : "vditor";
 
+            // 阅读态引擎独立配置(不再跟随 live 的 markdownEditor):
+            // cm6 = CM6 只读富渲染(禁止点击进入编辑);vditor = Vditor wysiwyg disabled
+            const mdReadingKind = (): "vditor" | "cm6" =>
+                plugin.config.markdownReadingEngine === "cm6" ? "cm6" : "vditor";
+
+            // CM6 两个面(live 编辑 / reading 只读)共用的图片地址解析
+            const resolveCmImageSrc = async (src: string): Promise<string | null> => {
+                const resolved = resolveAssetSrc(self._path!, src);
+                if (resolved === null) {
+                    return /^(https?:|data:|blob:|file:)/i.test(src) ? src : null;
+                }
+                return loadBlobUrl(self, resolved, src);
+            };
+
             // 把 live 态当前编辑面(Vditor 走 lute 序列化 + blob 还原;CM6 直取文档)同步回 model
             const syncLiveToModel = (): void => {
                 if (self._mode !== "live" || !self._model) return;
@@ -1335,14 +1351,7 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                 const cm = createCm6MarkdownEditor(self._contentEl!, {
                     value: self._model?.getValue() ?? "",
                     // cm6 富渲染:图片地址 → blob URL(与 vditor 预览同一条解析链)
-                    resolveImageSrc: async (src) => {
-                        const resolved = resolveAssetSrc(self._path!, src);
-                        if (resolved === null) {
-                            // 网络/内联地址可直接加载
-                            return /^(https?:|data:|blob:|file:)/i.test(src) ? src : null;
-                        }
-                        return loadBlobUrl(self, resolved, src);
-                    },
+                    resolveImageSrc: resolveCmImageSrc,
                     onSave: save,
                     onInput: () => {
                         markDirty(path, true);
@@ -1396,11 +1405,13 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                 }
             };
 
-            // reading = Vditor.preview 静态渲染(不经编辑器实例,渲染管线与 Vditor 阅读
-            // 完全一致:hljs/math/mermaid 全保留),DOM 同为 .vditor-reset —— 行号槽、
-            // 反链标记、图片本地化、面包屑、查找高亮等渲染态机制原样复用
-            const enterCm6Reading = async () => {
-                await ensureSiyuanLute();
+            // reading(引擎 = cm6) = CM6 只读阅读态:
+            //   富渲染全部保留(代码块卡片/公式/表格/图片/页面属性),但
+            //   contenteditable=false + EditorState.readOnly —— 点击渲染物不会
+            //   退回源码、不会挂 Monaco 编辑器,即「禁止点击进入编辑」。
+            //   Vditor 阅读态那套 .vditor-reset 机制(行号槽/反链标记/图片本地化/
+            //   链接委托)不适用于 CM6 DOM,这里改用 CM6 自带的查找、链接点击与定位。
+            const enterCm6Reading = () => {
                 closeFind();
                 destroyMonaco(self);
                 destroyCm6(self);
@@ -1413,53 +1424,29 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                     window.clearTimeout(self._imgDebounce);
                     self._imgDebounce = undefined;
                 }
-                ensureVditorCSS();
-                const isDark = getCurrentMode() === 1;
-                const host = document.createElement("div");
-                host.className = "syfe-md__cmread";
                 self._contentEl!.innerHTML = "";
-                self._contentEl!.appendChild(host);
-                // Vditor.preview 是文档化的静态 API(渲染 without 编辑器实例);
-                // 防御式调用:构建差异下拿不到就退化为纯文本,保证可读
-                const previewFn = (Vditor as unknown as {
-                    preview?: (el: HTMLElement, md: string, opts?: Record<string, unknown>) => void;
-                }).preview;
-                if (typeof previewFn === "function") {
-                    previewFn.call(Vditor, host, self._model?.getValue() ?? "", {
-                        cdn: VDITOR_CDN,
-                        lang: "zh_CN",
-                        mode: isDark ? "dark" : "light",
-                        theme: {
-                            current: isDark ? "dark" : "light",
-                            path: `${VDITOR_CDN}/dist/css/content-theme`,
-                        },
-                        // 渲染完成后:frontmatter → 属性面板,代码块 hljs → TextMate 主题色
-                        // (顺序固定:属性面板的 pre>code 不能被当普通代码块着色)
-                        after: () => {
-                            restyleReadingProperties(host);
-                            void restyleReadingCodeBlocks(host);
-                        },
-                    });
-                    // 兑底:after 未触发(vditor 构建差异)时定时补一次;两者都幂等
-                    setTimeout(() => {
-                        restyleReadingProperties(host);
-                        void restyleReadingCodeBlocks(host);
-                    }, 1500);
-                } else {
-                    host.textContent = self._model?.getValue() ?? "";
+                const cm = createCm6MarkdownEditor(self._contentEl!, {
+                    value: self._model?.getValue() ?? "",
+                    readOnly: true,
+                    resolveImageSrc: resolveCmImageSrc,
+                    onSave: () => undefined,    // 只读态不落盘
+                    onInput: () => undefined,   // 只读态 docChanged 已被事务过滤器丢弃
+                    // 阅读态普通点击即打开链接(cmV6 行内层按 readOnly 放宽 Ctrl 要求)
+                    onOpenLink: (url: string) => {
+                        void openLinkFromEditor(plugin as any, path, url);
+                    },
+                });
+                self._cm6 = cm;
+                self._hcrumbsHandle?.refresh();
+                // 链接带来的位置(行号 / 标题锚点换算成行):滚动定位,不抢焦点
+                const ref = consumePendingRef(path);
+                if (ref) {
+                    const line = ref.line
+                        ?? (ref.anchor ? headingLineOfAnchor(self._model?.getValue() ?? "", ref.anchor) : null);
+                    if (line) {
+                        setTimeout(() => { if (self._cm6 === cm) cm.revealLine(line, false); }, 300);
+                    }
                 }
-                self._imgObserver?.observe(self._contentEl!, {childList: true, subtree: true});
-                // preview 是异步管线(lute 渲染 + hljs/math 懒加载),给一拍再装槽位/定位
-                setTimeout(() => {
-                    processImages(self);
-                    processWikilinks(self);
-                    self._hcrumbsHandle?.refresh();
-                    installGutter();
-                    applyBacklinkMarkers(self, path);
-                    attachLinkClickDelegate(self, plugin, path);
-                    const ref = consumePendingRef(path);
-                    if (ref) applyFileRef(self, ref);
-                }, 300);
             };
 
             // 配置就位后的引擎重进(布局恢复时序补偿,由 index.ts onLayoutReady 调用):
@@ -1470,13 +1457,15 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                 if (self._mode === "source" || !self._model) return;   // 源码态引擎无关;模型未载完时初始进入会按新配置挂
                 if (!self._cm6 && !self._vditor) return;               // 编辑面还没挂出来:同上,交给初始进入
                 const kind = mdEditorKind();
+                const readingKind = mdReadingKind();
                 if (self._mode === "live") {
                     if (kind === "cm6" && !self._cm6) enterLive();
                     else if (kind === "vditor" && !self._vditor) enterLive();
                 } else if (self._mode === "reading") {
-                    // vditor 阅读态挂 _vditor(wysiwyg);cm6 阅读态走 Vditor.preview(两者皆无)
-                    if (kind === "cm6" && self._vditor) enterReading();
-                    else if (kind === "vditor" && !self._vditor) enterReading();
+                    // cm6 阅读态挂只读 _cm6;vditor 阅读态挂 _vditor(wysiwyg)。
+                    // 引擎判定用独立的阅读态配置,不再跟随 live 的 markdownEditor
+                    if (readingKind === "cm6" && !self._cm6) enterReading();
+                    else if (readingKind === "vditor" && !self._vditor) enterReading();
                 }
             };
 
@@ -1485,9 +1474,9 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                 if (mdEditorKind() === "cm6") void enterCm6Live();
                 else void enterVditor("ir", false);
             };
-            // 阅读模式(类 Obsidian Reading):完整渲染 + 只读
+            // 阅读模式(类 Obsidian Reading):完整渲染 + 只读,引擎由独立设置选择
             const enterReading = () => {
-                if (mdEditorKind() === "cm6") void enterCm6Reading();
+                if (mdReadingKind() === "cm6") enterCm6Reading();
                 else void enterVditor("wysiwyg", true);
             };
 
@@ -1547,7 +1536,8 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                         // 忽略
                     }
                 } else if (self._mode === "reading") {
-                    // cm6 阅读态:清标记重取 colorize 着色(缓存键含主题名,自动换明暗色板)
+                    // 兼容旧的 Vditor.preview 阅读态(.syfe-md__cmread):清标记重取
+                    // colorize。CM6 只读阅读态由 cm6-render 的 themeSync 自行重建
                     const host = self._contentEl?.querySelector(".syfe-md__cmread");
                     if (host) {
                         host.querySelectorAll<HTMLElement>("code[data-syfe-tm]").forEach(c => {

@@ -62,6 +62,7 @@ import {isVirtualPath, virtualId, initMountStore, getMountList, dropSyDocMounts}
 import {initBaiduPanStore} from "./api/baidu-pan";
 import {openBaiduPanDialog} from "./components/baidu-pan-dialog";
 import {registerSlashCommands, emitBacklinkRefresh} from "./protyle/slash-commands";
+import {registerDocWikilinkHint} from "./protyle/doc-wikilink-hint";
 import {onDidSaveModel} from "./editor/model-manager";
 import {clearBacklinkCache} from "./utils/backlink";
 import {registerLinkReveal} from "./protyle/link-reveal";
@@ -179,6 +180,7 @@ export default class FileEditorPlugin extends Plugin {
     private markdownModeSelect?: HTMLSelectElement;
     // Markdown 编辑器引擎下拉(vditor 所见即所得 / cm6 源码编辑)
     private markdownEditorSelect?: HTMLSelectElement;
+    private markdownReadingEngineSelect?: HTMLSelectElement;
     private cm6CodeBlockMonacoInput?: HTMLInputElement;
     private newTabReplacePlusInput?: HTMLInputElement;
     private newTabShowPinnedInput?: HTMLInputElement;
@@ -188,6 +190,11 @@ export default class FileEditorPlugin extends Plugin {
     private importMdSourceAssetInput?: HTMLInputElement;
     // 双链扫描:所有文本文件作为链接源(关=仅 Markdown)
     private backlinkScanAllTextInput?: HTMLInputElement;
+    // 思源文档 [[: 双链补全(关=只有思源原生 [[ 文档/块引用)
+    private docWikilinkHintInput?: HTMLInputElement;
+    // 双链文件名索引的白/黑名单(多行规则文本,支持正则)
+    private indexWhitelistInput?: HTMLTextAreaElement;
+    private indexBlacklistInput?: HTMLTextAreaElement;
     // 接管思源文档内文件打开:模式下拉 + 扩展名白名单
     private docOpenTakeoverSelect?: HTMLSelectElement;
     private docOpenTakeoverExtsInput?: HTMLInputElement;
@@ -410,6 +417,11 @@ export default class FileEditorPlugin extends Plugin {
 
         // 注册思源编辑器斜杆命令(输入 /file 或 /文件 插入文件链接)
         registerSlashCommands(this, () => this.getFileTreeRoot());
+
+        // 思源文档双链补全:[[ 留给思源原生引用,[[: 弹插件的任意文件补全
+        // (落地 [名称](file:///...),支持 :行号 / #标题 与思源块);
+        // 浮层上 Esc 可让行给原生 [[。设置里可关,关掉则完全只有原生 [[
+        registerDocWikilinkHint(() => this.config.docWikilinkHint !== false);
 
         // 双链:文件保存后失效反链/出链缓存,并让目标文件已打开的双链面板立即重扫
         // (onDidSaveModel 是统一保存出口:Ctrl+S / 关闭确认 / 命令面板都走这里)
@@ -1119,7 +1131,15 @@ export default class FileEditorPlugin extends Plugin {
         this.markdownEditorSelect.innerHTML = `
             <option value="vditor">Vditor(所见即所得)</option>
             <option value="cm6">CodeMirror 6(源码编辑)</option>`;
-        addRow("openFiles", "Markdown 编辑器", "实时预览模式的编辑引擎,对新开页签生效:vditor = 所见即所得(光标行显示源码,其余实时渲染);cm6 = CodeMirror 6 源码编辑(整篇源码 + 语法高亮,大文件更流畅,阅读态仍为完整渲染)。已有页签按页签顶部按钮重新切换即可应用", this.markdownEditorSelect);
+        addRow("openFiles", "Markdown 编辑器", "实时预览模式的编辑引擎,对新开页签生效:vditor = 所见即所得(光标行显示源码,其余实时渲染);cm6 = CodeMirror 6 源码编辑(整篇源码 + 语法高亮,大文件更流畅)。阅读模式的渲染引擎由下面的独立设置决定。已有页签按页签顶部按钮重新切换即可应用", this.markdownEditorSelect);
+
+        // 阅读模式引擎:vditor = Vditor wysiwyg 只读;cm6 = CM6 只读富渲染(禁止点击进入编辑)
+        this.markdownReadingEngineSelect = document.createElement("select");
+        this.markdownReadingEngineSelect.className = "b3-select";
+        this.markdownReadingEngineSelect.innerHTML = `
+            <option value="vditor">Vditor(静态阅读)</option>
+            <option value="cm6">CodeMirror 6(只读富渲染)</option>`;
+        addRow("openFiles", "Markdown 阅读模式引擎", "阅读(只读)模式用哪个引擎渲染:vditor = Vditor wysiwyg 只读(旧行为);cm6 = CodeMirror 6 只读富渲染,代码块/公式/表格/图片/页面属性与实时预览同一套渲染,但禁止点击进入编辑(contenteditable=false,点击渲染物不回源码、不挂 Monaco)。对新开页签或重新点「阅读」按钮生效", this.markdownReadingEngineSelect);
 
         // CM6 代码块 Monaco 渲染/编辑开关(仅 markdownEditor=cm6 的实时预览生效)
         this.cm6CodeBlockMonacoInput = document.createElement("input");
@@ -1138,6 +1158,31 @@ export default class FileEditorPlugin extends Plugin {
         this.backlinkScanAllTextInput.type = "checkbox";
         this.backlinkScanAllTextInput.className = "b3-switch";
         addRow("openFiles", "双链:扫描所有文本文件", "反向链接扫描把挂载根下所有文本文件(代码/配置等)里的文件路径与 [[链接]] 都算作引用;关闭后仅扫描 Markdown 文件(超大库可关以提升扫描速度)", this.backlinkScanAllTextInput);
+
+        // 思源文档 [[: 双链补全:[[ 仍归思源原生,插件用独立触发符 [[:
+        this.docWikilinkHintInput = document.createElement("input");
+        this.docWikilinkHintInput.type = "checkbox";
+        this.docWikilinkHintInput.className = "b3-switch";
+        addRow("openFiles", "双链:思源文档 [[: 补全", "输入 [[ 仍弹思源原生文档/块引用;输入 [[: 后弹本插件补全,可继续输入筛选全部挂载根下的任意文件,选中后落地为 [名称](file:///路径) 的 Markdown 链接(可被反链扫描识别);支持 名:行号 定位到行、名#标题 定位到标题、文字搜索思源块。补全浮层上按 Esc 可让行给思源原生 [[;关闭本开关则完全只有原生 [[", this.docWikilinkHintInput);
+
+        // 索引白/黑名单:每行一条规则,支持正则;保存后自动失效重建索引
+        const makeRuleTextarea = (placeholder: string): HTMLTextAreaElement => {
+            const ta = document.createElement("textarea");
+            ta.className = "b3-text-field fn__block";
+            ta.rows = 5;
+            ta.spellcheck = false;
+            ta.placeholder = placeholder;
+            ta.style.width = "100%";
+            ta.style.minHeight = "96px";
+            ta.style.fontFamily = "var(--b3-font-family-code, monospace)";
+            ta.style.fontSize = "12px";
+            ta.style.resize = "vertical";
+            return ta;
+        };
+        this.indexBlacklistInput = makeRuleTextarea("每行一条规则,如 node_modules 或 /\\.tmp$/i");
+        addRow("openFiles", "双链:索引黑名单", "每行一条规则,空行与 # 注释忽略;支持 /正则/flags、裸正则、普通子串(不区分大小写)。匹配完整路径 + 每一级目录名 + 文件名,目录命中会跳过整棵子树。默认忽略 node_modules、.git/.svn/.hg、.Trash、$RECYCLE.BIN、System Volume Information,以及思源 data 下的 plugins/widgets/themes/icons/snippets/remnants/history/temp/push/storage/conf;隐藏目录与 .sy 块文件始终跳过。删掉规则即可让它们重新进索引", this.indexBlacklistInput);
+        this.indexWhitelistInput = makeRuleTextarea("留空 = 不限制;如 \\.md$ 只索引 Markdown");
+        addRow("openFiles", "双链:索引白名单", "每行一条规则(语法同黑名单)。留空不限制;非空时只索引命中的文件,例如 \\.md$ 只索引 Markdown、^E:/notes/ 只索引某目录。白名单不挡目录(否则走不进目标目录),黑名单始终优先", this.indexWhitelistInput);
 
         // 右键「新建思源文档」:目标位置(笔记本 + 子路径)与文件同名默认
         this.newDocNotebookSelect = document.createElement("select");
@@ -1601,6 +1646,9 @@ export default class FileEditorPlugin extends Plugin {
         if (this.takeoverSplitOpenInput) this.takeoverSplitOpenInput.checked = this.config.takeoverSplitOpen === true;
         if (this.treeBacklinkIconInput) this.treeBacklinkIconInput.checked = this.config.treeBacklinkIcon !== false;
         if (this.backlinkScanAllTextInput) this.backlinkScanAllTextInput.checked = this.config.filesBacklinkScanAllText !== false;
+        if (this.docWikilinkHintInput) this.docWikilinkHintInput.checked = this.config.docWikilinkHint !== false;
+        if (this.indexBlacklistInput) this.indexBlacklistInput.value = this.config.indexBlacklist ?? "";
+        if (this.indexWhitelistInput) this.indexWhitelistInput.value = this.config.indexWhitelist ?? "";
         if (this.searchMaxSizeInput) {
             this.searchMaxSizeInput.value = String(Math.round(this.config.searchMaxFileSize / 1024));
         }
@@ -1613,6 +1661,7 @@ export default class FileEditorPlugin extends Plugin {
         if (this.terminalShellSelect) this.terminalShellSelect.value = this.config.terminalShell || "auto";
         if (this.markdownModeSelect) this.markdownModeSelect.value = this.config.markdownDefaultMode || "live";
         if (this.markdownEditorSelect) this.markdownEditorSelect.value = this.config.markdownEditor || "vditor";
+        if (this.markdownReadingEngineSelect) this.markdownReadingEngineSelect.value = this.config.markdownReadingEngine || "vditor";
         if (this.cm6CodeBlockMonacoInput) this.cm6CodeBlockMonacoInput.checked = this.config.cm6CodeBlockMonaco !== false;
         if (this.globalReadingModeInput) this.globalReadingModeInput.checked = this.config.globalReadingMode !== false;
         if (this.versionKeepCountInput) this.versionKeepCountInput.value = String(this.config.versionKeepCount ?? 10);
@@ -1704,11 +1753,15 @@ export default class FileEditorPlugin extends Plugin {
             marketTopBarIcon: this.marketTopBarIconInput?.checked ?? true,
             markdownDefaultMode: (this.markdownModeSelect?.value as "live" | "source" | "reading") || "live",
             markdownEditor: (this.markdownEditorSelect?.value as "vditor" | "cm6") || "vditor",
+            markdownReadingEngine: (this.markdownReadingEngineSelect?.value as "vditor" | "cm6") || "vditor",
             cm6CodeBlockMonaco: this.cm6CodeBlockMonacoInput?.checked ?? true,
             globalReadingMode: this.globalReadingModeInput?.checked ?? true,
             versionKeepCount: Math.max(0, parseInt(this.versionKeepCountInput?.value || "10", 10) || 0),
             deleteMode: ((this.deleteModeSelect?.value || "plugin") as "plugin" | "system"),
             filesBacklinkScanAllText: this.backlinkScanAllTextInput?.checked ?? true,
+            docWikilinkHint: this.docWikilinkHintInput?.checked ?? true,
+            indexBlacklist: this.indexBlacklistInput?.value ?? "",
+            indexWhitelist: this.indexWhitelistInput?.value ?? "",
             mediaHotkeyMark: normalizeHotkeyText(this.mediaHotkeyMarkInput?.value ?? ""),
             mediaHotkeyInsert: normalizeHotkeyText(this.mediaHotkeyInsertInput?.value ?? ""),
             newTabReplacePlus: this.newTabReplacePlusInput?.checked ?? true,
@@ -1768,6 +1821,16 @@ export default class FileEditorPlugin extends Plugin {
         setTrashMode(this.config.deleteMode || "plugin");
         // 双链:设置保存后全量失效反链/出链缓存(含文件名索引,扫描范围可能已变)
         clearBacklinkCache(true);
+        // Markdown 引擎设置改完立即对已打开的页签生效(实时预览 / 阅读态各自
+        // 按当前配置判断,挂对引擎的页签是 no-op)
+        const mdTabs = ((this.getOpenedTab?.() ?? {})[MARKDOWN_TAB_TYPE] || []) as unknown as MarkdownTabInstance[];
+        for (const mdInst of mdTabs) {
+            try {
+                mdInst._resyncEngineForConfig?.();
+            } catch {
+                // 单页签重进失败不影响其余页签
+            }
+        }
         // 关闭未保存行为跟随设置生效
         setCloseUnsavedAction(this.config.closeUnsavedAction);
         // 文档面包屑细分设置:收集控件值(开关=布尔,数字=夹紧范围,下拉=字符串)写模块设置文件

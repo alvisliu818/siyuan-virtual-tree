@@ -843,6 +843,36 @@ button.syfe-editor__arrow--exp:hover {
         margin: 0;
         padding: 16px 24px 64px;
     }
+
+    // CM6 只读阅读态(阅读模式引擎 = cm6):富渲染保留,编辑态反馈全部收掉。
+    // 该态不挂 lineNumbers / highlightActiveLine / drawSelection,这里再兜一层
+    // 光标色、焦点外框与鼠标光标,避免看起来"还能点进去编辑"。
+    .cm-editor {
+        background: transparent;
+
+        .cm-scroller {
+            padding-left: 24px !important;
+            padding-right: 24px !important;
+        }
+
+        .cm-content {
+            caret-color: transparent !important;
+            cursor: default;
+        }
+
+        .cm-line {
+            cursor: default;
+        }
+
+        .cm-cursor,
+        .cm-dropCursor {
+            display: none !important;
+        }
+
+        &.cm-focused {
+            outline: none !important;
+        }
+    }
 }
 
 // ===== Markdown 渲染态行号槽(实时预览 / 阅读)=====
@@ -5374,6 +5404,16 @@ button.syfe-editor__arrow--exp:hover {
     }
 }
 
+/* 卡片正文(阅读态 colorize)与块内编辑态 Monaco 同字体 —— 用户 2026-11-09 决策
+   「卡片用 Monaco 字体」,不跟随思源 --b3-font-family-code。三件套必须与
+   editor/monaco-block.ts 的 BLOCK_FONT_* 保持一致,两态字形/字号/行高对齐,
+   进入/退出编辑不再跳动。行号列(colorize 重建的行号)在 body 内一并继承。 */
+.syfe-cm-codeblock-body {
+    font-family: Consolas, "Courier New", monospace;
+    font-size: 13px;
+    line-height: 21px;
+}
+
 /* 阅读态横向条带定高(与编辑态 Monaco 横条 10px 等高) */
 .syfe-cm-codeblock-body::-webkit-scrollbar {
     height: 10px;
@@ -5454,4 +5494,78 @@ button.syfe-editor__arrow--exp:hover {
 .syfe-cm-properties__value {
     font-family: var(--b3-font-family-code, monospace);
     word-break: break-all;
+}
+
+/* ===== 思源原生文档 [[ 双链补全浮层 =====
+   自建浮层(思源 BLOCK_HINT_KEYS 的 [[ 选中值会被强制转成 block-ref,
+   无法落地普通 file 链接);样式走思源 CSS 变量,明暗主题自适应。 */
+.syfe-wikihint {
+    position: fixed;
+    z-index: 320;
+    width: 420px;
+    max-width: calc(100vw - 16px);
+    max-height: 320px;
+    overflow-y: auto;
+    padding: 4px 0;
+    box-sizing: border-box;
+    border: 1px solid var(--b3-border-color);
+    border-radius: 6px;
+    box-shadow: var(--b3-dialog-shadow, 0 8px 24px rgba(0, 0, 0, .18));
+    font-size: 13px;
+}
+
+.syfe-wikihint .b3-list-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 10px;
+    border-radius: 0;
+    line-height: 20px;
+    cursor: pointer;
+}
+
+.syfe-wikihint .b3-list-item__text {
+    flex: 1 1 auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.syfe-wikihint .b3-list-item__meta {
+    flex: none;
+    font-size: 11px;
+    opacity: .6;
+}
+
+.syfe-wikihint .syfe-wikihint__detail {
+    flex: 0 1 42%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    text-align: right;
+    font-size: 11px;
+    opacity: .55;
+}
+
+.syfe-wikihint .syfe-wikihint__item--focus,
+.syfe-wikihint .b3-list-item:hover {
+    background-color: var(--b3-list-hover);
+}
+
+.syfe-wikihint__empty {
+    padding: 10px;
+    opacity: .7;
+}
+
+.syfe-wikihint__tip {
+    margin-top: 4px;
+    padding: 5px 10px 3px;
+    border-top: 1px solid var(--b3-border-color);
+    font-size: 11px;
+    opacity: .6;
+}
+
+/* 补全期间压住思源原生 [[ 块引用菜单(它同样被 [[ 输入触发) */
+.protyle-hint.syfe-wikihint-suppressed {
+    display: none !important;
 }

@@ -19,6 +19,8 @@ import {getRoots, MountItem} from "../mount-tree";
 import {parseFileRef, stripFileRef, setPendingRef, FileRef} from "./file-ref";
 import {fileUrlToPath} from "./system-path";
 import {openFileTab} from "../tabs/editor-tab";
+import {getIndexFilter} from "./config";
+import {isPathIndexable} from "./index-filter";
 
 // ===== 1. 引用提取正则(backlink 扫描与行内检测共用,唯一定义在这里)=====
 
@@ -33,14 +35,10 @@ export const ATTR_RE = /\b(?:src|href)\s*=\s*["']([^"']+)["']/g;
 
 // ===== 2. 扫描根与目录跳过(backlink 扫描与索引构建共用)=====
 
-// 扫描时跳过的目录(噪声/超大)
-export const SKIP_DIRS = new Set([
-    "node_modules", ".git", ".svn", ".hg", ".Trash", "$RECYCLE.BIN", "System Volume Information",
-]);
-// /data 根下额外跳过的思源系统目录
-export const SIYUAN_SKIP_DIRS = new Set([
-    "plugins", "widgets", "themes", "icons", "snippets", "remnants", "history", "temp", "push", "storage", "conf",
-]);
+// 默认忽略清单(node_modules/.git/思源 data 系统目录等)已移到可配置的
+// utils/index-filter.ts::DEFAULT_INDEX_BLACKLIST,由 getIndexFilter() 在
+// walkFiles 里统一生效(支持用户自定义正则白/黑名单)。
+// 结构性跳过仍硬编码在 walkFiles:隐藏目录、.sy 块文件、深度/数量配额。
 
 // 收集参与链接扫描的文件根:
 //   1) 虚拟文档树的挂载根(mount-tree 内存配置,启动时 initMountTree 已加载;
@@ -74,13 +72,17 @@ export interface WalkOptions {
     maxDirs?: number;
 }
 
-// 递归收集目录下的文件(含全部扩展名;跳过 SKIP_DIRS/隐藏目录,
-// /data 根额外跳过思源系统目录)。out 由调用方传入以便跨根累加。
+// 递归收集目录下的文件(含全部扩展名)。过滤顺序:
+//   1) 结构性跳过:隐藏目录、.sy 块文件(不可打开也不可作双链节点)
+//   2) 可配置白/黑名单(getIndexFilter,支持正则;目录命中黑名单跳过整棵子树)
+//   3) WalkOptions 的扩展名/大小/数量配额
+// out 由调用方传入以便跨根累加。isDataRoot 仅为兼容旧调用(思源 data 系统
+// 目录已改由默认黑名单的 (^|/)data/(plugins|...) 规则接管)。
 export async function walkFiles(
     dir: string,
     out: {path: string; size: number; updated: string}[],
     opts: WalkOptions,
-    isDataRoot = false,
+    _isDataRoot = false,
     depth = 0,
     ctx?: {dirs: number},
 ): Promise<void> {
@@ -97,19 +99,21 @@ export async function walkFiles(
         return;
     }
     if (!Array.isArray(entries)) return;
+    const filter = getIndexFilter();
     for (const entry of entries) {
         if (opts.maxFiles !== undefined && out.length >= opts.maxFiles) return;
+        const full = joinPath(dir, entry.name);
         if (entry.isDir) {
-            if (SKIP_DIRS.has(entry.name) || entry.name.startsWith(".")) continue;
-            if (isDataRoot && SIYUAN_SKIP_DIRS.has(entry.name)) continue;
-            await walkFiles(joinPath(dir, entry.name), out, opts, false, depth + 1, ctx);
+            if (entry.name.startsWith(".")) continue;
+            // 目录只过黑名单:白名单不能挡目录,否则永远走不进目标目录
+            if (!isPathIndexable(full, true, filter)) continue;
+            await walkFiles(full, out, opts, false, depth + 1, ctx);
         } else {
-            // .sy = 思源文档块的内部存储文件(直接躺在笔记本目录里,不是隐藏目录),
-            // 不可打开也不可作双链节点,无条件排除
             if (extname(entry.name) === ".sy") continue;
+            if (!isPathIndexable(full, false, filter)) continue;
             if (opts.exts && !opts.exts.has(extname(entry.name))) continue;
             if (opts.maxBytes && entry.size > opts.maxBytes) continue;
-            out.push({path: joinPath(dir, entry.name), size: entry.size, updated: entry.updated || ""});
+            out.push({path: full, size: entry.size, updated: entry.updated || ""});
         }
     }
 }
