@@ -1410,7 +1410,7 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
             //   contenteditable=false + EditorState.readOnly —— 点击渲染物不会
             //   退回源码、不会挂 Monaco 编辑器,即「禁止点击进入编辑」。
             //   Vditor 阅读态那套 .vditor-reset 机制(行号槽/反链标记/图片本地化/
-            //   链接委托)不适用于 CM6 DOM,这里改用 CM6 自带的查找、链接点击与定位。
+            //   链接委托)不适用于 CM6 DOM,这里改用 CM6 自带的行号、查找、链接点击与定位。
             const enterCm6Reading = () => {
                 closeFind();
                 destroyMonaco(self);
@@ -1431,6 +1431,11 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                     resolveImageSrc: resolveCmImageSrc,
                     onSave: () => undefined,    // 只读态不落盘
                     onInput: () => undefined,   // 只读态 docChanged 已被事务过滤器丢弃
+                    // 行号右键与编辑态完全一致(阅读态只是禁止点击进入编辑)
+                    onCopyLine: (line: number) => copyLinkMd(
+                        buildFileRefMd({path, line, label: `${basename(path)}:${line}`}),
+                        "行链接已复制,粘贴到思源文档点击可定位",
+                    ),
                     // 阅读态普通点击即打开链接(cmV6 行内层按 readOnly 放宽 Ctrl 要求)
                     onOpenLink: (url: string) => {
                         void openLinkFromEditor(plugin as any, path, url);

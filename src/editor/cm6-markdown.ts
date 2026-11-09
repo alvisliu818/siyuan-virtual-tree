@@ -52,8 +52,9 @@ export interface Cm6MarkdownOptions {
     /** Ctrl/Cmd+Shift+L 插入双链:宿主弹文件选择器,选中后经 insertAtCursor 写入 */
     onInsertLink?(): void;
     placeholder?: string;
-    /** 只读阅读态:保留全部富渲染(代码块/公式/表格/图片/属性面板),但禁止
-     *  点击进入编辑、不挂 Monaco 代码块编辑器、不显示行号等编辑态 UI */
+    /** 只读阅读态:保留全部富渲染(代码块/公式/表格/图片/属性面板)与行号,
+     *  但禁止点击进入编辑、不挂 Monaco 代码块编辑器,活动行/历史/拖拽/
+     *  自动补全等编辑态 UI 一律不挂 */
     readOnly?: boolean;
 }
 
@@ -530,17 +531,10 @@ export function createCm6MarkdownEditor(
     const state = EditorState.create({
         doc: opts.value,
         extensions: [
-            // 只读阅读态:只留富渲染 + 查找,编辑态 UI(行号/活动行/历史/拖拽/
-            // 自动补全/编辑快捷键)全部不挂。EditorView.editable.of(false) 让
-            // contenteditable=false —— 点击不会把光标送回源码;富渲染层再用
-            // state.readOnly 二次确认(见 cm6-render / cm6-inline)。
-            ...(readOnly ? [
-                EditorState.readOnly.of(true),
-                EditorView.editable.of(false),
-                // 双保险:任何 docChanged 事务(快捷键/命令/程序 dispatch)一律丢弃,
-                // 阅读态绝不会被改出脏标记。selection/effect 事务照常(查找/定位可用)
-                EditorState.transactionFilter.of(tr => (tr.docChanged ? [] : tr)),
-            ] : [
+            // 行号槽:live 编辑态与 CM6 只读阅读态共用(阅读态同样显示源码行号,
+            // 与 Vditor 阅读态行号槽 / live 编辑态保持一致)。富渲染把多行源码
+            // 整块 replace 时,CM6 只在块首行画行号、块身用 spacer 撑高 ——
+            // 对齐修复见 syfeCmTheme 与 cm6-render.ts 的 observeWidgetResize。
             lineNumbers({
                 // 右键行号 → 思源菜单「复制第 N 行链接」,与 Vditor 渲染态行号槽
                 // (md-line-gutter)和 Monaco 源码态(monaco.ts)同一套交互。
@@ -574,6 +568,17 @@ export function createCm6MarkdownEditor(
                     },
                 },
             }),
+            // 只读阅读态:只留富渲染 + 查找 + 行号,编辑态 UI(活动行/历史/拖拽/
+            // 自动补全/编辑快捷键)全部不挂。EditorView.editable.of(false) 让
+            // contenteditable=false —— 点击不会把光标送回源码;富渲染层再用
+            // state.readOnly 二次确认(见 cm6-render / cm6-inline)。
+            ...(readOnly ? [
+                EditorState.readOnly.of(true),
+                EditorView.editable.of(false),
+                // 双保险:任何 docChanged 事务(快捷键/命令/程序 dispatch)一律丢弃,
+                // 阅读态绝不会被改出脏标记。selection/effect 事务照常(查找/定位可用)
+                EditorState.transactionFilter.of(tr => (tr.docChanged ? [] : tr)),
+            ] : [
             highlightActiveLineGutter(),
             highlightActiveLine(),
             history(),
@@ -632,6 +637,18 @@ export function createCm6MarkdownEditor(
     // 显式补一次测量 + 字体/KaTeX/图片就绪后的延时兜底(富渲染 widget 另由
     // ResizeObserver 通知,见 cm6-render.ts 的 observeWidgetResize)。
     view.requestMeasure();
+    // 同步测量兜底:requestMeasure 只是把 measure 排进 rAF,窗口失焦/页签在后台
+    // 时 rAF 会被暂停 —— 实测新开的 CM6 只读阅读页签 3s 后行号仍全部按
+    // defaultLineHeight(14px) 排布,13 个可见行只有 2 个与内容行对齐。
+    // CM6 的 measure() 在事务后本就同步跑一次(且会取消上面排的 rAF),视图
+    // 构造完直接调一次即可把高度图拉齐;富渲染 widget 后续尺寸变化仍由
+    // ResizeObserver → requestMeasure 通知。私有方法按运行时形态收窄调用,
+    // 版本差异时静默退回原 rAF 路径。
+    try {
+        (view as unknown as {measure?: () => void}).measure?.();
+    } catch {
+        // ignore:不影响编辑/阅读功能,后续 requestMeasure 仍会重试
+    }
     window.setTimeout(() => view.requestMeasure(), 250);
 
     return {

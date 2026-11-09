@@ -844,9 +844,9 @@ button.syfe-editor__arrow--exp:hover {
         padding: 16px 24px 64px;
     }
 
-    // CM6 只读阅读态(阅读模式引擎 = cm6):富渲染保留,编辑态反馈全部收掉。
-    // 该态不挂 lineNumbers / highlightActiveLine / drawSelection,这里再兜一层
-    // 光标色、焦点外框与鼠标光标,避免看起来"还能点进去编辑"。
+    // CM6 只读阅读态(阅读模式引擎 = cm6) = 编辑态 + 禁止进入编辑:
+    // 行号/富渲染/高亮全部复用 live 编辑态那一套扩展,这里只收掉光标与
+    // 焦点反馈,不给行号槽加任何阅读态专属样式。
     .cm-editor {
         background: transparent;
 
