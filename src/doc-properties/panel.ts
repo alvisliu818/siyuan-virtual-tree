@@ -79,6 +79,14 @@ export function createDocPropertiesPanel(opts: DocPropertiesPanelOptions): DocPr
 
     function rowHTML(e: PropEntry, i: number): string {
         const listId = `syfe-dp-val-${uid}-${i}`;
+        if (e.readonly) {
+            return `<div class="syfe-dp__row syfe-dp__row--ro">
+                <span class="syfe-dp__name" title="${esc(e.key)}">${esc(e.name)}</span>
+                <span class="syfe-dp__type" title="内核属性,只读">只读</span>
+                <span class="syfe-dp__ctrl"><span class="syfe-dp__ro" title="${esc(e.value)}">${esc(e.value) || "—"}</span></span>
+                <span class="syfe-dp__del syfe-dp__del--none"></span>
+            </div>`;
+        }
         return `<div class="syfe-dp__row">
             <span class="syfe-dp__name" title="${esc(e.name)}">${esc(e.name)}</span>
             <span class="syfe-dp__type" title="类型在「设置 → 文档属性」里按名称配置">${PROP_TYPE_LABELS[e.type]}</span>
@@ -110,12 +118,12 @@ export function createDocPropertiesPanel(opts: DocPropertiesPanelOptions): DocPr
 
     /** 异步补候选:属性名(全库 + schema)与每行的值(按类型),并行查询。 */
     async function fillSuggestions(seq: number): Promise<void> {
-        const names = await suggestNames(schemas(), entries.map(e => e.name));
+        const names = await suggestNames(schemas(), entries.filter(e => !e.readonly).map(e => e.name));
         if (disposed || seq !== loadSeq) return;
         const nameDl = element.querySelector(`#${nameListId}`);
         if (nameDl) nameDl.innerHTML = names.map(n => `<option value="${esc(n)}"></option>`).join("");
         await Promise.all(entries.map(async (e, i) => {
-            if (e.type === "select") return;   // 选项已在 render 里填好
+            if (e.readonly || e.type === "select") return;   // 只读行无需候选;下拉选项已在 render 里填好
             const vals = await suggestValues(e);
             if (disposed || seq !== loadSeq) return;
             const dl = element.querySelector(`#syfe-dp-val-${uid}-${i}`);

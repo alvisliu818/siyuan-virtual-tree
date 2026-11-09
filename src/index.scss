@@ -5808,6 +5808,26 @@ button.syfe-editor__arrow--exp:hover {
     min-height: 28px;
 }
 
+// 内核自建属性(id / type / updated / title…):只读展示,值可选中复制块 ID
+.syfe-dp__row--ro {
+    opacity: .82;
+}
+
+.syfe-dp__ro {
+    display: block;
+    overflow: hidden;
+    padding: 2px 6px;
+    border-radius: 3px;
+    background: var(--b3-theme-background);
+    font-family: var(--b3-font-family-code, monospace);
+    font-size: 11px;
+    color: var(--b3-theme-on-surface);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    user-select: text;
+    cursor: text;
+}
+
 .syfe-dp__name {
     overflow: hidden;
     text-overflow: ellipsis;

@@ -25,12 +25,20 @@ export const PROP_TYPE_LABELS: Record<PropType, string> = {
     datetime: "日期时间", tags: "标签", select: "下拉", link: "链接",
 };
 
-/** 面板固定显示的思源内置属性(内核自建的 id/title/type/updated 不展示) */
+/** 面板固定显示、可编辑的思源内置属性 */
 export const BUILTIN_PROPS: Array<{key: string; name: string; type: PropType}> = [
     {key: "tags", name: "标签", type: "tags"},
     {key: "alias", name: "别名", type: "tags"},
     {key: "memo", name: "备注", type: "text"},
 ];
+const BUILTIN_KEYS = new Set(BUILTIN_PROPS.map(b => b.key));
+
+/** 内核自建属性:只读展示(写回会破坏文档元数据),常见键给中文名,其余用原键名。 */
+export const SYSTEM_ATTR_LABELS: Record<string, string> = {
+    id: "块 ID", title: "标题", type: "块类型", updated: "更新时间",
+    scroll: "滚动位置", name: "名称", icon: "图标", style: "样式",
+    fold: "折叠", "heading-fold": "标题折叠", bookmark: "书签",
+};
 
 export interface PropSchema {
     name: string;
@@ -45,6 +53,7 @@ export interface PropEntry {
     value: string;
     options: string[];  // select 类型的候选项
     builtin: boolean;
+    readonly?: boolean; // 内核自建属性:只展示,不可编辑/删除
 }
 
 /**
@@ -76,13 +85,22 @@ export function schemaFor(schemas: PropSchema[], name: string): PropSchema | und
     return schemas.find(s => s.name === name);
 }
 
-/** 读取一个文档的全部可展示属性(内置三行恒显示,方便直接填标签/别名/备注)。 */
+/** 读取一个块/文档的全部可展示属性。
+ *  顺序:可编辑内置三行 → 内核自建只读行(id/type/updated/title…) → 自定义属性。
+ *  同一个 API 对文档 rootID 和任意块 id 都适用,所以块面板也能看到块 ID。 */
 export async function loadEntries(docId: string, schemas: PropSchema[]): Promise<PropEntry[]> {
     const attrs = await getBlockAttrs(docId) || {};
     const out: PropEntry[] = BUILTIN_PROPS.map(b => ({
         key: b.key, name: b.name, type: b.type,
         value: String(attrs[b.key] ?? ""), options: [], builtin: true,
     }));
+    for (const [key, val] of Object.entries(attrs)) {
+        if (BUILTIN_KEYS.has(key) || key.startsWith(CUSTOM_PREFIX)) continue;
+        out.push({
+            key, name: SYSTEM_ATTR_LABELS[key] || key, type: "text",
+            value: String(val ?? ""), options: [], builtin: true, readonly: true,
+        });
+    }
     for (const [key, val] of Object.entries(attrs)) {
         if (!key.startsWith(CUSTOM_PREFIX)) continue;
         const name = key.slice(CUSTOM_PREFIX.length);
