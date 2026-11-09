@@ -99,7 +99,7 @@ import {applyPlannerEnabled, destroyPlanner, isPlannerActive} from "./planner";
 import {createPlannerDockConfig} from "./planner/dock";
 import {createPlannerTabConfig, openPlannerTab} from "./planner/tab";
 import {openPlannerSettingsDialog} from "./planner/dialogs";
-import {getSettings as getPlannerSettings, updatePlannerSettings} from "./planner/store";
+import {getSettings as getPlannerSettings, updatePlannerSettings, PLANNER_CHANGED_EVENT} from "./planner/store";
 import {PLANNER_DOCK_TYPE} from "./planner/constants";
 import "./index.scss";
 
@@ -186,6 +186,7 @@ export default class FileEditorPlugin extends Plugin {
     private newTabShowPinnedInput?: HTMLInputElement;
     private newTabShowRecentInput?: HTMLInputElement;
     private newTabShowFavoritesInput?: HTMLInputElement;
+    private newTabShowPlannerInput?: HTMLInputElement;
     // 导入 md 到思源时,是否在文档顶部插入源文件资源引述块
     private importMdSourceAssetInput?: HTMLInputElement;
     // 双链扫描:所有文本文件作为链接源(关=仅 Markdown)
@@ -610,6 +611,9 @@ export default class FileEditorPlugin extends Plugin {
         void applyPlannerEnabled(this as any, this.config.plannerEnabled !== false).then(() => {
             this.ensurePlannerDock();
             this.applyPlannerTopBarIcon();
+            // 布局恢复的新标签页早于模块激活,且设置里切换总开关后也要同步:
+            // 数据/启用状态就绪后通知新标签页重绘「习惯与目标」速览区
+            window.dispatchEvent(new CustomEvent(PLANNER_CHANGED_EVENT));
         });
         // 设置面板控件同步当前值
         this.syncSettingUI();
@@ -1589,6 +1593,11 @@ export default class FileEditorPlugin extends Plugin {
         this.newTabShowFavoritesInput.className = "b3-switch";
         addRow("newTab", "显示「收藏」", "收藏区,可在文件树右键「收藏」添加", this.newTabShowFavoritesInput);
 
+        this.newTabShowPlannerInput = document.createElement("input");
+        this.newTabShowPlannerInput.type = "checkbox";
+        this.newTabShowPlannerInput.className = "b3-switch";
+        addRow("newTab", "显示「习惯与目标」", "目标进度、今日习惯(可点打卡)、倒数日、当月日历的速览卡片;需先启用「习惯与目标」模块", this.newTabShowPlannerInput);
+
         // ---------- 运行内核 ----------
         // 默认运行内核:代码块(内核模式)/py 文件 ▶ 运行/ipynb 共用的全局兜底环境。
         // 选项含内置内核 + 本机全部 Jupyter kernelspec + conda 环境自动扫描结果
@@ -1674,6 +1683,7 @@ export default class FileEditorPlugin extends Plugin {
         if (this.newTabShowPinnedInput) this.newTabShowPinnedInput.checked = this.config.newTabShowPinned !== false;
         if (this.newTabShowRecentInput) this.newTabShowRecentInput.checked = this.config.newTabShowRecent !== false;
         if (this.newTabShowFavoritesInput) this.newTabShowFavoritesInput.checked = this.config.newTabShowFavorites !== false;
+        if (this.newTabShowPlannerInput) this.newTabShowPlannerInput.checked = this.config.newTabShowPlanner !== false;
         if (this.importMdSourceAssetInput) this.importMdSourceAssetInput.checked = this.config.importMdSourceAsset === true;
         if (this.docOpenTakeoverSelect) this.docOpenTakeoverSelect.value = this.config.docOpenTakeover || "off";
         if (this.docOpenTakeoverExtsInput) this.docOpenTakeoverExtsInput.value = this.config.docOpenTakeoverExts || "";
@@ -1768,6 +1778,7 @@ export default class FileEditorPlugin extends Plugin {
             newTabShowPinned: this.newTabShowPinnedInput?.checked ?? true,
             newTabShowRecent: this.newTabShowRecentInput?.checked ?? true,
             newTabShowFavorites: this.newTabShowFavoritesInput?.checked ?? true,
+            newTabShowPlanner: this.newTabShowPlannerInput?.checked ?? true,
             importMdSourceAsset: this.importMdSourceAssetInput?.checked ?? false,
             docOpenTakeover: ((this.docOpenTakeoverSelect?.value || "off") as "off" | "exts" | "all"),
             docOpenTakeoverExts: (this.docOpenTakeoverExtsInput?.value || "").trim() || "md,txt",
@@ -1856,6 +1867,9 @@ export default class FileEditorPlugin extends Plugin {
         void applyPlannerEnabled(this as any, this.config.plannerEnabled !== false).then(() => {
             this.ensurePlannerDock();
             this.applyPlannerTopBarIcon();
+            // 布局恢复的新标签页早于模块激活,且设置里切换总开关后也要同步:
+            // 数据/启用状态就绪后通知新标签页重绘「习惯与目标」速览区
+            window.dispatchEvent(new CustomEvent(PLANNER_CHANGED_EVENT));
         });
         // 主题设置立即生效
         this.applyConfiguredThemes();

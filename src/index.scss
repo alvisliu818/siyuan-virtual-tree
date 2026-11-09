@@ -3316,6 +3316,181 @@ button.syfe-editor__arrow--exp:hover {
     opacity: 0.8;
 }
 
+// ===== 新标签页:「习惯与目标」速览卡片 =====
+.syfe-start__pl-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 10px;
+}
+
+.syfe-start__pl-open {
+    font-size: 12px;
+    font-weight: 400;
+    color: var(--b3-theme-primary);
+    cursor: pointer;
+}
+
+.syfe-start__pl-card {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    border: 1px solid var(--b3-border-color);
+    border-radius: 8px;
+    background: var(--b3-theme-surface);
+    overflow: hidden;
+}
+
+.syfe-start__pl-cardhead {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 12px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--b3-theme-on-background);
+    border-bottom: 1px solid var(--b3-border-color);
+    cursor: pointer;
+
+    &:hover {
+        background: var(--b3-list-hover-background);
+    }
+}
+
+.syfe-start__pl-goto {
+    font-weight: 400;
+    opacity: .5;
+}
+
+.syfe-start__pl-cardbody {
+    min-height: 74px;
+    padding: 8px 12px 10px;
+}
+
+.syfe-start__pl-empty {
+    padding: 10px 0;
+    font-size: 12px;
+    color: var(--b3-theme-on-surface);
+    opacity: .7;
+}
+
+.syfe-start__pl-item {
+    margin-bottom: 8px;
+
+    &:last-child {
+        margin-bottom: 0;
+    }
+}
+
+.syfe-start__pl-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 24px;
+    font-size: 12px;
+    color: var(--b3-theme-on-background);
+}
+
+.syfe-start__pl-ico {
+    flex: none;
+    font-size: 14px;
+}
+
+.syfe-start__pl-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.syfe-start__pl-num {
+    flex: none;
+    font-size: 11px;
+    color: var(--b3-theme-on-surface);
+}
+
+.syfe-start__pl-bar {
+    height: 3px;
+    border-radius: 2px;
+    background: var(--b3-border-color);
+    overflow: hidden;
+
+    i {
+        display: block;
+        height: 100%;
+        border-radius: 2px;
+    }
+}
+
+.syfe-start__pl-habit {
+    padding: 0 4px;
+    border-radius: 4px;
+    cursor: pointer;
+
+    &:hover {
+        background: var(--b3-list-hover-background);
+    }
+
+    &.is-done {
+        opacity: .55;
+    }
+}
+
+.syfe-start__pl-calhead {
+    margin-bottom: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--b3-theme-on-background);
+}
+
+.syfe-start__pl-week,
+.syfe-start__pl-cal {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 2px;
+    text-align: center;
+}
+
+.syfe-start__pl-week span {
+    font-size: 10px;
+    color: var(--b3-theme-on-surface);
+    opacity: .7;
+}
+
+.syfe-start__pl-day {
+    position: relative;
+    height: 20px;
+    line-height: 20px;
+    font-size: 11px;
+    border-radius: 3px;
+    color: var(--b3-theme-on-background);
+
+    &.is-blank {
+        visibility: hidden;
+    }
+
+    &.is-today {
+        background: var(--b3-theme-primary);
+        color: #fff;
+    }
+
+    &.is-marked::after {
+        content: "";
+        position: absolute;
+        left: 50%;
+        bottom: 1px;
+        width: 3px;
+        height: 3px;
+        margin-left: -1.5px;
+        border-radius: 50%;
+        background: var(--b3-theme-primary);
+    }
+
+    &.is-today.is-marked::after {
+        background: #fff;
+    }
+}
+
 // ===== 侧边栏「标签」面板 =====
 .syfe-tagdock__toolbar {
     flex-shrink: 0;

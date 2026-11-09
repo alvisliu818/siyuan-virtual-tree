@@ -209,14 +209,18 @@ export function openPlannerTab(plugin: IPluginForPlannerTab, opts?: {view?: View
         },
         position: opts?.position,
     } as any);
-    // Tab 的 init 无法直接接收要跳到哪个分区(思源只透传 data),
-    // 这里靠 data 属性 + 一次延迟点击:等页签 init 完成后落到目标分区。
+    // Tab 的 init 无法直接接收要跳到哪个分区(思源只透传 data),靠延迟点击落到目标分区。
+    // ⚠ 用 getOpenedTab 取实例,别按 [data-id] 猜思源页签 DOM —— id 未必挂在 data-id 上,
+    // 实测新建面板时点卡片跳「目标」会停在「今日」。init 可能晚一拍,补一次重试。
     if (opts?.view && opts.view !== "today") {
-        setTimeout(() => {
-            const host = document.querySelector(`[data-id="${id}"] .syfe-pl`) as HTMLElement | null;
-            const navItem = host?.querySelector(`[data-view="${opts.view}"]`) as HTMLElement | null;
-            navItem?.click();
-        }, 60);
+        const view = opts.view;
+        const goto = () => {
+            const inst = (plugin.getOpenedTab()[PLANNER_TAB_TYPE] || [])[0] as any;
+            const nav = inst?.element?.querySelector(`[data-view="${view}"]`) as HTMLElement | null;
+            if (nav) nav.click();
+            return !!nav;
+        };
+        setTimeout(() => { if (!goto()) setTimeout(goto, 300); }, 80);
     }
 }
 

@@ -63,6 +63,7 @@ export interface EditorConfig {
     // 「虚拟文档树」行末是否显示「查看引用」链接图标(hover 出反链弹窗)
     treeBacklinkIcon: boolean;
     newTabShowFavorites: boolean;    // 新标签页显示「收藏」区
+    newTabShowPlanner: boolean;      // 新标签页显示「习惯与目标」速览区(目标/习惯/倒数日/日历)
     // 导入 Markdown 到思源时,是否把源文件作为资源插入到文档顶部的引述块(保留出处,便于回溯原文件)
     importMdSourceAsset: boolean;
     // 「文件」面板是否显示。文件浏览/重命名/删除等能力已由「虚拟文档树」面板承接,
@@ -297,6 +298,7 @@ export const DEFAULT_CONFIG: EditorConfig = {
     takeoverSplitOpen: false,       // 接管打开默认在当前页签区打开
     treeBacklinkIcon: true,         // 虚拟文档树行末默认显示「查看引用」图标
     newTabShowFavorites: true,
+    newTabShowPlanner: true,         // 新标签页默认显示「习惯与目标」速览
     importMdSourceAsset: false,      // 默认不插入源文件资源引述块
     showFileTreeDock: false,         // 默认不显示「文件」面板(功能已由虚拟文档树承接)
     // 默认不接管文档内文件打开(保持思源原生行为);开启后按扩展名或全部交给本插件

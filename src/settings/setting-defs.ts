@@ -1161,6 +1161,16 @@ export const PLUGIN_DEFS: SettingDef[] = [
         get: (c) => c.newTabShowFavorites !== false,
         set: (c, v) => { c.newTabShowFavorites = v !== false; },
     },
+    {
+        key: "workbench.newTabShowPlanner",
+        kind: "boolean",
+        group: G_WORKBENCH,
+        title: "新标签页显示「习惯与目标」",
+        description: "目标进度、今日习惯打卡、倒数日、当月日历的速览卡片;需先启用「习惯与目标」模块",
+        default: true,
+        get: (c) => c.newTabShowPlanner !== false,
+        set: (c, v) => { c.newTabShowPlanner = v !== false; },
+    },
 
     {
         key: "virtualTree.takeoverSplitOpen",

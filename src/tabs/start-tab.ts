@@ -23,6 +23,9 @@ import {
 import {openFileTab} from "./editor-tab";
 // 图标主题就绪/切换后要重绘,否则一直是首次渲染时的思源内置图标
 import {ICON_THEME_CHANGED_EVENT} from "../extensions/icon-theme-loader";
+import {isPlannerActive} from "../planner";
+import {PLANNER_CHANGED_EVENT} from "../planner/store";
+import {startPlannerSectionHTML, handleStartPlannerClick} from "./start-planner";
 
 // 新标签页所需的插件接口
 export interface IPluginForStartTab {
@@ -49,6 +52,7 @@ interface StartTabInstance {
     _keyHandler?: (e: KeyboardEvent) => void;
     _inputHandler?: () => void;
     _changedHandler?: () => void;
+    _plannerChangedHandler?: () => void;
     _iconsHandler?: () => void;
     _suggest?: SuggestItem[];     // 当前搜索建议
     _suggestIndex?: number;
@@ -371,6 +375,10 @@ export function createStartTabConfig(plugin: IPluginForStartTab) {
                 if (cfg.newTabShowFavorites !== false) {
                     pushSection("favorites", "收藏", "iconStar", groupToItems(getFavorites(), "favorites"), "list", true);
                 }
+                // 习惯与目标速览:模块停用时不显示,数据/打卡变化由 PLANNER_CHANGED_EVENT 重绘
+                if (cfg.newTabShowPlanner !== false && isPlannerActive()) {
+                    sections.push(startPlannerSectionHTML());
+                }
 
                 self._items = items;
                 if (sections.length === 0) {
@@ -408,6 +416,8 @@ export function createStartTabConfig(plugin: IPluginForStartTab) {
 
             // ---- 交互:点击条目 ----
             const clickHandler = (e: MouseEvent) => {
+                // 习惯与目标速览:打卡 / 跳转优先(这些元素没有 data-idx)
+                if (handleStartPlannerClick(e, plugin)) return;
                 const removeEl = (e.target as HTMLElement).closest("[data-remove]") as HTMLElement | null;
                 if (removeEl) {
                     const idx = Number(removeEl.dataset.remove);
@@ -596,6 +606,9 @@ export function createStartTabConfig(plugin: IPluginForStartTab) {
             this._changedHandler = changedHandler;
             window.addEventListener(START_PAGE_CHANGED_EVENT, changedHandler);
             window.addEventListener(RECENTS_CHANGED_EVENT, changedHandler);
+            const plannerChangedHandler = () => render();
+            this._plannerChangedHandler = plannerChangedHandler;
+            window.addEventListener(PLANNER_CHANGED_EVENT, plannerChangedHandler);
             // 图标主题是随扩展异步加载的,就绪后重绘一次,条目图标才是虚拟文档树同款
             const iconsHandler = () => render();
             this._iconsHandler = iconsHandler;
@@ -621,9 +634,13 @@ export function createStartTabConfig(plugin: IPluginForStartTab) {
                 window.removeEventListener(START_PAGE_CHANGED_EVENT, this._changedHandler);
                 window.removeEventListener(RECENTS_CHANGED_EVENT, this._changedHandler);
             }
+            if (this._plannerChangedHandler) {
+                window.removeEventListener(PLANNER_CHANGED_EVENT, this._plannerChangedHandler);
+            }
             if (this._iconsHandler) {
                 window.removeEventListener(ICON_THEME_CHANGED_EVENT, this._iconsHandler);
             }
+            this._plannerChangedHandler = undefined;
             this._bodyEl = undefined;
             this._suggestEl = undefined;
             this._inputEl = undefined;
