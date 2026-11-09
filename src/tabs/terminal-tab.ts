@@ -73,6 +73,21 @@ function setStatus(self: TerminalTabInstance, status: string, text: string): voi
     }
 }
 
+// 顶部状态栏(目录 / 连接状态 / 后端类型 / 重启按钮)默认隐藏:连接成功后这行
+// 基本没有信息量,还占掉一整行终端高度。设置里可开,改完立即同步已打开的页签。
+function setHeaderVisible(self: TerminalTabInstance, visible: boolean): void {
+    const header = self.element?.querySelector(".syfe-terminal__header") as HTMLElement | null;
+    if (header) header.style.display = visible ? "" : "none";
+}
+
+/** 设置保存后调用:让所有已打开的终端页签立即跟随显隐配置 */
+export function applyTerminalStatusBarVisibility(plugin: IPluginForTerminalTab): void {
+    const visible = plugin.config.terminalShowStatusBar === true;
+    for (const inst of plugin.getOpenedTab()[TERMINAL_TAB_TYPE] || []) {
+        setHeaderVisible(inst as TerminalTabInstance, visible);
+    }
+}
+
 // 打开终端 Tab(同工作目录+同 shell 去重;shellOverride 非空时本页签固定用该 shell)
 export function openTerminalTab(plugin: IPluginForTerminalTab, cwd?: string, shellOverride?: string): void {
     const targetCwd = cwd || plugin.config.fileTreeRoot || "/data";
@@ -142,6 +157,8 @@ export function createTerminalTabConfig(plugin: IPluginForTerminalTab) {
 
             const container = this.element.querySelector(".syfe-terminal__container") as HTMLElement;
             this._statusEl = this.element.querySelector(".syfe-terminal__status") as HTMLElement;
+            // 状态栏默认隐藏(设置「显示终端状态栏」可开);容器有 ResizeObserver,隐藏后自动重排
+            setHeaderVisible(this, plugin.config.terminalShowStatusBar === true);
 
             // 初始化 xterm.js
             const term = new Terminal({

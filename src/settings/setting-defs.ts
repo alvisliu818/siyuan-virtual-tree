@@ -1090,6 +1090,17 @@ export const PLUGIN_DEFS: SettingDef[] = [
         get: (c) => c.siyuanWorkspacePath,
         set: (c, v) => { c.siyuanWorkspacePath = String(v ?? "").trim(); },
     },
+    {
+        key: "terminal.showStatusBar",
+        kind: "boolean",
+        group: G_TERM,
+        title: "显示终端状态栏",
+        description: "终端顶部的「目录 / 已连接 / PTY / 重启按钮」一行;默认隐藏以腾出终端空间,隐藏后重启按钮也一并隐藏(关闭页签重开即可重启)",
+        default: false,
+        skipMonaco: true,
+        get: (c) => c.terminalShowStatusBar === true,
+        set: (c, v) => { c.terminalShowStatusBar = v === true; },
+    },
 
     {
         key: "workbench.colorTheme",

@@ -23,7 +23,7 @@ import {createMediaTabConfig, openMediaTab} from "./tabs/media-tab";
 import {createNotebookTabConfig} from "./tabs/notebook-tab";
 import {createDiffTabConfig} from "./tabs/diff-tab";
 import {createStartTabConfig, openStartTab, installNewTabHijack} from "./tabs/start-tab";
-import {createTerminalTabConfig, openTerminalTab} from "./tabs/terminal-tab";
+import {createTerminalTabConfig, openTerminalTab, applyTerminalStatusBarVisibility} from "./tabs/terminal-tab";
 import {createRecentDockConfig} from "./dock/recent-dock";
 import {createTagDockConfig} from "./dock/tag-dock";
 import {createSearchTabConfig, openSearchTab} from "./components/search-panel";
@@ -166,6 +166,7 @@ export default class FileEditorPlugin extends Plugin {
     private terminalServerUrlInput?: HTMLInputElement;
     private siyuanWorkspacePathInput?: HTMLInputElement;
     private terminalShellSelect?: HTMLSelectElement;
+    private terminalShowStatusBarInput?: HTMLInputElement;
     private colorThemeSelect?: HTMLSelectElement;
     private iconThemeSelect?: HTMLSelectElement;
     // 顶栏「扩展市场」图标:元素引用(显隐控制)+ 设置面板开关
@@ -1512,6 +1513,11 @@ export default class FileEditorPlugin extends Plugin {
             <option value="bash">Git Bash</option>`;
         addRow("terminal", "终端 Shell", "集成终端使用的 shell 程序,需重启终端 Tab 后生效", this.terminalShellSelect);
 
+        this.terminalShowStatusBarInput = document.createElement("input");
+        this.terminalShowStatusBarInput.type = "checkbox";
+        this.terminalShowStatusBarInput.className = "b3-switch";
+        addRow("terminal", "显示终端状态栏", "终端顶部的「目录 / 已连接 / PTY / 重启按钮」一行,默认隐藏以腾出终端空间;改动立即对已打开的终端生效。隐藏后重启按钮也不可用,关闭页签重开即可重启", this.terminalShowStatusBarInput);
+
         // ---------- 外观 ----------
         this.colorThemeSelect = document.createElement("select");
         this.colorThemeSelect.className = "b3-select";
@@ -1668,6 +1674,7 @@ export default class FileEditorPlugin extends Plugin {
         if (this.terminalServerUrlInput) this.terminalServerUrlInput.value = this.config.terminalServerUrl;
         if (this.siyuanWorkspacePathInput) this.siyuanWorkspacePathInput.value = this.config.siyuanWorkspacePath;
         if (this.terminalShellSelect) this.terminalShellSelect.value = this.config.terminalShell || "auto";
+        if (this.terminalShowStatusBarInput) this.terminalShowStatusBarInput.checked = this.config.terminalShowStatusBar === true;
         if (this.markdownModeSelect) this.markdownModeSelect.value = this.config.markdownDefaultMode || "live";
         if (this.markdownEditorSelect) this.markdownEditorSelect.value = this.config.markdownEditor || "vditor";
         if (this.markdownReadingEngineSelect) this.markdownReadingEngineSelect.value = this.config.markdownReadingEngine || "vditor";
@@ -1757,6 +1764,7 @@ export default class FileEditorPlugin extends Plugin {
             terminalBackend: (this.terminalBackendSelect?.value as "auto" | "builtin" | "server") || "auto",
             terminalShell: (this.terminalShellSelect?.value as string) || "auto",
             terminalServerUrl: (this.terminalServerUrlInput?.value || "").trim() || DEFAULT_TERMINAL_SERVER_URL,
+            terminalShowStatusBar: this.terminalShowStatusBarInput?.checked ?? false,
             siyuanWorkspacePath: (this.siyuanWorkspacePathInput?.value || "").trim(),
             colorTheme: this.colorThemeSelect?.value || "",
             iconTheme: this.iconThemeSelect?.value || "",
@@ -1877,6 +1885,8 @@ export default class FileEditorPlugin extends Plugin {
         this.applyMarketTopBarIcon();
         // 编辑器设置(字体/换行/导航窗格……)对已打开的编辑器立即生效
         applyEditorOptions();
+        // 终端状态栏显隐立即对所有已打开的终端页签生效
+        applyTerminalStatusBarVisibility(this as any);
         this.refreshFileTrees();
         // 引用关系树开关影响「虚拟文档树」面板内容,通知面板重建(立即生效,无需重启)
         window.dispatchEvent(new CustomEvent(SYFE_RELATION_TREE_CHANGED_EVENT));
