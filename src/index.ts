@@ -26,6 +26,7 @@ import {createDiffTabConfig} from "./tabs/diff-tab";
 import {createStartTabConfig, openStartTab, installNewTabHijack} from "./tabs/start-tab";
 import {createTerminalTabConfig, openTerminalTab, applyTerminalStatusBarVisibility} from "./tabs/terminal-tab";
 import {initDocProperties, destroyDocProperties, notifyDocPropertiesConfigChanged, createDocPropertiesDockConfig} from "./doc-properties";
+import {registerBlockPlanner, destroyBlockPlanner} from "./block-planner";
 import {createRecentDockConfig} from "./dock/recent-dock";
 import {createTagDockConfig} from "./dock/tag-dock";
 import {createSearchTabConfig, openSearchTab} from "./components/search-panel";
@@ -455,6 +456,9 @@ export default class FileEditorPlugin extends Plugin {
         // 正文内 Python 代码块:注入运行按钮 + 代码块下方的输出面板
         registerCodeBlockRun(this);
 
+        // 思源块通过 custom-planner 属性绑定习惯与目标项目(块菜单 + 块旁徽标 + 状态同步)
+        registerBlockPlanner(this as any);
+
         // 接管思源顶部「+」:点击改为打开新标签页(设置里可关闭,恢复原生新建文档);
         // 返回注销函数(onunload 摘除,防止思源重载插件后旧监听残留、点一次开两个标签页)
         this._unregisterNewTabHijack = installNewTabHijack(this as any, () => this.config.newTabReplacePlus !== false);
@@ -809,6 +813,12 @@ export default class FileEditorPlugin extends Plugin {
         // 习惯与目标:停计时引擎、强制落盘(planner.json 数据保留)
         try {
             destroyPlanner();
+        } catch {
+            // ignore
+        }
+        // 块绑定:摘事件、移除所有块旁徽标与选择器
+        try {
+            destroyBlockPlanner();
         } catch {
             // ignore
         }

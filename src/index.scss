@@ -5892,3 +5892,168 @@ button.syfe-editor__arrow--exp:hover {
     padding: 4px 0;
     overflow-y: auto;
 }
+
+// ===== 思源块绑定「习惯与目标」:块旁徽标 + 可搜索选择器 =====
+// 徽标是块的「外部兄弟节点」(block.after),绝不插进块内 —— 块内自定义 DOM 会被
+// Lute 序列化进 .sy 正文(同 code-block-run 的实测结论)。
+.syfe-bp-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    padding: 2px 0 4px 24px;
+    user-select: none;
+}
+
+.syfe-bp-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    max-width: 260px;
+    padding: 1px 6px;
+    border: 1px solid var(--b3-border-color);
+    border-radius: 10px;
+    background: var(--b3-theme-surface);
+    font-size: 11px;
+    line-height: 18px;
+    color: var(--b3-theme-on-background);
+    cursor: pointer;
+
+    &:hover {
+        border-color: var(--b3-theme-primary);
+    }
+
+    &.is-done {
+        opacity: .6;
+
+        .syfe-bp-badge__name {
+            text-decoration: line-through;
+        }
+    }
+
+    &.is-missing {
+        opacity: .5;
+        border-style: dashed;
+    }
+}
+
+.syfe-bp-badge__icon {
+    font-size: 12px;
+}
+
+.syfe-bp-badge__name {
+    max-width: 150px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.syfe-bp-badge__state {
+    font-size: 10px;
+    opacity: .7;
+}
+
+.syfe-bp-badge__del {
+    padding: 0 2px;
+    border: none;
+    background: transparent;
+    color: var(--b3-theme-on-surface);
+    font-size: 12px;
+    line-height: 14px;
+    cursor: pointer;
+    opacity: 0;
+
+    &:hover {
+        color: var(--b3-theme-error);
+        opacity: 1;
+    }
+}
+
+.syfe-bp-badge:hover .syfe-bp-badge__del {
+    opacity: .8;
+}
+
+.syfe-bp-picker-mask {
+    position: fixed;
+    inset: 0;
+    z-index: 310;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, .25);
+}
+
+.syfe-bp-picker {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    width: 460px;
+    max-height: 70vh;
+    padding: 14px;
+    border-radius: 8px;
+    background: var(--b3-theme-background);
+    box-shadow: 0 8px 30px rgba(0, 0, 0, .25);
+}
+
+.syfe-bp-picker__head {
+    font-size: 14px;
+    font-weight: 600;
+}
+
+.syfe-bp-picker__input {
+    box-sizing: border-box;
+    width: 100%;
+}
+
+.syfe-bp-picker__list {
+    flex: 1;
+    min-height: 120px;
+    max-height: 45vh;
+    overflow-y: auto;
+}
+
+.syfe-bp-picker__item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+    cursor: pointer;
+
+    &.is-active,
+    &:hover {
+        background: var(--b3-list-hover);
+    }
+}
+
+.syfe-bp-picker__type {
+    flex: none;
+    width: 44px;
+    font-size: 10px;
+    opacity: .7;
+}
+
+.syfe-bp-picker__icon {
+    flex: none;
+}
+
+.syfe-bp-picker__name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.syfe-bp-picker__state {
+    flex: none;
+    font-size: 10px;
+    opacity: .7;
+}
+
+.syfe-bp-picker__empty,
+.syfe-bp-picker__tip {
+    padding: 8px;
+    font-size: 11px;
+    text-align: center;
+    opacity: .6;
+}
