@@ -57,7 +57,7 @@ import {initFileVersions, setVersionKeepCount} from "./version-control/file-vers
 import {setTrashMode} from "./utils/trash";
 import {openTrashDialog} from "./components/trash-dialog";
 import {loadRecents, addRecent, addRecentDoc, flushRecents, reloadRecentsIfChanged} from "./recent-files";
-import {loadStartPage, itemFromPath, itemFromDoc, toggleInGroup} from "./start-page";
+import {loadStartPage, itemFromPath, itemFromDoc, toggleInGroup, START_PAGE_CHANGED_EVENT} from "./start-page";
 import {isVirtualPath, virtualId, initMountStore, getMountList, dropSyDocMounts} from "./utils/virtual-tree";
 import {initBaiduPanStore} from "./api/baidu-pan";
 import {openBaiduPanDialog} from "./components/baidu-pan-dialog";
@@ -188,6 +188,9 @@ export default class FileEditorPlugin extends Plugin {
     private newTabShowRecentInput?: HTMLInputElement;
     private newTabShowFavoritesInput?: HTMLInputElement;
     private newTabShowPlannerInput?: HTMLInputElement;
+    private newTabSectionOrderInput?: HTMLInputElement;
+    private newTabItemSortSelect?: HTMLSelectElement;
+    private newTabPlannerOrderInput?: HTMLInputElement;
     // 导入 md 到思源时,是否在文档顶部插入源文件资源引述块
     private importMdSourceAssetInput?: HTMLInputElement;
     // 双链扫描:所有文本文件作为链接源(关=仅 Markdown)
@@ -1604,6 +1607,26 @@ export default class FileEditorPlugin extends Plugin {
         this.newTabShowPlannerInput.className = "b3-switch";
         addRow("newTab", "显示「习惯与目标」", "目标进度、今日习惯(可点打卡)、倒数日、当月日历的速览卡片;需先启用「习惯与目标」模块", this.newTabShowPlannerInput);
 
+        this.newTabSectionOrderInput = document.createElement("input");
+        this.newTabSectionOrderInput.className = "b3-text-field";
+        this.newTabSectionOrderInput.type = "text";
+        this.newTabSectionOrderInput.placeholder = "pinned,recent,favorites,planner";
+        addRow("newTab", "分区顺序", "逗号分隔调整各分区先后顺序:pinned(固定) / recent(最近打开) / favorites(收藏) / planner(习惯与目标)。未写出的分区补在末尾,隐藏的自动跳过", this.newTabSectionOrderInput);
+
+        this.newTabItemSortSelect = document.createElement("select");
+        this.newTabItemSortSelect.className = "b3-select";
+        this.newTabItemSortSelect.innerHTML = `
+            <option value="time">时间倒序</option>
+            <option value="name">按名称</option>
+            <option value="type">按类型(扩展名)</option>`;
+        addRow("newTab", "条目排序", "固定 / 最近打开 / 收藏区内条目的排序方式;时间倒序为旧行为", this.newTabItemSortSelect);
+
+        this.newTabPlannerOrderInput = document.createElement("input");
+        this.newTabPlannerOrderInput.className = "b3-text-field";
+        this.newTabPlannerOrderInput.type = "text";
+        this.newTabPlannerOrderInput.placeholder = "goals,habits,countdowns,calendar";
+        addRow("newTab", "习惯与目标卡片顺序", "逗号分隔:goals(目标) / habits(习惯) / countdowns(倒数日) / calendar(日历);未写出的卡片补在末尾", this.newTabPlannerOrderInput);
+
         // ---------- 运行内核 ----------
         // 默认运行内核:代码块(内核模式)/py 文件 ▶ 运行/ipynb 共用的全局兜底环境。
         // 选项含内置内核 + 本机全部 Jupyter kernelspec + conda 环境自动扫描结果
@@ -1691,6 +1714,9 @@ export default class FileEditorPlugin extends Plugin {
         if (this.newTabShowRecentInput) this.newTabShowRecentInput.checked = this.config.newTabShowRecent !== false;
         if (this.newTabShowFavoritesInput) this.newTabShowFavoritesInput.checked = this.config.newTabShowFavorites !== false;
         if (this.newTabShowPlannerInput) this.newTabShowPlannerInput.checked = this.config.newTabShowPlanner !== false;
+        if (this.newTabSectionOrderInput) this.newTabSectionOrderInput.value = this.config.newTabSectionOrder || "pinned,recent,favorites,planner";
+        if (this.newTabItemSortSelect) this.newTabItemSortSelect.value = this.config.newTabItemSort || "time";
+        if (this.newTabPlannerOrderInput) this.newTabPlannerOrderInput.value = this.config.newTabPlannerOrder || "goals,habits,countdowns,calendar";
         if (this.importMdSourceAssetInput) this.importMdSourceAssetInput.checked = this.config.importMdSourceAsset === true;
         if (this.docOpenTakeoverSelect) this.docOpenTakeoverSelect.value = this.config.docOpenTakeover || "off";
         if (this.docOpenTakeoverExtsInput) this.docOpenTakeoverExtsInput.value = this.config.docOpenTakeoverExts || "";
@@ -1787,6 +1813,9 @@ export default class FileEditorPlugin extends Plugin {
             newTabShowRecent: this.newTabShowRecentInput?.checked ?? true,
             newTabShowFavorites: this.newTabShowFavoritesInput?.checked ?? true,
             newTabShowPlanner: this.newTabShowPlannerInput?.checked ?? true,
+            newTabSectionOrder: (this.newTabSectionOrderInput?.value || "").trim() || DEFAULT_CONFIG.newTabSectionOrder,
+            newTabItemSort: (this.newTabItemSortSelect?.value as "time" | "name" | "type") || "time",
+            newTabPlannerOrder: (this.newTabPlannerOrderInput?.value || "").trim() || DEFAULT_CONFIG.newTabPlannerOrder,
             importMdSourceAsset: this.importMdSourceAssetInput?.checked ?? false,
             docOpenTakeover: ((this.docOpenTakeoverSelect?.value || "off") as "off" | "exts" | "all"),
             docOpenTakeoverExts: (this.docOpenTakeoverExtsInput?.value || "").trim() || "md,txt",
@@ -1887,6 +1916,8 @@ export default class FileEditorPlugin extends Plugin {
         applyEditorOptions();
         // 终端状态栏显隐立即对所有已打开的终端页签生效
         applyTerminalStatusBarVisibility(this as any);
+        // 新标签页分区顺序 / 条目排序 / 速览卡片顺序:已打开的起始页立即重绘
+        window.dispatchEvent(new CustomEvent(START_PAGE_CHANGED_EVENT));
         this.refreshFileTrees();
         // 引用关系树开关影响「虚拟文档树」面板内容,通知面板重建(立即生效,无需重启)
         window.dispatchEvent(new CustomEvent(SYFE_RELATION_TREE_CHANGED_EVENT));

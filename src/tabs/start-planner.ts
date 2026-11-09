@@ -102,10 +102,32 @@ function calendarBody(today: string): string {
         <div class="syfe-start__pl-cal">${cells}</div>`;
 }
 
-/** 「习惯与目标」整段 HTML(由新标签页 render() 按需插入)。 */
-export function startPlannerSectionHTML(): string {
+const PLANNER_CARD_KEYS = ["goals", "habits", "countdowns", "calendar"];
+
+/** 顺序串解析:未知项忽略、重复项只留第一次、缺失项按默认顺序补末尾。 */
+function plannerCardOrder(text?: string): string[] {
+    const out: string[] = [];
+    for (const k of String(text || "").split(/[,，\s]+/)) {
+        const key = k.trim().toLowerCase();
+        if (PLANNER_CARD_KEYS.includes(key) && !out.includes(key)) out.push(key);
+    }
+    for (const k of PLANNER_CARD_KEYS) {
+        if (!out.includes(k)) out.push(k);
+    }
+    return out;
+}
+
+/** 「习惯与目标」整段 HTML(由新标签页 render() 按需插入,卡片顺序可配)。 */
+export function startPlannerSectionHTML(orderText?: string): string {
     const today = todayKey();
     const s = todaySummary();
+    const bodies: Record<string, string> = {
+        goals: card("goals", "🎯", "目标", goalsBody()),
+        habits: card("habits", "⭐", "习惯", habitsBody(today)),
+        countdowns: card("countdowns", "⏳", "倒数日", countdownsBody()),
+        calendar: card("calendar", "📅", "日历", calendarBody(today)),
+    };
+    const cards = plannerCardOrder(orderText).map(k => bodies[k] || "").join("");
     return `<section class="syfe-start__section syfe-start__planner" data-section="planner">
         <div class="syfe-start__section-head">
             <svg><use xlink:href="#iconList"></use></svg>
@@ -114,12 +136,7 @@ export function startPlannerSectionHTML(): string {
             <span class="fn__flex-1"></span>
             <span class="syfe-start__pl-open" data-pl-view="today" title="打开完整面板">打开面板 ↗</span>
         </div>
-        <div class="syfe-start__pl-grid">
-            ${card("goals", "🎯", "目标", goalsBody())}
-            ${card("habits", "⭐", "习惯", habitsBody(today))}
-            ${card("countdowns", "⏳", "倒数日", countdownsBody())}
-            ${card("calendar", "📅", "日历", calendarBody(today))}
-        </div>
+        <div class="syfe-start__pl-grid">${cards}</div>
     </section>`;
 }
 

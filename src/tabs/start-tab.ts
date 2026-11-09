@@ -116,6 +116,36 @@ function escapeHTML(s: string): string {
     return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
+// ===== 排序(分区顺序 + 分区内条目) =====
+const SECTION_KEYS = ["pinned", "recent", "favorites", "planner"];
+
+/** 顺序串解析:未知项忽略、重复项只留第一次、缺失项按默认顺序补末尾。 */
+function sectionOrder(text?: string): string[] {
+    const out: string[] = [];
+    for (const k of String(text || "").split(/[,，\s]+/)) {
+        const key = k.trim().toLowerCase();
+        if (SECTION_KEYS.includes(key) && !out.includes(key)) out.push(key);
+    }
+    for (const k of SECTION_KEYS) {
+        if (!out.includes(k)) out.push(k);
+    }
+    return out;
+}
+
+/** time = 数据层已按时间倒序(旧行为);name / type 只重排本次渲染的数组。 */
+function sortItems(list: PageItem[], mode: EditorConfig["newTabItemSort"]): PageItem[] {
+    if (mode === "name") {
+        return list.slice().sort((a, b) => a.title.localeCompare(b.title, "zh-CN"));
+    }
+    if (mode === "type") {
+        const ext = (it: PageItem) => it.kind === "doc"
+            ? "" : (it.path?.split(".").pop() || "").toLowerCase();
+        return list.slice().sort((a, b) =>
+            ext(a).localeCompare(ext(b)) || a.title.localeCompare(b.title, "zh-CN"));
+    }
+    return list;
+}
+
 // === 顶部「+」接管 ===
 // 思源布局顶部的「新建文档」按钮是 <span data-type="new" class="block__icon ...">,
 // 点击后在 Wnd 的冒泡监听里调 newFile()。这里在**捕获阶段**拦截,改为打开新标签页。
@@ -366,18 +396,22 @@ export function createStartTabConfig(plugin: IPluginForStartTab) {
                         </section>`);
                 };
 
-                if (cfg.newTabShowPinned !== false) {
-                    pushSection("pinned", "固定", "iconPin", groupToItems(getPinned(), "pinned"), "grid", true);
-                }
-                if (cfg.newTabShowRecent !== false) {
-                    pushSection("recent", "最近打开", "iconHistory", recentToItems(), "list", false);
-                }
-                if (cfg.newTabShowFavorites !== false) {
-                    pushSection("favorites", "收藏", "iconStar", groupToItems(getFavorites(), "favorites"), "list", true);
-                }
-                // 习惯与目标速览:模块停用时不显示,数据/打卡变化由 PLANNER_CHANGED_EVENT 重绘
-                if (cfg.newTabShowPlanner !== false && isPlannerActive()) {
-                    sections.push(startPlannerSectionHTML());
+                const sortMode = cfg.newTabItemSort || "time";
+                const sectionsByKey: Record<string, () => void> = {
+                    pinned: () => pushSection("pinned", "固定", "iconPin", sortItems(groupToItems(getPinned(), "pinned"), sortMode), "grid", true),
+                    recent: () => pushSection("recent", "最近打开", "iconHistory", sortItems(recentToItems(), sortMode), "list", false),
+                    favorites: () => pushSection("favorites", "收藏", "iconStar", sortItems(groupToItems(getFavorites(), "favorites"), sortMode), "list", true),
+                    // 习惯与目标速览:模块停用时不显示,数据/打卡变化由 PLANNER_CHANGED_EVENT 重绘
+                    planner: () => sections.push(startPlannerSectionHTML(cfg.newTabPlannerOrder)),
+                };
+                const enabled: Record<string, boolean> = {
+                    pinned: cfg.newTabShowPinned !== false,
+                    recent: cfg.newTabShowRecent !== false,
+                    favorites: cfg.newTabShowFavorites !== false,
+                    planner: cfg.newTabShowPlanner !== false && isPlannerActive(),
+                };
+                for (const key of sectionOrder(cfg.newTabSectionOrder)) {
+                    if (enabled[key]) sectionsByKey[key]?.();
                 }
 
                 self._items = items;
