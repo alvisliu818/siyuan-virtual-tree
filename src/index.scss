@@ -5744,3 +5744,151 @@ button.syfe-editor__arrow--exp:hover {
 .protyle-hint.syfe-wikihint-suppressed {
     display: none !important;
 }
+
+// ===== 思源文档属性面板(侧边 dock / 文档标题下共用一份组件) =====
+.syfe-dp {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--b3-theme-on-background);
+}
+
+.syfe-dp__head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--b3-border-color);
+}
+
+.syfe-dp__title {
+    font-weight: 600;
+}
+
+.syfe-dp__count {
+    padding: 0 6px;
+    border-radius: 8px;
+    font-size: 11px;
+    color: var(--b3-theme-on-surface);
+    background: var(--b3-theme-surface);
+}
+
+.syfe-dp__icon {
+    border: none;
+    background: transparent;
+    color: var(--b3-theme-on-surface);
+    font-size: 14px;
+    cursor: pointer;
+
+    &:hover {
+        color: var(--b3-theme-primary);
+    }
+}
+
+.syfe-dp__list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    max-height: 46vh;
+    padding: 4px 8px;
+    overflow-y: auto;
+}
+
+.syfe-dp__row {
+    display: grid;
+    grid-template-columns: 88px 52px minmax(0, 1fr) 18px;
+    align-items: center;
+    gap: 6px;
+    min-height: 28px;
+}
+
+.syfe-dp__name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--b3-theme-on-surface);
+}
+
+.syfe-dp__type {
+    font-size: 10px;
+    text-align: center;
+    opacity: .65;
+}
+
+.syfe-dp__ctrl {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+}
+
+.syfe-dp__input {
+    box-sizing: border-box;
+    width: 100%;
+    padding: 2px 6px;
+    font-size: 12px;
+    line-height: 20px;
+}
+
+.syfe-dp__check {
+    width: 16px;
+    height: 16px;
+    accent-color: var(--b3-theme-primary);
+    cursor: pointer;
+}
+
+.syfe-dp__del {
+    border: none;
+    background: transparent;
+    color: var(--b3-theme-on-surface);
+    font-size: 14px;
+    line-height: 18px;
+    cursor: pointer;
+    opacity: 0;
+
+    &:hover {
+        color: var(--b3-theme-error);
+        opacity: 1;
+    }
+}
+
+.syfe-dp__row:hover .syfe-dp__del {
+    opacity: .7;
+}
+
+.syfe-dp__del--none {
+    visibility: hidden;
+}
+
+.syfe-dp__add {
+    padding: 4px 8px 8px;
+}
+
+.syfe-dp__addinput {
+    box-sizing: border-box;
+    width: 100%;
+    font-size: 12px;
+}
+
+.syfe-dp__empty {
+    padding: 10px 8px;
+    opacity: .6;
+}
+
+// 文档标题下的插入宿主:.protyle-top 内、.protyle-wysiwyg 外,不会被序列化进正文
+.syfe-dp-inline {
+    margin: 4px 0 8px;
+    padding: 4px 0;
+    border: 1px solid var(--b3-border-color);
+    border-radius: 6px;
+    background: var(--b3-theme-surface);
+
+    .syfe-dp__list {
+        max-height: none;
+    }
+}
+
+.syfe-dp-dock__body {
+    padding: 4px 0;
+    overflow-y: auto;
+}

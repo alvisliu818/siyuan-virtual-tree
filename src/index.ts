@@ -9,6 +9,7 @@ import {
     MOUNT_TREE_DOCK_TYPE,
     TERMINAL_DOCK_TYPE,
     BACKLINK_DOCK_TYPE,
+    DOC_PROPERTIES_DOCK_TYPE,
 } from "./constants";
 import {EditorConfig, DEFAULT_CONFIG} from "./types";
 import {setupMonaco, applyTheme, getCurrentMode, disposeMonaco} from "./editor/monaco";
@@ -24,6 +25,7 @@ import {createNotebookTabConfig} from "./tabs/notebook-tab";
 import {createDiffTabConfig} from "./tabs/diff-tab";
 import {createStartTabConfig, openStartTab, installNewTabHijack} from "./tabs/start-tab";
 import {createTerminalTabConfig, openTerminalTab, applyTerminalStatusBarVisibility} from "./tabs/terminal-tab";
+import {initDocProperties, destroyDocProperties, notifyDocPropertiesConfigChanged, createDocPropertiesDockConfig} from "./doc-properties";
 import {createRecentDockConfig} from "./dock/recent-dock";
 import {createTagDockConfig} from "./dock/tag-dock";
 import {createSearchTabConfig, openSearchTab} from "./components/search-panel";
@@ -191,6 +193,8 @@ export default class FileEditorPlugin extends Plugin {
     private newTabSectionOrderInput?: HTMLInputElement;
     private newTabItemSortSelect?: HTMLSelectElement;
     private newTabPlannerOrderInput?: HTMLInputElement;
+    private docPropertiesShowInDocInput?: HTMLInputElement;
+    private docPropertiesSchemaInput?: HTMLTextAreaElement;
     // 导入 md 到思源时,是否在文档顶部插入源文件资源引述块
     private importMdSourceAssetInput?: HTMLInputElement;
     // 双链扫描:所有文本文件作为链接源(关=仅 Markdown)
@@ -258,7 +262,7 @@ export default class FileEditorPlugin extends Plugin {
     private pruneStalePluginDocks(): void {
         // 当前代码会注册的 dock type;文件 dock 即使默认不注册也保留(设置里可开)
         const registered = [
-            DOCK_TYPE, RECENT_DOCK_TYPE, TAG_DOCK_TYPE, MOUNT_TREE_DOCK_TYPE, TERMINAL_DOCK_TYPE, PLANNER_DOCK_TYPE, BACKLINK_DOCK_TYPE,
+            DOCK_TYPE, RECENT_DOCK_TYPE, TAG_DOCK_TYPE, MOUNT_TREE_DOCK_TYPE, TERMINAL_DOCK_TYPE, PLANNER_DOCK_TYPE, BACKLINK_DOCK_TYPE, DOC_PROPERTIES_DOCK_TYPE,
         ];
         // 本插件用过的旧名字(改名前的命名空间,整个都该清);
         // siyuan-planner = 已并入的习惯与目标模块的独立插件期命名空间,它的 dock 记录一并清掉
@@ -419,6 +423,9 @@ export default class FileEditorPlugin extends Plugin {
         this.addDockOnce(createTerminalDockConfig(this as any));
         // 侧边栏「双链」面板(入链/出链,跟随当前活动的文件页签)
         this.addDockOnce(createBacklinkDockConfig(this as any));
+        // 侧边栏「文档属性」面板(思源文档块属性,跟随当前活动文档)
+        this.addDockOnce(createDocPropertiesDockConfig(this as any));
+        initDocProperties(this as any);
 
         // 注册思源编辑器斜杆命令(输入 /file 或 /文件 插入文件链接)
         registerSlashCommands(this, () => this.getFileTreeRoot());
@@ -621,6 +628,8 @@ export default class FileEditorPlugin extends Plugin {
         });
         // 设置面板控件同步当前值
         this.syncSettingUI();
+        // 配置就位后按真实设置重扫文档内属性面板(onload 时 config 还是 DEFAULT_CONFIG)
+        notifyDocPropertiesConfigChanged(this as any);
 // 加载标签数据(预设标签库 + 文件/文件夹打标记录)
   try {
    await loadTagData(this);
@@ -800,6 +809,12 @@ export default class FileEditorPlugin extends Plugin {
         // 习惯与目标:停计时引擎、强制落盘(planner.json 数据保留)
         try {
             destroyPlanner();
+        } catch {
+            // ignore
+        }
+        // 文档属性:摘事件、移除所有文档内插入的面板
+        try {
+            destroyDocProperties();
         } catch {
             // ignore
         }
@@ -1627,6 +1642,18 @@ export default class FileEditorPlugin extends Plugin {
         this.newTabPlannerOrderInput.placeholder = "goals,habits,countdowns,calendar";
         addRow("newTab", "习惯与目标卡片顺序", "逗号分隔:goals(目标) / habits(习惯) / countdowns(倒数日) / calendar(日历);未写出的卡片补在末尾", this.newTabPlannerOrderInput);
 
+        // ---------- 文档属性 ----------
+        this.docPropertiesShowInDocInput = document.createElement("input");
+        this.docPropertiesShowInDocInput.type = "checkbox";
+        this.docPropertiesShowInDocInput.className = "b3-switch";
+        addRow("docProperties", "在文档里显示属性面板", "开启后在思源文档标题下方插入可编辑的属性面板(位于标题区、正文之外,不会污染文档内容);关闭后仍可用侧边功能栏的「文档属性」面板。默认关闭", this.docPropertiesShowInDocInput);
+
+        this.docPropertiesSchemaInput = document.createElement("textarea");
+        this.docPropertiesSchemaInput.className = "b3-text-field";
+        this.docPropertiesSchemaInput.rows = 6;
+        this.docPropertiesSchemaInput.placeholder = "status=select:未开始,进行中,完成\ndue=date\npriority=number";
+        addRow("docProperties", "属性类型配置", "每行一条:属性名=类型:选项(多个选项用逗号分隔),例「status=select:未开始,进行中,完成」。⚠ 属性名只能用小写英文字母/数字/连字符且以字母开头(思源内核限制),存为 custom-<属性名>。类型:text 文本 / number 数字 / checkbox 复选框 / date 日期 / datetime 日期时间 / tags 标签 / select 下拉 / link 链接。未配置的属性按文本处理;属性名与属性值都有自动补全", this.docPropertiesSchemaInput);
+
         // ---------- 运行内核 ----------
         // 默认运行内核:代码块(内核模式)/py 文件 ▶ 运行/ipynb 共用的全局兜底环境。
         // 选项含内置内核 + 本机全部 Jupyter kernelspec + conda 环境自动扫描结果
@@ -1675,6 +1702,7 @@ export default class FileEditorPlugin extends Plugin {
         addRowsPage("baiduPan", "百度网盘");
         addRowsPage("terminal", "终端");
         addRowsPage("newTab", "新标签页");
+        addRowsPage("docProperties", "文档属性");
         addRowsPage("jupyter", "运行内核");
     }
 
@@ -1717,6 +1745,8 @@ export default class FileEditorPlugin extends Plugin {
         if (this.newTabSectionOrderInput) this.newTabSectionOrderInput.value = this.config.newTabSectionOrder || "pinned,recent,favorites,planner";
         if (this.newTabItemSortSelect) this.newTabItemSortSelect.value = this.config.newTabItemSort || "time";
         if (this.newTabPlannerOrderInput) this.newTabPlannerOrderInput.value = this.config.newTabPlannerOrder || "goals,habits,countdowns,calendar";
+        if (this.docPropertiesShowInDocInput) this.docPropertiesShowInDocInput.checked = this.config.docPropertiesShowInDoc === true;
+        if (this.docPropertiesSchemaInput) this.docPropertiesSchemaInput.value = this.config.docPropertiesSchema || "";
         if (this.importMdSourceAssetInput) this.importMdSourceAssetInput.checked = this.config.importMdSourceAsset === true;
         if (this.docOpenTakeoverSelect) this.docOpenTakeoverSelect.value = this.config.docOpenTakeover || "off";
         if (this.docOpenTakeoverExtsInput) this.docOpenTakeoverExtsInput.value = this.config.docOpenTakeoverExts || "";
@@ -1816,6 +1846,8 @@ export default class FileEditorPlugin extends Plugin {
             newTabSectionOrder: (this.newTabSectionOrderInput?.value || "").trim() || DEFAULT_CONFIG.newTabSectionOrder,
             newTabItemSort: (this.newTabItemSortSelect?.value as "time" | "name" | "type") || "time",
             newTabPlannerOrder: (this.newTabPlannerOrderInput?.value || "").trim() || DEFAULT_CONFIG.newTabPlannerOrder,
+            docPropertiesShowInDoc: this.docPropertiesShowInDocInput?.checked ?? false,
+            docPropertiesSchema: this.docPropertiesSchemaInput?.value ?? "",
             importMdSourceAsset: this.importMdSourceAssetInput?.checked ?? false,
             docOpenTakeover: ((this.docOpenTakeoverSelect?.value || "off") as "off" | "exts" | "all"),
             docOpenTakeoverExts: (this.docOpenTakeoverExtsInput?.value || "").trim() || "md,txt",
@@ -1918,6 +1950,8 @@ export default class FileEditorPlugin extends Plugin {
         applyTerminalStatusBarVisibility(this as any);
         // 新标签页分区顺序 / 条目排序 / 速览卡片顺序:已打开的起始页立即重绘
         window.dispatchEvent(new CustomEvent(START_PAGE_CHANGED_EVENT));
+        // 文档属性:文档内显隐重扫 + 所有面板按新 schema 重绘
+        notifyDocPropertiesConfigChanged(this as any);
         this.refreshFileTrees();
         // 引用关系树开关影响「虚拟文档树」面板内容,通知面板重建(立即生效,无需重启)
         window.dispatchEvent(new CustomEvent(SYFE_RELATION_TREE_CHANGED_EVENT));

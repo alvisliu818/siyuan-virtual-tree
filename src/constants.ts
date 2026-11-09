@@ -24,6 +24,8 @@ export const TAG_DOCK_TYPE = "siyuan-file-editor-tag-dock";
 // 侧边栏「虚拟文档树」面板(用户自建树,初始为空,可挂载文件/文件夹/思源文档/思源块)
 export const MOUNT_TREE_DOCK_TYPE = "siyuan-file-editor-mount-tree-dock";
 export const BACKLINK_DOCK_TYPE = "siyuan-file-editor-backlink-dock";
+// 侧边栏「文档属性」面板(思源文档块属性编辑,跟随当前活动文档)
+export const DOC_PROPERTIES_DOCK_TYPE = "siyuan-file-editor-doc-properties-dock";
 // 侧边栏「终端」面板(复用终端 Tab 的 xterm + 三后端实现,常驻侧栏底部)
 export const TERMINAL_DOCK_TYPE = "siyuan-file-editor-terminal-dock";
 

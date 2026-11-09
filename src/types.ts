@@ -68,6 +68,8 @@ export interface EditorConfig {
     newTabSectionOrder: string;      // 分区顺序,逗号分隔:pinned,recent,favorites,planner
     newTabItemSort: "time" | "name" | "type"; // 分区内条目排序:时间倒序 / 名称 / 类型
     newTabPlannerOrder: string;      // 速览卡片顺序:goals,habits,countdowns,calendar
+    docPropertiesShowInDoc: boolean; // 是否在思源文档标题下插入属性面板(侧边 dock 常驻)
+    docPropertiesSchema: string;     // 属性名 → 类型/选项 全局配置(每行 名称=类型:选项)
     // 导入 Markdown 到思源时,是否把源文件作为资源插入到文档顶部的引述块(保留出处,便于回溯原文件)
     importMdSourceAsset: boolean;
     // 「文件」面板是否显示。文件浏览/重命名/删除等能力已由「虚拟文档树」面板承接,
@@ -307,6 +309,8 @@ export const DEFAULT_CONFIG: EditorConfig = {
     newTabSectionOrder: "pinned,recent,favorites,planner",
     newTabItemSort: "time",          // 条目默认按加入/打开时间倒序(旧行为)
     newTabPlannerOrder: "goals,habits,countdowns,calendar",
+    docPropertiesShowInDoc: false,   // 文档内面板默认隐藏(侧边 dock 常驻可用)
+    docPropertiesSchema: "",         // 未配置的属性按文本处理
     importMdSourceAsset: false,      // 默认不插入源文件资源引述块
     showFileTreeDock: false,         // 默认不显示「文件」面板(功能已由虚拟文档树承接)
     // 默认不接管文档内文件打开(保持思源原生行为);开启后按扩展名或全部交给本插件
