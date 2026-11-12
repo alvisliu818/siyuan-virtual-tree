@@ -236,6 +236,44 @@ export async function gitVerifyToken(provider: GitProvider): Promise<string> {
     return String(json?.login || json?.name || json?.username || "");
 }
 
+// ==== 我的仓库(凭据可见范围,挂载对话框的仓库选择器用) ====
+
+export interface GitMyRepo {
+    provider: GitProvider;
+    owner: string;
+    repo: string;
+    fullName: string;
+    isPrivate: boolean;
+    description: string;
+    defaultBranch: string;
+    updatedAt: string;
+}
+
+/** 列出当前令牌可见的仓库(自有 + 协作 + 组织)。没填令牌时抛可读错误 */
+export async function gitListMyRepos(provider: GitProvider): Promise<GitMyRepo[]> {
+    if (!gitTokenOf(provider)) {
+        throw new Error(`先在下方填 ${provider === "github" ? "GitHub" : "Gitee"} 令牌并保存,才能列出你的仓库`);
+    }
+    const url = provider === "github"
+        ? `${API_BASE.github}/user/repos?per_page=100&sort=updated&affiliation=owner,collaborator,organization_member`
+        : `${API_BASE.gitee}/user/repos?per_page=100&sort=updated`;
+    const arr = await gitJSON<any[]>(provider, url, {}, "列出我的仓库");
+    return (Array.isArray(arr) ? arr : []).map((r: any) => {
+        const owner = String(r?.owner?.login || r?.namespace?.path || r?.namespace?.login || "");
+        const repo = String(r?.name || r?.path || "");
+        return {
+            provider,
+            owner,
+            repo,
+            fullName: String(r?.full_name || (owner && repo ? `${owner}/${repo}` : repo)),
+            isPrivate: !!r?.private,
+            description: String(r?.description || ""),
+            defaultBranch: String(r?.default_branch || "main"),
+            updatedAt: String(r?.updated_at || r?.pushed_at || ""),
+        };
+    }).filter(r => r.owner && r.repo);
+}
+
 // ==== 提交历史与 diff(GitHub / Gitee 的 REST 形状基本一致) ====
 
 export interface GitRemoteCommit {

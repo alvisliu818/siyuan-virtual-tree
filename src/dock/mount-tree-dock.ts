@@ -2020,8 +2020,10 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                             openGitRepoDialog({
                                 provider: "github",
                                 title: where ? `挂载 GitHub 仓库到「${where}」` : "挂载 GitHub 仓库到虚拟文档树",
-                                onPicked: (vPath: string, label: string) => {
-                                    void uidOf().then(uid => mountPayload(plugin, {kind: "file", name: label, path: vPath, isDir: true}, uid));
+                                allowDestPick: true,
+                                defaultParentUid: parentUid,
+                                onPicked: (vPath: string, label: string, info) => {
+                                    void mountPayload(plugin, {kind: "file", name: label, path: vPath, isDir: info.isDir}, info.parentUid);
                                 },
                             });
                         },
@@ -2033,8 +2035,10 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                             openGitRepoDialog({
                                 provider: "gitee",
                                 title: where ? `挂载 Gitee 仓库到「${where}」` : "挂载 Gitee 仓库到虚拟文档树",
-                                onPicked: (vPath: string, label: string) => {
-                                    void uidOf().then(uid => mountPayload(plugin, {kind: "file", name: label, path: vPath, isDir: true}, uid));
+                                allowDestPick: true,
+                                defaultParentUid: parentUid,
+                                onPicked: (vPath: string, label: string, info) => {
+                                    void mountPayload(plugin, {kind: "file", name: label, path: vPath, isDir: info.isDir}, info.parentUid);
                                 },
                             });
                         },

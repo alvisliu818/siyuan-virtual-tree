@@ -54,6 +54,20 @@
     color: var(--b3-theme-on-surface-light);
 }
 
+/* 文件行图标是 fileIconHTML 的 img/svg 包在 span 里,撑满 16px 格子 */
+span.syfe-mount__icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+
+    > img,
+    > svg {
+        width: 16px;
+        height: 16px;
+        display: block;
+    }
+}
+
 .syfe-mount__name {
     overflow: hidden;
     text-overflow: ellipsis;
@@ -6550,3 +6564,4 @@ button.syfe-editor__arrow--exp:hover {
     border-color: var(--b3-theme-primary);
     color: var(--b3-theme-on-primary);
 }
+
