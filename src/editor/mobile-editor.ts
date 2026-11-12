@@ -13,7 +13,7 @@ import {
     EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter,
     drawSelection, rectangularSelection,
 } from "@codemirror/view";
-import {defaultKeymap, history, historyKeymap, indentWithTab, undo, redo} from "@codemirror/commands";
+import {defaultKeymap, history, historyKeymap, indentLess, indentMore, indentWithTab, undo, redo} from "@codemirror/commands";
 import {bracketMatching, indentOnInput, syntaxHighlighting, defaultHighlightStyle, foldGutter, foldKeymap, LanguageDescription} from "@codemirror/language";
 import {searchKeymap, highlightSelectionMatches} from "@codemirror/search";
 import {closeBrackets, closeBracketsKeymap} from "@codemirror/autocomplete";
@@ -28,15 +28,21 @@ export interface MobileEditorOptions {
     readOnly?: boolean;
     onSave(): void;
     onInput(): void;
+    /** 点击行号槽:复制该行链接(移动端没有右键菜单,用点击代替) */
+    onCopyLine?(line: number): void;
 }
 
 export interface MobileEditorHandle {
     getValue(): string;
     setValue(v: string): void;
     focus(): void;
+    blur(): void;
     destroy(): void;
     undo(): void;
     redo(): void;
+    /** 缩进 / 反缩进(工具栏 Tab、Shift+Tab 按钮) */
+    indentMore(): void;
+    indentLess(): void;
     getFontSize(): number;
     setFontSize(px: number): void;
     isWrap(): boolean;
@@ -70,9 +76,15 @@ const mobileTheme = EditorView.theme({
     },
     ".cm-content": {
         caretColor: "var(--b3-theme-primary)",
-        // 底部留白放在 content 上而不是 scroller:否则行号槽的背景在留白处
-        // 戛然而止,短文档下半屏会出现一条明显的灰白分界
-        padding: "0 10px 12vh",
+        // 贴边显示:窄屏上左右 10px 内边距和 12vh 底部留白太奢侈,
+        // 去掉左右、只留少量底部空间防止最后一行被键盘压住。
+        // 留白仍放在 content 上,行号槽背景才不会中途断开。
+        padding: "0 0 4vh",
+    },
+    // 行号槽默认值(0 3px 0 5px)在 360px 屏上占 30px,收紧把宽度还给正文
+    ".cm-lineNumbers .cm-gutterElement": {
+        padding: "0 2px 0 3px",
+        minWidth: "18px",
     },
     ".cm-gutters": {
         backgroundColor: "var(--b3-theme-surface)",
@@ -130,7 +142,16 @@ export function createMobileEditor(container: HTMLElement, opts: MobileEditorOpt
             doc: opts.value,
             extensions: [
                 saveKey,
-                lineNumbers(),
+                lineNumbers({
+                    // 点行号复制该行链接;返回 true 阻止 CM6 默认的选区行为
+                    domEventHandlers: {
+                        click: (view, block) => {
+                            const n = view.state.doc.lineAt(block.from).number;
+                            if (n > 0) opts.onCopyLine?.(n);
+                            return true;
+                        },
+                    },
+                }),
                 foldGutter(),
                 highlightActiveLine(),
                 highlightActiveLineGutter(),
@@ -182,12 +203,22 @@ export function createMobileEditor(container: HTMLElement, opts: MobileEditorOpt
             view.dispatch({changes: {from: 0, to: view.state.doc.length, insert: v}});
         },
         focus: () => view.focus(),
+        blur: () => {
+            const el = view.contentDOM;
+            if (el && (document.activeElement === el || el.contains(document.activeElement))) {
+                el.blur();
+            }
+        },
         destroy: () => {
             destroyed = true;
             view.destroy();
         },
-        undo: () => { undo(view); view.focus(); },
-        redo: () => { redo(view); view.focus(); },
+        // 工具栏在编辑区之外:点工具按钮后保持失焦,焦点交给 openEditorDialog
+        // 的区域点击规则(点编辑区才进编辑,点其它区域退出)
+        undo: () => { undo(view); },
+        redo: () => { redo(view); },
+        indentMore: () => { indentMore(view); },
+        indentLess: () => { indentLess(view); },
         getFontSize: () => fontSize,
         setFontSize: (px: number) => {
             fontSize = Math.max(MOBILE_FONT_MIN, Math.min(MOBILE_FONT_MAX, Math.round(px)));

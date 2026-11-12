@@ -6566,12 +6566,18 @@ button.syfe-editor__arrow--exp:hover {
 }
 
 /* ===== 移动端全屏编辑器:紧凑工具栏 + 单行路径 ===== */
+/* 思源 .b3-dialog__content 默认 16px 24px;全屏编辑器要贴边,
+   否则 360px 屏上白白少了 48px 宽 / 32px 高 */
+.syfe-mopen--editor.b3-dialog__content {
+    padding: 0;
+}
+
 .syfe-mopen__bar {
     flex: none;
     display: flex;
     align-items: center;
-    gap: 6px;
-    padding: 6px 8px;
+    gap: 3px;
+    padding: 2px 4px;
     border-bottom: 1px solid var(--b3-border-color);
     background: var(--b3-theme-surface);
     /* 极窄屏允许横向滚动,保证每个工具都够得着,而不是挤掉或换行遮编辑区 */
@@ -6592,16 +6598,17 @@ button.syfe-editor__arrow--exp:hover {
 .syfe-mopen__dirty {
     flex: none;
     color: var(--b3-theme-primary);
-    font-size: 12px;
+    font-size: 10px;
     white-space: nowrap;
 }
 
+/* 窄屏工具栏:按钮压到 30px 高,一行放得下撤销/重做/反缩进/字号/折行/保存 */
 .syfe-mopen__tool {
     flex: none;
-    min-width: 40px;
-    min-height: 44px;
-    padding: 0 8px;
-    font-size: 15px;
+    min-width: 28px;
+    min-height: 30px;
+    padding: 0 4px;
+    font-size: 12px;
     line-height: 1;
 }
 
@@ -6613,23 +6620,24 @@ button.syfe-editor__arrow--exp:hover {
 
 .syfe-mopen__fontval {
     flex: none;
-    min-width: 20px;
+    min-width: 14px;
     text-align: center;
-    font-size: 12px;
+    font-size: 10px;
     opacity: .75;
 }
 
 .syfe-mopen__save {
     flex: none;
-    min-height: 44px;
-    padding: 0 16px;
+    min-height: 30px;
+    padding: 0 8px;
+    font-size: 12px;
 }
 
 .syfe-mopen__path {
     flex: none;
-    font-size: 11px;
+    font-size: 10px;
     opacity: .6;
-    padding: 4px 10px;
+    padding: 2px 6px;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
