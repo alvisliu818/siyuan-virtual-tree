@@ -9,7 +9,8 @@
 //   远端删除 → **只报告,不删外部文件**(外部数据没有回收站,不可逆)
 //   两侧都改 → 冲突,跳过并列出,绝不静默覆盖
 //   链接断开/外部盘未挂载 → 本地扫描为空而基准非空时直接中止,避免把远端清空
-//   点号开头的文件/目录一律不同步(.git、.env、.DS_Store 等),与思源同步的取舍一致
+//   点开头文件/目录正常同步(.env、.gitignore、.vscode 等);只排除 .git/.hg/.svn 版本库内部目录
+//   与内部符号链接(防回环)。注意 .env 之类可能含密钥,建议绑定私有仓库。
 import {joinPath} from "../utils/path";
 import {getNativeRequire} from "../utils/native-require";
 import {buildGitRepoPath} from "../utils/git-repo-path";
@@ -36,6 +37,9 @@ const MAX_FILE_BYTES = 5 * 1024 * 1024;
 // 一次提交的文件数与字节数上限:超了拆成多个提交(每个都是完整可用的 commit)
 const MAX_BATCH_FILES = 30;
 const MAX_BATCH_BYTES = 6 * 1024 * 1024;
+// 版本库内部目录:远端树接口拒绝这类路径,且同步对象库没有意义。
+// 其余点开头文件/目录(.env、.gitignore、.vscode 等)一律正常同步。
+const VCS_INTERNAL_DIRS = new Set([".git", ".hg", ".svn"]);
 
 export interface LibrarySyncIssue {
     path: string;
@@ -111,8 +115,11 @@ async function scanLocal(entry: LibraryEntry, rootSys: string, skipped: LibraryS
     const walk = async (dir: string, rel: string): Promise<void> => {
         for (const name of await fs.promises.readdir(dir)) {
             const childRel = rel ? `${rel}/${name}` : name;
-            if (name.startsWith(".")) {
-                skipped.push({path: childRel, reason: "点号开头,不同步"});
+            // 点开头的文件/目录照常同步(.env、.gitignore、.vscode、.github 都是要带上手机的真实配置)。
+            // 只排除版本库内部目录:GitHub 树接口对含 .git 的路径直接回 422
+            // (tree.path contains a malformed path component),而且把对象库塞进另一个仓库没有意义。
+            if (VCS_INTERNAL_DIRS.has(name)) {
+                skipped.push({path: childRel, reason: "版本库内部目录,不同步"});
                 continue;
             }
             const full = joinPath(dir, name);

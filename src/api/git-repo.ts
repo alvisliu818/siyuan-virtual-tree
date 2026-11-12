@@ -444,8 +444,8 @@ function assertWritable(loc: GitRepoLocation): void {
 }
 
 // GitHub:Git Data API 一次提交完成多处树变更(目录删除/改名/插件库批量同步用)。
-// tree 项 {path, mode, type, sha};sha=null 表示删除,content 可代替 sha 直接建 blob
-// (两者不能同时给,否则 GitHub 报错)。
+// tree 项 {path, mode, type, sha};sha=null 表示删除,content 是**base64**,
+// 但只有 Contents API 认 base64 —— 树接口不认,见下面建 blob 的注释。
 async function githubTreeCommit(
     loc: GitRepoLocation,
     tree: {path: string; mode: string; type: string; sha?: string | null; content?: string}[],
@@ -453,42 +453,60 @@ async function githubTreeCommit(
 ): Promise<void> {
     const base = repoApi(loc);
     const branch = encodeURIComponent(loc.ref);
-    const refResp = await gitRequest(loc.provider, `${base}/git/ref/heads/${branch}`);
-    // 空仓库没有任何 ref(GitHub 回 404/409):首次提交不带 parent,提交后再创建分支引用。
-    // 插件库绑定的往往就是刚建好的空私有仓库,这条路径必须能走通。
-    const empty = refResp.status === 404 || refResp.status === 409;
-    if (!empty && refResp.status >= 400) {
+    let refResp = await gitRequest(loc.provider, `${base}/git/ref/heads/${branch}`);
+    let rest = tree;
+    // 空仓库没有任何 ref(GitHub 回 404/409),而且**连不带 base_tree 的 POST /git/trees 也会 409**
+    // (Git Repository is empty)。所以必须先用 Contents API 落一个文件把分支建出来,
+    // 剩下的改动再走常规树提交。插件库绑定的往往就是刚建好的空私有仓库,这条路径必须能走通。
+    if (refResp.status === 404 || refResp.status === 409) {
+        const seed = tree.find(t => t.content !== undefined);
+        if (!seed) return;   // 空仓库上只有删除动作:没有内容可提交
+        await gitJSON<any>(loc.provider, `${base}/contents/${encPath(seed.path)}`, {
+            method: "PUT",
+            body: {message, content: seed.content, branch: loc.ref},
+        }, "初始化空仓库");
+        rest = tree.filter(t => t !== seed);
+        if (rest.length === 0) return;
+        refResp = await gitRequest(loc.provider, `${base}/git/ref/heads/${branch}`);
+    }
+    if (refResp.status >= 400) {
         throw new Error(gitErrorMessage(loc.provider, refResp, "读取分支引用"));
     }
-    let parentSha = "";
-    let baseTree = "";
-    if (!empty) {
-        const ref = JSON.parse(decodeAuto(new Uint8Array(refResp.bytes)));
-        parentSha = String(ref?.object?.sha || "");
-        if (!parentSha) throw new Error("提交失败:分支引用为空");
-        const parent = await gitJSON<any>(loc.provider, `${base}/git/commits/${parentSha}`, {}, "读取提交");
-        baseTree = String(parent?.tree?.sha || "");
+    const ref = JSON.parse(decodeAuto(new Uint8Array(refResp.bytes)));
+    const parentSha = String(ref?.object?.sha || "");
+    if (!parentSha) throw new Error("提交失败:分支引用为空");
+    const parent = await gitJSON<any>(loc.provider, `${base}/git/commits/${parentSha}`, {}, "读取提交");
+    const baseTree = String(parent?.tree?.sha || "");
+    // POST /git/trees 的 content 字段是**纯 UTF-8 文本,不是 base64**:
+    // 传 base64 会把 base64 字符串本身存成文件内容(实测 blob 解码后仍是 base64),
+    // 而纯文本又表达不了任意字节。所以先按 base64 建 blob,再在树里按 sha 引用。
+    const entries: {path: string; mode: string; type: string; sha: string | null}[] = [];
+    for (const t of rest) {
+        if (t.content === undefined) {
+            entries.push({path: t.path, mode: t.mode, type: t.type, sha: null});
+            continue;
+        }
+        const blob = await gitJSON<any>(loc.provider, `${base}/git/blobs`, {
+            method: "POST",
+            body: {content: t.content, encoding: "base64"},
+        }, "创建文件对象");
+        const blobSha = String(blob?.sha || "");
+        if (!blobSha) throw new Error("提交失败:创建文件对象没有返回 sha");
+        entries.push({path: t.path, mode: t.mode, type: t.type, sha: blobSha});
     }
     const newTree = await gitJSON<any>(loc.provider, `${base}/git/trees`, {
         method: "POST",
-        body: {...(baseTree ? {base_tree: baseTree} : {}), tree},
+        body: {...(baseTree ? {base_tree: baseTree} : {}), tree: entries},
     }, "创建文件树");
     const commit = await gitJSON<any>(loc.provider, `${base}/git/commits`, {
         method: "POST",
-        body: {message, tree: String(newTree?.sha || ""), parents: parentSha ? [parentSha] : []},
+        body: {message, tree: String(newTree?.sha || ""), parents: [parentSha]},
     }, "创建提交");
     const sha = String(commit?.sha || "");
-    if (empty) {
-        await gitJSON<any>(loc.provider, `${base}/git/refs`, {
-            method: "POST",
-            body: {ref: `refs/heads/${loc.ref}`, sha},
-        }, "创建分支引用");
-    } else {
-        await gitJSON<any>(loc.provider, `${base}/git/refs/heads/${branch}`, {
-            method: "PATCH",
-            body: {sha},
-        }, "更新分支引用");
-    }
+    await gitJSON<any>(loc.provider, `${base}/git/refs/heads/${branch}`, {
+        method: "PATCH",
+        body: {sha},
+    }, "更新分支引用");
 }
 
 // Gitee:批量提交接口(单文件与目录操作共用)

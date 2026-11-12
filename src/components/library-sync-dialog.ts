@@ -77,7 +77,8 @@ export function openLibrarySyncDialog(name: string, onChange?: () => void): void
                     <div class="syfe-gitrepo__title">同步</div>
                     <div class="syfe-gitrepo__hint">
                         双向同步:本地改动推到远端,远端改动写回外部文件。两侧都改过的文件会列为冲突并跳过,不会静默覆盖;
-                        远端已删除的文件只报告,<b>不会删除你的外部文件</b>。点号开头的文件/目录(.git、.env 等)与内部链接不同步。
+                        远端已删除的文件只报告,<b>不会删除你的外部文件</b>。点开头的文件/目录(.env、.gitignore、.vscode 等)照常同步,
+                        只排除 .git/.hg/.svn 版本库内部目录与内部链接。<b>.env 之类可能含密钥,建议绑定私有仓库。</b>
                     </div>
                     <div class="syfe-gitrepo__actions">
                         <button class="b3-button" id="syfe-lib-sync">立即同步</button>
@@ -129,17 +130,20 @@ export function openLibrarySyncDialog(name: string, onChange?: () => void): void
         syncBtn.disabled = true;
         reportEl.innerHTML = "";
         void (async () => {
+            let ok = false;
             try {
                 const report = await syncLibraryEntry(name, msg => { statusEl.textContent = msg; });
                 reportEl.innerHTML = reportHTML(report);
-                statusEl.textContent = "同步完成";
+                ok = true;
                 onChange?.();
             } catch (e) {
-                statusEl.textContent = "同步失败";
                 showMessage(`${(e as Error)?.message || e}`, 8000, "error");
             } finally {
                 syncing = false;
                 renderBinding();
+                // renderBinding 会把状态写回"上次同步/尚未同步过",这里必须覆盖,
+                // 否则失败后看起来像什么都没发生
+                statusEl.textContent = ok ? "同步完成" : "同步失败";
             }
         })();
     };
