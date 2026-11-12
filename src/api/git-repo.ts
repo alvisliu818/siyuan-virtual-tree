@@ -236,6 +236,71 @@ export async function gitVerifyToken(provider: GitProvider): Promise<string> {
     return String(json?.login || json?.name || json?.username || "");
 }
 
+// ==== 提交历史与 diff(GitHub / Gitee 的 REST 形状基本一致) ====
+
+export interface GitRemoteCommit {
+    sha: string;
+    short: string;
+    author: string;
+    date: string;
+    message: string;
+}
+
+export interface GitRemoteCommitFile {
+    path: string;
+    prevPath?: string;
+    status: string;
+    additions: number;
+    deletions: number;
+    patch: string;
+}
+
+function pickCommit(c: any): GitRemoteCommit {
+    const sha = String(c?.sha || "");
+    const inner = c?.commit || {};
+    return {
+        sha,
+        short: sha.slice(0, 7),
+        author: String(inner?.author?.name || c?.author?.login || ""),
+        date: String(inner?.author?.date || ""),
+        message: String(inner?.message || ""),
+    };
+}
+
+/** 提交历史;path 给定时只看影响该路径的提交 */
+export async function gitListCommits(
+    provider: GitProvider, owner: string, repo: string, ref: string,
+    opts: {limit?: number; path?: string} = {},
+): Promise<GitRemoteCommit[]> {
+    const base = `${API_BASE[provider]}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
+    const limit = Math.max(1, Math.min(opts.limit ?? 50, 100));
+    let url = `${base}/commits?sha=${encodeURIComponent(ref)}&per_page=${limit}`;
+    if (opts.path) url += `&path=${encodeURIComponent(opts.path)}`;
+    // 空仓库没有任何提交:GitHub 回 409、Gitee 回 400,都当成空历史
+    const resp = await gitRequest(provider, url);
+    if (resp.status === 409 || resp.status === 404) return [];
+    if (resp.status >= 400) throw new Error(gitErrorMessage(provider, resp, "读取提交历史"));
+    const arr = JSON.parse(decodeAuto(new Uint8Array(resp.bytes)));
+    return (Array.isArray(arr) ? arr : []).map(pickCommit);
+}
+
+/** 单个提交的文件改动与 patch。Gitee 个别仓库不返回 files,此时只给提交信息 */
+export async function gitCommitFiles(
+    provider: GitProvider, owner: string, repo: string, sha: string,
+): Promise<{commit: GitRemoteCommit; files: GitRemoteCommitFile[]}> {
+    const base = `${API_BASE[provider]}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
+    const json = await gitJSON<any>(provider, `${base}/commits/${encodeURIComponent(sha)}`, {}, "读取提交详情");
+    const files = (Array.isArray(json?.files) ? json.files : []).map((f: any) => ({
+        path: String(f?.filename || f?.path || ""),
+        prevPath: f?.previous_filename ? String(f.previous_filename) : undefined,
+        status: String(f?.status || ""),
+        additions: Number(f?.additions || 0),
+        deletions: Number(f?.deletions || 0),
+        patch: String(f?.patch || ""),
+    })).filter((f: GitRemoteCommitFile) => f.path);
+    return {commit: pickCommit(json), files};
+}
+
 // ==== 整树缓存 ====
 interface GitTreeEntry {
     path: string;

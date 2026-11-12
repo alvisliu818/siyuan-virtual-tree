@@ -6108,3 +6108,445 @@ button.syfe-editor__arrow--exp:hover {
     text-align: center;
     opacity: .6;
 }
+
+/* ===== Git 面板(本地仓库) ===== */
+.syfe-git-dock {
+    min-height: 0;
+}
+
+.syfe-git__repo {
+    flex: none;
+    padding: 4px 8px;
+}
+
+.syfe-git__repo-select,
+.syfe-git__branch-select {
+    width: 100%;
+    font-size: 12px;
+    min-width: 0;
+}
+
+.syfe-git__branchbar {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 0 8px 4px;
+
+    .syfe-git__branch-select {
+        flex: 1;
+        min-width: 0;
+    }
+
+    .block__icon {
+        flex: none;
+    }
+}
+
+.syfe-git__aheadbehind {
+    flex: none;
+    font-size: 11px;
+    opacity: .75;
+    white-space: nowrap;
+}
+
+.syfe-git__tabs {
+    flex: none;
+    display: flex;
+    gap: 2px;
+    padding: 0 8px;
+    border-bottom: 1px solid var(--b3-border-color);
+}
+
+.syfe-git__tab {
+    padding: 4px 10px;
+    font-size: 12px;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    opacity: .7;
+
+    &:hover {
+        opacity: 1;
+    }
+}
+
+.syfe-git__tab--on {
+    opacity: 1;
+    border-bottom-color: var(--b3-theme-primary);
+}
+
+.syfe-git__scroll {
+    min-height: 0;
+    overflow: auto;
+    -webkit-overflow-scrolling: touch;
+}
+
+.syfe-git__hint {
+    padding: 12px 10px;
+    font-size: 12px;
+    line-height: 1.6;
+    opacity: .7;
+    word-break: break-all;
+}
+
+.syfe-git__hint--error {
+    color: var(--b3-card-error-color);
+    opacity: 1;
+}
+
+.syfe-git__group {
+    padding: 6px 8px 3px;
+    font-size: 11px;
+    font-weight: 600;
+    opacity: .65;
+}
+
+.syfe-git__group-actions {
+    display: flex;
+    gap: 12px;
+    padding: 8px;
+}
+
+.syfe-git__link {
+    font-size: 11px;
+    cursor: pointer;
+    color: var(--b3-theme-primary);
+
+    &:hover {
+        text-decoration: underline;
+    }
+}
+
+.syfe-git__row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 8px;
+    cursor: pointer;
+    font-size: 12px;
+
+    &:hover {
+        background: var(--b3-list-hover);
+
+        .syfe-git__mini {
+            opacity: 1;
+        }
+    }
+}
+
+.syfe-git__badge {
+    flex: none;
+    font-size: 10px;
+    padding: 1px 4px;
+    border-radius: 3px;
+    background: var(--b3-theme-surface-lighter);
+    white-space: nowrap;
+}
+
+.syfe-git__badge--conflict {
+    color: var(--b3-card-error-color);
+}
+
+.syfe-git__badge--staged {
+    color: var(--b3-theme-primary);
+}
+
+.syfe-git__badge--untracked {
+    opacity: .7;
+}
+
+.syfe-git__path {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    direction: rtl;
+    text-align: left;
+}
+
+.syfe-git__orig {
+    opacity: .55;
+    font-size: 10px;
+}
+
+.syfe-git__mini {
+    flex: none;
+    width: 16px;
+    height: 16px;
+    line-height: 14px;
+    text-align: center;
+    border-radius: 3px;
+    border: 1px solid var(--b3-border-color);
+    opacity: 0;
+    font-size: 12px;
+
+    &:hover {
+        background: var(--b3-theme-primary);
+        color: var(--b3-theme-on-primary);
+    }
+}
+
+.syfe-git__commit-row {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    padding: 5px 8px;
+    cursor: pointer;
+    border-bottom: 1px solid var(--b3-border-color);
+
+    &:hover {
+        background: var(--b3-list-hover);
+    }
+}
+
+.syfe-git__sha {
+    font-family: var(--b3-font-family-code);
+    font-size: 10px;
+    color: var(--b3-theme-primary);
+}
+
+.syfe-git__subject {
+    font-size: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.syfe-git__meta {
+    font-size: 10px;
+    opacity: .6;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.syfe-git__commitbar {
+    flex: none;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 6px 8px;
+    border-top: 1px solid var(--b3-border-color);
+
+    .syfe-git__msg {
+        width: 100%;
+        resize: vertical;
+        font-size: 12px;
+        min-height: 40px;
+    }
+
+    .syfe-git__commit {
+        align-self: flex-end;
+    }
+}
+
+/* ===== Git diff 查看器 ===== */
+.syfe-gitdiff {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    height: 100%;
+    box-sizing: border-box;
+}
+
+.syfe-gitdiff__sub {
+    flex: none;
+    font-size: 11px;
+    opacity: .65;
+    padding-bottom: 6px;
+    word-break: break-all;
+}
+
+.syfe-gitdiff__pre {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    margin: 0;
+    padding: 8px;
+    font-family: var(--b3-font-family-code);
+    font-size: 12px;
+    line-height: 1.5;
+    white-space: pre;
+    background: var(--b3-theme-background);
+    border: 1px solid var(--b3-border-color);
+    border-radius: 4px;
+
+    span {
+        display: block;
+        min-height: 1em;
+    }
+}
+
+.syfe-gitdiff__add {
+    background: rgba(46, 160, 67, .15);
+    color: var(--b3-theme-on-background);
+}
+
+.syfe-gitdiff__del {
+    background: rgba(248, 81, 73, .15);
+    color: var(--b3-theme-on-background);
+}
+
+.syfe-gitdiff__hunk {
+    color: var(--b3-theme-primary);
+}
+
+.syfe-gitdiff__meta {
+    opacity: .6;
+}
+
+.syfe-gitdiff__empty {
+    flex: none;
+    padding: 12px;
+    font-size: 12px;
+    text-align: center;
+    opacity: .6;
+}
+
+/* ===== 远程仓库提交历史 ===== */
+.syfe-githist {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    height: 100%;
+    box-sizing: border-box;
+}
+
+.syfe-githist__bar {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding-bottom: 8px;
+}
+
+.syfe-githist__repo {
+    flex: 1;
+    min-width: 0;
+    font-size: 12px;
+    opacity: .75;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.syfe-githist__ref {
+    flex: none;
+    max-width: 180px;
+    font-size: 12px;
+}
+
+.syfe-githist__filter {
+    flex: none;
+    font-size: 11px;
+    opacity: .7;
+    padding-bottom: 6px;
+    word-break: break-all;
+}
+
+.syfe-githist__list {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    -webkit-overflow-scrolling: touch;
+    border: 1px solid var(--b3-border-color);
+    border-radius: 4px;
+}
+
+.syfe-githist__hint {
+    padding: 14px;
+    font-size: 12px;
+    text-align: center;
+    opacity: .65;
+    word-break: break-all;
+}
+
+.syfe-githist__hint--error {
+    color: var(--b3-card-error-color);
+    opacity: 1;
+}
+
+.syfe-githist__row {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    padding: 6px 10px;
+    cursor: pointer;
+    border-bottom: 1px solid var(--b3-border-color);
+
+    &:last-child {
+        border-bottom: none;
+    }
+
+    &:hover {
+        background: var(--b3-list-hover);
+    }
+}
+
+.syfe-githist__sha {
+    font-family: var(--b3-font-family-code);
+    font-size: 10px;
+    color: var(--b3-theme-primary);
+}
+
+.syfe-githist__msg {
+    font-size: 13px;
+    word-break: break-all;
+}
+
+.syfe-githist__meta {
+    font-size: 10px;
+    opacity: .6;
+}
+
+/* ===== 插件库同步:分支选择与冲突逐条裁决 ===== */
+.syfe-lib__ref {
+    max-width: 150px;
+    font-size: 12px;
+}
+
+.syfe-lib__msg {
+    font-size: 12px;
+}
+
+.syfe-lib__conflict {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 0;
+}
+
+.syfe-lib__conflict-path {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    direction: rtl;
+    text-align: left;
+    font-family: var(--b3-font-family-code);
+    font-size: 11px;
+}
+
+.syfe-lib__pick {
+    flex: none;
+    padding: 1px 7px;
+    font-size: 11px;
+    border-radius: 3px;
+    border: 1px solid var(--b3-border-color);
+    cursor: pointer;
+    opacity: .75;
+
+    &:hover {
+        opacity: 1;
+        border-color: var(--b3-theme-primary);
+    }
+}
+
+.syfe-lib__pick--on {
+    opacity: 1;
+    background: var(--b3-theme-primary);
+    border-color: var(--b3-theme-primary);
+    color: var(--b3-theme-on-primary);
+}

@@ -81,6 +81,7 @@ import {initMountTree, reloadMountTreeIfChanged, migrateSyDocMounts, SYFE_RELATI
 import {createMountTreeDockConfig} from "./dock/mount-tree-dock";
 import {createBacklinkDockConfig} from "./dock/backlink-dock";
 import {createTerminalDockConfig} from "./dock/terminal-dock";
+import {createGitDockConfig} from "./dock/git-dock";
 import {openExtensionMarket} from "./extensions/market-ui";
 import {clearAllGrammars} from "./extensions/grammar-loader";
 import {clearAllThemes, applyThemeByPreference, getLoadedThemes} from "./extensions/theme-loader";
@@ -483,6 +484,8 @@ export default class FileEditorPlugin extends Plugin {
         this.addDockOnce(createMountTreeDockConfig(this as any));
         // 侧边栏「终端」面板(复用终端 Tab 的 xterm 实现,常驻底部,与终端 Tab 互相独立)
         this.addDockOnce(createTerminalDockConfig(this as any));
+        // 侧边栏「Git」面板(本地仓库操作,依赖 git CLI,移动端不注册)
+        this.addDockOnce(createGitDockConfig(this as any));
         // 侧边栏「双链」面板(入链/出链,跟随当前活动的文件页签)
         this.addDockOnce(createBacklinkDockConfig(this as any));
         // 侧边栏「文档属性」面板(思源文档块属性,跟随当前活动文档)

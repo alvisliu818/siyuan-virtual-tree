@@ -9,7 +9,7 @@ import {openWithExternalApp, revealInSystemExplorer, openTreeFileWithExternalApp
 import {BINARY_EXTENSIONS, isImageFile, isOfficeFile, isMarkdownFile, isMediaFile, getMediaKind} from "../constants";
 import {isVirtualPath, getMountsUnder, getMountList, normDirKey} from "../utils/virtual-tree";
 import {isBaiduPath} from "../utils/baidu-path";
-import {isGitHubPath, isGitRepoPath, gitRepoWebUrl} from "../utils/git-repo-path";
+import {isGitHubPath, isGitRepoPath, gitRepoWebUrl, parseGitRepoPath} from "../utils/git-repo-path";
 import {clearGitRepoCache} from "../api/git-repo";
 import {baiduCloudPath} from "../api/baidu-pan";
 import {nativeCopyToTemp, nativeWriteTempFile, isNativeFsAvailable} from "../api/native-fs";
@@ -19,6 +19,11 @@ import {fileIconHTML, folderIconHTML} from "../utils/icons";
 import {addMountMenuItem} from "./mount-menu";
 import {addToLibrary, unlinkLibrary} from "./library-menu";
 import {openLibrarySyncDialog} from "./library-sync-dialog";
+import {openGitHistoryDialog} from "./git-history-dialog";
+import {openGitCommitDialog, openGitLocalHistoryDialog} from "./git-local-dialogs";
+import {findRepoRoot, gitLocalPushCurrent} from "../api/git-local";
+import {openGitPanel} from "../utils/git-panel";
+import {libraryRemotePathOf} from "../api/library";
 import {isLibraryEntryRoot, isLibraryPath, libraryEntryNameOf} from "../utils/library-path";
 import {openTagMenu, tagBadgesHTML} from "../tags/tag-ui";
 import {expandWithDescendants, pathMatchesFilter, pathHasAnyTag} from "../tags/tag-store";
@@ -1188,6 +1193,17 @@ export function showFileTreeMenu(
                     window.open(webUrl, "_blank");
                 },
             });
+            const loc = parseGitRepoPath(path);
+            if (loc) {
+                menu.addItem({
+                    icon: "iconHistory",
+                    label: "查看提交历史",
+                    click: () => openGitHistoryDialog({
+                        provider: loc.provider, owner: loc.owner, repo: loc.repo, ref: loc.ref,
+                        path: loc.path || undefined,
+                    }),
+                });
+            }
         }
         // 挂载在真实目录下的远程条目:可取消挂载(条目本身是树根/挂载根时不适用)
         const mountParentDir = li ? findMountParentDir(li, rootEl, path) : null;
@@ -1455,6 +1471,70 @@ openWith.push({
                 void refreshPath(rootEl, path, rootPath);
                 notifyFilesChanged();
             }),
+        });
+    }
+    // 库条目根的远端历史:纯 REST,移动端同样可用(github:// 路径在上面已提前返回)
+    const historyTarget = isLibraryEntryRoot(path) ? parseGitRepoPath(libraryRemotePathOf(path) || "") : null;
+    if (historyTarget) {
+        menu.addItem({
+            icon: "iconHistory",
+            label: "查看提交历史",
+            click: () => openGitHistoryDialog({
+                provider: historyTarget.provider,
+                owner: historyTarget.owner,
+                repo: historyTarget.repo,
+                ref: historyTarget.ref,
+                path: historyTarget.path || undefined,
+            }),
+        });
+    }
+    // 本地 Git 快捷项:仅桌面端(要 git CLI)。仓库归属在点击时才解析 ——
+    // 菜单构建是同步的,而 findRepoRoot 要起进程;不在仓库里就给可读提示
+    if (isNativeFsAvailable() && !isGitRepoPath(path) && !isBaiduPath(path) && !isVirtualPath(path)) {
+        const withRepo = (fn: (root: string) => void) => {
+            void (async () => {
+                const root = await findRepoRoot(path);
+                if (!root) {
+                    showMessage("该目录不在 Git 仓库里", 4000, "info");
+                    return;
+                }
+                fn(root);
+            })();
+        };
+        menu.addSeparator();
+        menu.addItem({
+            icon: "iconGithub",
+            label: isDir ? "Git:提交此文件夹" : "Git:提交此文件",
+            click: () => withRepo(root => openGitCommitDialog(root, path, () => {
+                void refreshPath(rootEl, dirname(path), rootPath);
+                notifyFilesChanged();
+            })),
+        });
+        menu.addItem({
+            icon: "iconHistory",
+            label: "Git:查看历史",
+            click: () => withRepo(root => openGitLocalHistoryDialog(root, path)),
+        });
+        menu.addItem({
+            icon: "iconUpload",
+            label: "Git:推送当前仓库",
+            click: () => withRepo(root => {
+                confirm("推送", `把「${root}」当前分支推送到远端?`, () => {
+                    void (async () => {
+                        try {
+                            await gitLocalPushCurrent(root);
+                            showMessage("推送完成", 2500, "info");
+                        } catch (e) {
+                            showMessage(`推送失败: ${(e as Error)?.message || e}`, 7000, "error");
+                        }
+                    })();
+                }, () => {});
+            }),
+        });
+        menu.addItem({
+            icon: "iconGithub",
+            label: "Git:打开面板",
+            click: () => openGitPanel(path),
         });
     }
     menu.addSeparator();

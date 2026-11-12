@@ -18,6 +18,8 @@ import {libraryEntryPath} from "../utils/library-path";
 import {
     LibraryEntry,
     LibraryGitBinding,
+    LibrarySyncIssue,
+    LibrarySyncReport,
     getLibraryEntry,
     librarySystemPath,
     markLibrarySynced,
@@ -41,21 +43,8 @@ const MAX_BATCH_BYTES = 6 * 1024 * 1024;
 // 其余点开头文件/目录(.env、.gitignore、.vscode 等)一律正常同步。
 const VCS_INTERNAL_DIRS = new Set([".git", ".hg", ".svn"]);
 
-export interface LibrarySyncIssue {
-    path: string;
-    reason: string;
-}
-
-export interface LibrarySyncReport {
-    pushed: number;
-    pulled: number;
-    removedRemote: number;
-    commits: number;
-    conflicts: LibrarySyncIssue[];
-    skipped: LibrarySyncIssue[];
-    // 远端已删、本地仍在:只报告,外部文件保持原样
-    remoteDeleted: string[];
-}
+// 报告类型定义在 api/library.ts(注册表要存上次报告),这里转出去给 UI 用
+export type {LibrarySyncIssue, LibrarySyncReport} from "./library";
 
 function emptyReport(): LibrarySyncReport {
     return {pushed: 0, pulled: 0, removedRemote: 0, commits: 0, conflicts: [], skipped: [], remoteDeleted: []};
@@ -191,11 +180,23 @@ async function commitInBatches(
     return commits;
 }
 
+export interface LibrarySyncOptions {
+    // 自定义提交信息;留空则用自动生成的 "Sync <条目>: …"
+    message?: string;
+    // 冲突逐条裁决:rel → 用本地覆盖远端 / 用远端覆盖本地。
+    // 没给裁决的冲突继续跳过 —— 绝不静默覆盖任何一侧
+    resolutions?: Record<string, "local" | "remote">;
+}
+
 /**
  * 双向同步一个库条目。三方比对后先推后拉,冲突与远端删除只报告不动手。
  * 成功后把本次两侧一致的指纹写回注册表,作为下次的基准。
  */
-export async function syncLibraryEntry(name: string, onProgress?: (msg: string) => void): Promise<LibrarySyncReport> {
+export async function syncLibraryEntry(
+    name: string,
+    onProgress?: (msg: string) => void,
+    opts: LibrarySyncOptions = {},
+): Promise<LibrarySyncReport> {
     requireDesktop();
     const entry = getLibraryEntry(name);
     if (!entry) throw new Error(`插件库里没有条目「${name}」`);
@@ -236,7 +237,10 @@ export async function syncLibraryEntry(name: string, onProgress?: (msg: string) 
             } else if (b && r === b) {
                 toUpdate.push(rel);        // 只有本地改了
             } else {
-                report.conflicts.push({path: rel || entry.name, reason: "本地与远端都改过,已跳过;请手动决定保留哪一份"});
+                const pick = opts.resolutions?.[rel];
+                if (pick === "local") toUpdate.push(rel);        // 用户裁决:用本地覆盖远端
+                else if (pick === "remote") toPull.push(rel);    // 用户裁决:用远端覆盖本地
+                else report.conflicts.push({path: rel || entry.name, reason: "本地与远端都改过,已跳过;请手动决定保留哪一份"});
             }
         } else if (l && !r) {
             if (b) {
@@ -265,14 +269,17 @@ export async function syncLibraryEntry(name: string, onProgress?: (msg: string) 
     }
     const deletes: {rel: string; bytes: Uint8Array | null}[] = toDelete.map(rel => ({rel, bytes: null}));
 
+    const customMsg = (opts.message || "").trim();
     if (pushes.length > 0) {
         onProgress?.(`推送 ${pushes.length} 个文件…`);
-        report.commits += await commitInBatches(git, pushes, `Sync ${entry.name}: update ${pushes.length} file(s) (siyuan-virtual-tree)`, onProgress);
+        report.commits += await commitInBatches(git, pushes,
+            customMsg || `Sync ${entry.name}: update ${pushes.length} file(s) (siyuan-virtual-tree)`, onProgress);
         report.pushed = pushes.length;
     }
     if (deletes.length > 0) {
         onProgress?.(`提交 ${deletes.length} 个远端删除…`);
-        report.commits += await commitInBatches(git, deletes, `Sync ${entry.name}: delete ${deletes.length} file(s) (siyuan-virtual-tree)`, onProgress);
+        report.commits += await commitInBatches(git, deletes,
+            customMsg || `Sync ${entry.name}: delete ${deletes.length} file(s) (siyuan-virtual-tree)`, onProgress);
         report.removedRemote = deletes.length;
     }
     for (const rel of toUpdate) next[rel] = local.get(rel)!;
@@ -293,7 +300,7 @@ export async function syncLibraryEntry(name: string, onProgress?: (msg: string) 
         }
     }
 
-    await markLibrarySynced(name, next);
+    await markLibrarySynced(name, next, report);
     onProgress?.("同步完成");
     return report;
 }

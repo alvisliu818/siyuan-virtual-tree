@@ -145,7 +145,27 @@ async function proxyRequest(
     return {status: resp.status, bytes: await resp.arrayBuffer(), contentType: resp.headers.get("content-type") || ""};
 }
 
-// 统一请求入口:桌面端走 Node https,浏览器端走内核代理。
+// 浏览器/移动端直连:令牌留在**真实请求头**里。
+// 内核代理只能把上游请求头塞进 URL 的 h 查询参数(kernel/api/network.go 的
+// parseForwardProxyParams 只额外转发 Content-Type),base64 不是加密 ——
+// 那等于把令牌写进 URL,会进浏览器历史、内核与中间代理的访问日志。
+// GitHub API 允许跨域(实测带 Authorization 的直连返回 401 而非 CORS 错误),
+// 所以优先直连,网络/CORS 失败才回退代理。
+async function directRequest(
+    url: string,
+    method: string,
+    headers: Record<string, string>,
+    body: string | Uint8Array | null,
+): Promise<HttpResponse> {
+    const resp = await fetch(url, {
+        method,
+        headers,
+        body: body === null ? undefined : (typeof body === "string" ? body : new Uint8Array(body)),
+    });
+    return {status: resp.status, bytes: await resp.arrayBuffer(), contentType: resp.headers.get("content-type") || ""};
+}
+
+// 统一请求入口:桌面端走 Node https,浏览器端优先直连、失败回退内核代理。
 // 调用方负责注入自己的默认头(鉴权 / UA / Accept-Encoding)。
 export async function httpRequest(url: string, opts: HttpRequestOptions = {}): Promise<HttpResponse> {
     const method = opts.method || "GET";
@@ -154,9 +174,16 @@ export async function httpRequest(url: string, opts: HttpRequestOptions = {}): P
     if (isNodeModulesAvailable()) {
         return await nodeRequest(url, method, headers, body);
     }
-    // 浏览器端:二进制 body(如网盘上传分片)无法经代理传输
+    try {
+        return await directRequest(url, method, headers, body);
+    } catch {
+        // 直连失败(跨域被拒 / 网络不通 / 需要系统代理):回退内核代理。
+        // 注意只在 fetch **抛异常**时回退 —— 401/403/404 是正常响应,
+        // 再发一次等于把同一份凭据又塞进 URL 一遍
+    }
+    // 代理不支持二进制请求体(如网盘上传分片)
     if (body instanceof Uint8Array) {
-        throw new Error("浏览器端暂不支持该操作(二进制请求体),请使用思源桌面端");
+        throw new Error("直连失败且内核代理不支持二进制请求体,请使用思源桌面端");
     }
     return await proxyRequest(url, method, headers, typeof body === "string" ? body : null);
 }

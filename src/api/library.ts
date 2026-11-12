@@ -51,6 +51,24 @@ export interface LibraryGitBinding {
     path: string;   // 仓库内相对路径;"" = 仓库根
 }
 
+// 同步报告类型定义在这里而不是 library-sync.ts:注册表要存上次报告,
+// 而 library-sync 依赖 library,反过来依赖会成环
+export interface LibrarySyncIssue {
+    path: string;
+    reason: string;
+}
+
+export interface LibrarySyncReport {
+    pushed: number;
+    pulled: number;
+    removedRemote: number;
+    commits: number;
+    conflicts: LibrarySyncIssue[];
+    remoteDeleted: string[];
+    skipped: LibrarySyncIssue[];
+    at?: number;
+}
+
 export interface LibraryEntry {
     name: string;           // 库内显示名,同时是库根下的链接名
     target: string;         // 外部真实路径(系统绝对路径)
@@ -62,6 +80,7 @@ export interface LibraryEntry {
     // 上次同步成功时两侧一致的文件指纹(条目内相对路径 → git blob sha)。
     // 三方比对的基准:没有它就分不清「本地删了」与「远端新增」,只能靠猜,会丢数据。
     baseline?: Record<string, string>;
+    lastReport?: LibrarySyncReport;
 }
 
 let entries: LibraryEntry[] = [];
@@ -86,6 +105,7 @@ export async function initLibraryStore(
                     git: e.git && typeof e.git.owner === "string" ? e.git as LibraryGitBinding : undefined,
                     lastSyncAt: Number(e.lastSyncAt) || undefined,
                     baseline: e.baseline && typeof e.baseline === "object" ? e.baseline as Record<string, string> : undefined,
+                    lastReport: e.lastReport && typeof e.lastReport === "object" ? e.lastReport as LibrarySyncReport : undefined,
                 }));
         }
     } catch (e) {
@@ -319,17 +339,27 @@ export async function libraryLinkState(name: string): Promise<{exists: boolean; 
 export async function setLibraryGitBinding(name: string, git: LibraryGitBinding | null): Promise<void> {
     const entry = getLibraryEntry(name);
     if (!entry) throw new Error(`插件库里没有条目「${name}」`);
+    // 基准是「针对某个远端某个分支」的指纹。换了仓库/分支/子目录还留着旧基准,
+    // 三方比对会把两个不相干的历史混在一起判,可能误删远端或误覆盖本地
+    const keyOf = (g?: LibraryGitBinding | null) => g ? `${g.provider}/${g.owner}/${g.repo}@${g.ref}:${g.path}` : "";
+    if (keyOf(entry.git) !== keyOf(git)) {
+        delete entry.baseline;
+        delete entry.lastReport;
+        delete entry.lastSyncAt;
+    }
     if (git) entry.git = git;
     else delete entry.git;
     await persist();
 }
 
-// 同步成功后落基准:baseline 是本次两侧达成一致的文件指纹,下次同步靠它做三方比对
-export async function markLibrarySynced(name: string, baseline: Record<string, string>): Promise<void> {
+// 同步成功后落基准:baseline 是本次两侧达成一致的文件指纹,下次同步靠它做三方比对。
+// 报告一并存下来,下次打开对话框还能看到上次同步的结果(冲突/远端删除尤其需要留痕)
+export async function markLibrarySynced(name: string, baseline: Record<string, string>, report?: LibrarySyncReport): Promise<void> {
     const entry = getLibraryEntry(name);
     if (!entry) return;
     entry.lastSyncAt = Date.now();
     entry.baseline = baseline;
+    if (report) entry.lastReport = {...report, at: entry.lastSyncAt};
     await persist();
 }
 

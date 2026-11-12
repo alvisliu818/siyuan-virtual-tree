@@ -32,6 +32,8 @@ export const BACKLINK_DOCK_TYPE = "siyuan-file-editor-backlink-dock";
 export const DOC_PROPERTIES_DOCK_TYPE = "siyuan-file-editor-doc-properties-dock";
 // 侧边栏「终端」面板(复用终端 Tab 的 xterm + 三后端实现,常驻侧栏底部)
 export const TERMINAL_DOCK_TYPE = "siyuan-file-editor-terminal-dock";
+// 侧边栏「Git」面板(本地仓库 status/diff/暂存/提交/推送/拉取/分支/历史;仅桌面端)
+export const GIT_DOCK_TYPE = "siyuan-file-editor-git-dock";
 
 // Markdown 扩展名(由独立的 Markdown Tab 打开,支持所见即所得/源码双模式)
 export const MARKDOWN_EXTENSIONS = new Set([".md", ".markdown"]);
