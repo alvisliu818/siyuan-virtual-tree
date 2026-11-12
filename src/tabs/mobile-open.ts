@@ -174,14 +174,21 @@ function openEditorDialog(plugin: any, path: string): void {
     const dialog = new Dialog({
         title: basename(path),
         ...FULLSCREEN,
-        content: `<div class="b3-dialog__content syfe-mopen" style="${BODY_STYLE}">
-            <div class="syfe-mopen__bar" style="flex:none;display:flex;align-items:center;gap:8px;padding:6px 10px;border-bottom:1px solid var(--b3-border-color);">
-                <span class="syfe-mopen__name" style="flex:1;min-width:0;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHTML(basename(path))}</span>
-                <span class="syfe-mopen__dirty" style="flex:none;color:var(--b3-theme-primary);font-size:12px;"></span>
-                <button class="b3-button b3-button--text syfe-mopen__save" style="flex:none;">保存</button>
+        // 文件名只在 Dialog 标题出现一次;内栏留给脏态与操作工具,不重复占一行
+        content: `<div class="b3-dialog__content syfe-mopen syfe-mopen--editor" style="${BODY_STYLE}">
+            <div class="syfe-mopen__bar">
+                <span class="syfe-mopen__dirty"></span>
+                <button class="b3-button b3-button--outline syfe-mopen__tool" data-tool="undo" aria-label="撤销" title="撤销">↶</button>
+                <button class="b3-button b3-button--outline syfe-mopen__tool" data-tool="redo" aria-label="重做" title="重做">↷</button>
+                <button class="b3-button b3-button--outline syfe-mopen__tool" data-tool="font-down" aria-label="减小字号" title="减小字号">A−</button>
+                <span class="syfe-mopen__fontval"></span>
+                <button class="b3-button b3-button--outline syfe-mopen__tool" data-tool="font-up" aria-label="增大字号" title="增大字号">A+</button>
+                <button class="b3-button b3-button--outline syfe-mopen__tool syfe-mopen__wrap" data-tool="wrap" aria-label="自动换行" title="自动换行">换行</button>
+                <span class="fn__flex-1 fn__space"></span>
+                <button class="b3-button syfe-mopen__save">保存</button>
             </div>
             <div class="syfe-mopen__editor" style="flex:1;min-height:0;overflow:hidden;"></div>
-            <div class="syfe-mopen__path" style="flex:none;font-size:11px;opacity:.6;padding:4px 10px;word-break:break-all;">${escapeHTML(path)}</div>
+            <div class="syfe-mopen__path" title="点击展开/收起完整路径">${escapeHTML(path)}</div>
         </div>`,
         // 有未保存改动时拦下关闭(覆盖按钮 / Esc / 移动端返回手势)
         beforeClose: () => {
@@ -203,6 +210,32 @@ function openEditorDialog(plugin: any, path: string): void {
     const editorEl = dialog.element.querySelector(".syfe-mopen__editor") as HTMLElement;
     const dirtyEl = dialog.element.querySelector(".syfe-mopen__dirty") as HTMLElement;
     const saveBtn = dialog.element.querySelector(".syfe-mopen__save") as HTMLButtonElement;
+    const barEl = dialog.element.querySelector(".syfe-mopen__bar") as HTMLElement;
+    const fontValEl = dialog.element.querySelector(".syfe-mopen__fontval") as HTMLElement;
+    const wrapBtn = dialog.element.querySelector(".syfe-mopen__wrap") as HTMLButtonElement;
+    const pathEl = dialog.element.querySelector(".syfe-mopen__path") as HTMLElement;
+
+    const syncToolState = () => {
+        if (!handle) return;
+        fontValEl.textContent = String(handle.getFontSize());
+        wrapBtn.classList.toggle("syfe-mopen__tool--on", handle.isWrap());
+    };
+
+    // 工具栏:撤销/重做/字号/换行。handle 异步就绪前先禁用,避免空点
+    const toolBtns = Array.from(barEl.querySelectorAll("[data-tool]")) as HTMLButtonElement[];
+    toolBtns.forEach(b => { b.disabled = true; });
+    barEl.addEventListener("click", ev => {
+        const btn = (ev.target as HTMLElement).closest("[data-tool]") as HTMLButtonElement | null;
+        if (!btn || !handle) return;
+        const tool = btn.dataset.tool;
+        if (tool === "undo") handle.undo();
+        else if (tool === "redo") handle.redo();
+        else if (tool === "font-down") handle.setFontSize(handle.getFontSize() - 1);
+        else if (tool === "font-up") handle.setFontSize(handle.getFontSize() + 1);
+        else if (tool === "wrap") handle.setWrap(!handle.isWrap());
+        syncToolState();
+    });
+    pathEl.addEventListener("click", () => pathEl.classList.toggle("syfe-mopen__path--expanded"));
 
     const setDirty = (v: boolean) => {
         dirty = v;
@@ -238,6 +271,8 @@ function openEditorDialog(plugin: any, path: string): void {
         });
         loaded = true;
         setDirty(false);
+        toolBtns.forEach(b => { b.disabled = false; });
+        syncToolState();
     }).catch(e => {
         editorEl.innerHTML = `<div style="padding:16px;color:var(--b3-card-error-color);">${escapeHTML(String((e as any)?.message || e))}</div>`;
     });

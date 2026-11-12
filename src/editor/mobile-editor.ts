@@ -13,7 +13,7 @@ import {
     EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter,
     drawSelection, rectangularSelection,
 } from "@codemirror/view";
-import {defaultKeymap, history, historyKeymap, indentWithTab} from "@codemirror/commands";
+import {defaultKeymap, history, historyKeymap, indentWithTab, undo, redo} from "@codemirror/commands";
 import {bracketMatching, indentOnInput, syntaxHighlighting, defaultHighlightStyle, foldGutter, foldKeymap, LanguageDescription} from "@codemirror/language";
 import {searchKeymap, highlightSelectionMatches} from "@codemirror/search";
 import {closeBrackets, closeBracketsKeymap} from "@codemirror/autocomplete";
@@ -35,6 +35,12 @@ export interface MobileEditorHandle {
     setValue(v: string): void;
     focus(): void;
     destroy(): void;
+    undo(): void;
+    redo(): void;
+    getFontSize(): number;
+    setFontSize(px: number): void;
+    isWrap(): boolean;
+    setWrap(on: boolean): void;
 }
 
 const MARKDOWN_EXTS = new Set([".md", ".markdown", ".mdown", ".mkd"]);
@@ -43,12 +49,17 @@ export function isMarkdownPath(path: string): boolean {
     return MARKDOWN_EXTS.has(extname(path).toLowerCase());
 }
 
+// 移动端默认字号。CM6 的编辑区是 contenteditable 而非 input/textarea,
+// 不会触发 iOS 对小于 16px 表单控件的整页自动放大,所以可以比桌面更紧凑;
+// 仍提供字号步进器让用户自己调。
+export const MOBILE_FONT_DEFAULT = 14;
+export const MOBILE_FONT_MIN = 12;
+export const MOBILE_FONT_MAX = 24;
+
 // 全部走思源 CSS 变量,明暗主题自动跟随。
-// 字号 16px 是硬要求:iOS Safari 对小于 16px 的输入控件会自动放大整页。
 const mobileTheme = EditorView.theme({
     "&": {
         height: "100%",
-        fontSize: "16px",
         backgroundColor: "var(--b3-theme-background)",
         color: "var(--b3-theme-on-background)",
     },
@@ -56,18 +67,22 @@ const mobileTheme = EditorView.theme({
         fontFamily: "var(--b3-font-family-code, Consolas, 'Courier New', monospace)",
         lineHeight: "1.6",
         overflow: "auto",
-        // 底部留白:移动端底部工具栏会盖住最后一行
-        padding: "0 8px 40vh",
     },
-    ".cm-content": {caretColor: "var(--b3-theme-primary)"},
+    ".cm-content": {
+        caretColor: "var(--b3-theme-primary)",
+        // 底部留白放在 content 上而不是 scroller:否则行号槽的背景在留白处
+        // 戛然而止,短文档下半屏会出现一条明显的灰白分界
+        padding: "0 10px 12vh",
+    },
     ".cm-gutters": {
         backgroundColor: "var(--b3-theme-surface)",
         color: "var(--b3-theme-on-surface-light)",
         border: "none",
-        fontSize: "12px",
+        fontSize: "11px",
     },
-    ".cm-activeLine": {backgroundColor: "var(--b3-theme-hover-background, rgba(0,0,0,.04))"},
-    ".cm-activeLineGutter": {backgroundColor: "transparent"},
+    // 当前行高亮贯通行号槽与内容,避免截图里"灰带断开、不满宽"的观感
+    ".cm-activeLine": {backgroundColor: "var(--b3-theme-hover-background, rgba(0,0,0,.05))"},
+    ".cm-activeLineGutter": {backgroundColor: "var(--b3-theme-hover-background, rgba(0,0,0,.05))"},
     "&.cm-focused": {outline: "none"},
     ".cm-selectionBackground, .cm-content ::selection": {
         backgroundColor: "var(--b3-theme-primary-lightest, rgba(0,0,0,.12))",
@@ -77,6 +92,8 @@ const mobileTheme = EditorView.theme({
         color: "var(--b3-theme-on-surface)",
     },
 });
+
+const fontTheme = (px: number) => EditorView.theme({"&": {fontSize: `${px}px`}});
 
 /** 按文件名取语言;Markdown 直接用同步可用的 markdown(),其余异步加载 */
 function resolveLanguage(path: string): {sync?: any; promise?: Promise<any>} {
@@ -91,8 +108,12 @@ function resolveLanguage(path: string): {sync?: any; promise?: Promise<any>} {
 
 export function createMobileEditor(container: HTMLElement, opts: MobileEditorOptions): MobileEditorHandle {
     const langSlot = new Compartment();
+    const fontSlot = new Compartment();
+    const wrapSlot = new Compartment();
     const readOnly = opts.readOnly === true;
     const initial = resolveLanguage(opts.path);
+    let fontSize = MOBILE_FONT_DEFAULT;
+    let wrap = true;
 
     const saveKey = keymap.of([{
         key: "Mod-s",
@@ -121,8 +142,9 @@ export function createMobileEditor(container: HTMLElement, opts: MobileEditorOpt
                 closeBrackets(),
                 highlightSelectionMatches(),
                 syntaxHighlighting(defaultHighlightStyle, {fallback: true}),
-                // 窄屏必须自动换行,否则横向滚动在触摸设备上几乎不可用
-                EditorView.lineWrapping,
+                // 窄屏默认自动换行,否则横向滚动在触摸设备上几乎不可用;可开关
+                wrapSlot.of(EditorView.lineWrapping),
+                fontSlot.of(fontTheme(fontSize)),
                 mobileTheme,
                 keymap.of([
                     ...closeBracketsKeymap,
@@ -163,6 +185,18 @@ export function createMobileEditor(container: HTMLElement, opts: MobileEditorOpt
         destroy: () => {
             destroyed = true;
             view.destroy();
+        },
+        undo: () => { undo(view); view.focus(); },
+        redo: () => { redo(view); view.focus(); },
+        getFontSize: () => fontSize,
+        setFontSize: (px: number) => {
+            fontSize = Math.max(MOBILE_FONT_MIN, Math.min(MOBILE_FONT_MAX, Math.round(px)));
+            view.dispatch({effects: fontSlot.reconfigure(fontTheme(fontSize))});
+        },
+        isWrap: () => wrap,
+        setWrap: (on: boolean) => {
+            wrap = on;
+            view.dispatch({effects: wrapSlot.reconfigure(on ? EditorView.lineWrapping : [])});
         },
     };
 }

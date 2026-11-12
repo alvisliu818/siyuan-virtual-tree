@@ -6565,3 +6565,79 @@ button.syfe-editor__arrow--exp:hover {
     color: var(--b3-theme-on-primary);
 }
 
+/* ===== 移动端全屏编辑器:紧凑工具栏 + 单行路径 ===== */
+.syfe-mopen__bar {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--b3-border-color);
+    background: var(--b3-theme-surface);
+    /* 极窄屏允许横向滚动,保证每个工具都够得着,而不是挤掉或换行遮编辑区 */
+    overflow-x: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--b3-scroll-color, rgba(0, 0, 0, .2)) transparent;
+
+    &::-webkit-scrollbar {
+        height: 4px;
+    }
+
+    &::-webkit-scrollbar-thumb {
+        background: var(--b3-scroll-color, rgba(0, 0, 0, .2));
+        border-radius: 2px;
+    }
+}
+
+.syfe-mopen__dirty {
+    flex: none;
+    color: var(--b3-theme-primary);
+    font-size: 12px;
+    white-space: nowrap;
+}
+
+.syfe-mopen__tool {
+    flex: none;
+    min-width: 40px;
+    min-height: 44px;
+    padding: 0 8px;
+    font-size: 15px;
+    line-height: 1;
+}
+
+.syfe-mopen__tool--on {
+    background: var(--b3-theme-primary);
+    border-color: var(--b3-theme-primary);
+    color: var(--b3-theme-on-primary);
+}
+
+.syfe-mopen__fontval {
+    flex: none;
+    min-width: 20px;
+    text-align: center;
+    font-size: 12px;
+    opacity: .75;
+}
+
+.syfe-mopen__save {
+    flex: none;
+    min-height: 44px;
+    padding: 0 16px;
+}
+
+.syfe-mopen__path {
+    flex: none;
+    font-size: 11px;
+    opacity: .6;
+    padding: 4px 10px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    cursor: pointer;
+}
+
+.syfe-mopen__path--expanded {
+    white-space: normal;
+    word-break: break-all;
+}
+
