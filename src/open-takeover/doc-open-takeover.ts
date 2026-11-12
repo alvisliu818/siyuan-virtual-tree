@@ -18,6 +18,7 @@
 import {openFileTab} from "../tabs/editor-tab";
 import {currentWndId, hasTabIn, hasTabOutsideWnd, tabsInWnd} from "../tabs/split-open";
 import {fileUrlToPath, getWorkspacePath} from "../utils/system-path";
+import {isRemotePath} from "../utils/path";
 import {isImageFile, isMediaFile, isNotebookFile, isOfficeFile} from "../constants";
 // 链接里的位置(标题锚点 / 行号 / 音视频时间点):先摘出来,打开时交给对应页签定位
 import {parseFileRef, stripFileRef, setPendingRef} from "../utils/file-ref";
@@ -106,8 +107,12 @@ export function registerDocOpenTakeover(
         // 由对应页签(文本/Markdown/音视频)落地定位。
         const ref = parseFileRef(rawPath);
         const rawCore = ref ? stripFileRef(rawPath) : rawPath;
-        if (!shouldTakeOver(cfg, rawCore)) return false; // 放行,走思源默认
-        const abs = toAbsolutePath(rawCore);
+        // 插件自己的远端虚拟路径(github:// / gitee:// / baidu://)没有本地实体,
+        // 思源默认只会当外部协议丢给系统。这类链接无条件接管(不受接管开关与
+        // 扩展名白名单限制),否则复制出来的行号链接在移动端永远点不开。
+        const virtual = isRemotePath(rawCore);
+        if (!virtual && !shouldTakeOver(cfg, rawCore)) return false; // 放行,走思源默认
+        const abs = virtual ? rawCore : toAbsolutePath(rawCore);
         if (!abs) return false; // 解析不了本地路径就别拦,交给思源
         if (ref) {
             // 只投递 pendingRef,**不要**额外 setPendingReveal —— 那会触发

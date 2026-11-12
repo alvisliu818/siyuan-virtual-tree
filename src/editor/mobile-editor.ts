@@ -43,6 +43,8 @@ export interface MobileEditorHandle {
     /** 缩进 / 反缩进(工具栏 Tab、Shift+Tab 按钮) */
     indentMore(): void;
     indentLess(): void;
+    /** 跳到指定行(文档内行号链接打开时定位) */
+    revealLine(line: number): void;
     getFontSize(): number;
     setFontSize(px: number): void;
     isWrap(): boolean;
@@ -219,6 +221,14 @@ export function createMobileEditor(container: HTMLElement, opts: MobileEditorOpt
         redo: () => { redo(view); },
         indentMore: () => { indentMore(view); },
         indentLess: () => { indentLess(view); },
+        revealLine: (line: number) => {
+            const n = Math.max(1, Math.min(line, view.state.doc.lines));
+            const pos = view.state.doc.line(n).from;
+            view.dispatch({
+                selection: {anchor: pos},
+                effects: EditorView.scrollIntoView(pos, {y: "center"}),
+            });
+        },
         getFontSize: () => fontSize,
         setFontSize: (px: number) => {
             fontSize = Math.max(MOBILE_FONT_MIN, Math.min(MOBILE_FONT_MAX, Math.round(px)));

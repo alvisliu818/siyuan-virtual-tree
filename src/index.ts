@@ -366,6 +366,13 @@ export default class FileEditorPlugin extends Plugin {
             onSave: () => this.saveSettings(),
         });
         this.buildSettingItems();
+        // 移动端也要接管文档内链接:否则从行号复制的 gitee://...?line=N
+        // 会被思源当外部协议丢给系统,插件编辑器收不到、点不开文件。
+        this._unregisterDocOpenTakeover = registerDocOpenTakeover(this as any, () => ({
+            mode: this.config.docOpenTakeover || "off",
+            exts: this.config.docOpenTakeoverExts || "",
+            takeoverSplitOpen: this.config.takeoverSplitOpen === true,
+        }));
         // startThemeSync 驱动的是 Monaco 主题,移动端没有 Monaco 编辑器,不启动
     }
 

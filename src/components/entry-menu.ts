@@ -10,6 +10,7 @@ import {isPinned, isFavorite, itemFromPath, itemFromDoc, toggleInGroup} from "..
 import {isNotebookId} from "../utils/siyuan-icon";
 import {dispatchMountTreeEvent} from "../utils/mount-locate";
 import {isVirtualPath, virtualId, virtualListDir, isBoxDocEnabled, VIRTUAL_PREFIX} from "../utils/virtual-tree";
+import {isMobileFrontend} from "../utils/platform";
 
 // 菜单目标:兼容 recent-files 的 RecentEntry 与 start-page 的 StartPageItem
 export interface EntryTarget {
@@ -51,6 +52,18 @@ function openDocByProtocol(id: string): void {
 // 返回:openTab 成功 → true;openTab 失败转协议 / 未传 app 走协议 → false
 // (协议跳转是 fire-and-forget,结果无法确认,调用方不能据此声称"已打开")。
 export function openSiyuanDoc(id: string, app?: any): Promise<boolean> {
+    // 移动端 openTab 是空实现且**会正常 resolve**(不 reject),走桌面分支
+    // 会静默失败、连协议兜底都触发不了 —— 挂载树里点思源文档毫无反应。
+    // 移动端用思源自己的 URL 入口打开并定位块。
+    if (isMobileFrontend()) {
+        const openByURL = (window as any).openFileByURL;
+        if (typeof openByURL === "function") {
+            openByURL(`siyuan://blocks/${id}`);
+            return Promise.resolve(true);
+        }
+        openDocByProtocol(id);
+        return Promise.resolve(false);
+    }
     if (app) {
         try {
             return openTab({app, doc: {id}}).then(

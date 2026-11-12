@@ -13,7 +13,7 @@ import {readDir, readTextFile, readBinaryFile, writeFile} from "../api/file";
 import {BINARY_EXTENSIONS, isImageFile, isMediaFile, isOfficeFile, isNotebookFile} from "../constants";
 import {createMobileEditor, MobileEditorHandle} from "../editor/mobile-editor";
 import {addRecent} from "../recent-files";
-import {buildFileRefMd} from "../utils/file-ref";
+import {buildFileRefMd, consumePendingRef} from "../utils/file-ref";
 import {DirEntry} from "../types";
 
 function escapeHTML(s: string): string {
@@ -365,6 +365,9 @@ function openEditorDialog(plugin: any, path: string): void {
         setDirty(false);
         toolBtns.forEach(b => { b.disabled = false; });
         syncToolState();
+        // 文档内行号链接(gitee://...?line=N)带过来的位置:打开后落到对应行
+        const pendingRef = consumePendingRef(path);
+        if (pendingRef?.line && pendingRef.line > 0) handle?.revealLine(pendingRef.line);
     }).catch(e => {
         editorEl.innerHTML = `<div style="padding:16px;color:var(--b3-card-error-color);">${escapeHTML(String((e as any)?.message || e))}</div>`;
     });
