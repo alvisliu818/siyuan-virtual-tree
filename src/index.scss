@@ -6641,3 +6641,141 @@ button.syfe-editor__arrow--exp:hover {
     word-break: break-all;
 }
 
+/* ===== 设置面板:窄屏单列钻取(master-detail) ===== */
+.syfe-set__detailbar {
+    display: none;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--b3-border-color);
+    background: var(--b3-theme-surface);
+}
+
+.syfe-set__back {
+    flex: none;
+    min-height: 40px;
+    padding: 0 12px;
+    border: 1px solid var(--b3-border-color);
+    border-radius: 4px;
+    background: none;
+    color: var(--b3-theme-primary);
+    font-size: 14px;
+    cursor: pointer;
+}
+
+.syfe-set__detaillabel {
+    flex: 1;
+    min-width: 0;
+    font-size: 14px;
+    font-weight: 500;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+@media (max-width: 640px) {
+    /* 思源没有全局 border-box:width:100% + padding 会多出 16px,
+       把 nav / 内容区顶出视口(实测 390px 视口下 nav 宽 405px)。
+       设置面板内一律 border-box + 可收缩,杜绝横向溢出。 */
+    .syfe-set,
+    .syfe-set__topbar,
+    .syfe-set__mainrow,
+    .syfe-set__nav,
+    .syfe-set__right,
+    .syfe-set__pages,
+    .syfe-set__results,
+    .syfe-set__page,
+    .syfe-set__row,
+    .syfe-set__rowtext,
+    .syfe-set__rowctrl,
+    .syfe-set__block,
+    .syfe-set__footer {
+        box-sizing: border-box;
+        min-width: 0;
+        max-width: 100%;
+    }
+
+    /* 说明里的长不可断串(node_modules、.git/.svn/.hg、路径等)要能折行,
+       否则整行被撑宽 70px,内容区底部出现横向滚动条 */
+    .syfe-set__rowtitle,
+    .syfe-set__rowdesc,
+    .syfe-set__blockdesc,
+    .syfe-set__hitsrc {
+        overflow-wrap: anywhere;
+        word-break: break-word;
+    }
+
+    .syfe-set__pages,
+    .syfe-set__results {
+        overflow-x: hidden;
+    }
+
+    /* 分类树与内容不再左右挤:默认只展示全宽分类列表,点进去才显示内容 */
+    .syfe-set__mainrow {
+        flex-direction: column;
+    }
+
+    .syfe-set__nav {
+        width: 100%;
+        max-height: none;
+        flex: 1;
+        border-right: none;
+        border-bottom: none;
+    }
+
+    .syfe-set__right {
+        display: none;
+    }
+
+    .syfe-set--detail .syfe-set__nav {
+        display: none;
+    }
+
+    .syfe-set--detail .syfe-set__right {
+        display: flex;
+    }
+
+    .syfe-set--detail .syfe-set__detailbar {
+        display: flex;
+    }
+
+    /* 分类项加大 tap 目标 */
+    .syfe-set__navitem {
+        padding: 11px 12px;
+        font-size: 14px;
+    }
+
+    .syfe-set__navitem--child {
+        padding-left: 30px;
+        font-size: 13px;
+    }
+
+    /* 设置行改上下堆叠:说明占满全宽,不再被控件挤成一个字一行 */
+    .syfe-set__row {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 6px;
+    }
+
+    .syfe-set__rowctrl {
+        justify-content: flex-start;
+        width: 100%;
+
+        .b3-select,
+        .b3-text-field {
+            width: 100%;
+        }
+    }
+
+    .syfe-es__head {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 6px;
+    }
+
+    .syfe-es__head .b3-select,
+    .syfe-es__head .b3-text-field {
+        max-width: 100%;
+        width: 100%;
+    }
+}

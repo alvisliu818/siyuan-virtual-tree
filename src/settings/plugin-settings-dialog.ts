@@ -87,10 +87,18 @@ export function createSettingsPanel(options: SettingsPanelOptions): SettingsPane
     let pageShell: HTMLElement | undefined;
     let resultEl: HTMLElement | undefined;
     let mainEl: HTMLElement | undefined;
+    let detailBar: HTMLElement | undefined;
+    let detailLabel: HTMLElement | undefined;
     let built = false;
     let currentId = "";
     let dialog: Dialog | undefined;
     const moved: MovedNode[] = [];
+
+    // 窄屏(手机)判定:与 CSS 的 640px 断点保持一致
+    const narrow = (): boolean => window.matchMedia("(max-width: 640px)").matches;
+    const setDetail = (on: boolean): void => {
+        mainEl?.classList.toggle("syfe-set--detail", on && narrow());
+    };
 
     const restoreMoved = (): void => {
         for (let i = moved.length - 1; i >= 0; i--) {
@@ -100,7 +108,7 @@ export function createSettingsPanel(options: SettingsPanelOptions): SettingsPane
         moved.length = 0;
     };
 
-    const select = (id: string, keepSearch = false): void => {
+    const select = (id: string, keepSearch = false, enterDetail = false): void => {
         const page = pages.find(p => p.id === id);
         if (!page || !pageShell || !navEl) return;
         currentId = id;
@@ -117,6 +125,9 @@ export function createSettingsPanel(options: SettingsPanelOptions): SettingsPane
         navEl.querySelectorAll(".syfe-set__navitem").forEach(n => n.classList.remove("syfe-set__navitem--active"));
         const active = navEl.querySelector(`.syfe-set__navitem[data-page="${CSS.escape(id)}"]`);
         if (active) active.classList.add("syfe-set__navitem--active");
+        // 窄屏钻取:用户点分类才进入内容页;打开面板时先停在分类列表
+        if (detailLabel) detailLabel.textContent = page.label;
+        setDetail(enterDetail);
     };
 
     /** 搜索:把所有页里 data-tags 命中的块/行移到结果区(带来源页标注) */
@@ -130,10 +141,12 @@ export function createSettingsPanel(options: SettingsPanelOptions): SettingsPane
         if (!q) {
             results.style.display = "none";
             shell.style.display = "";
+            setDetail(false);
             select(currentId);
             return;
         }
         shell.style.display = "none";
+        setDetail(true);   // 搜索时窄屏隐藏分类树,结果占满全宽
         let hits = 0;
         for (const page of pages) {
             const el = page.build();
@@ -178,7 +191,7 @@ export function createSettingsPanel(options: SettingsPanelOptions): SettingsPane
         item.title = page.label;
         item.addEventListener("click", () => {
             if (searchInput) searchInput.value = "";
-            select(page.id);
+            select(page.id, false, true);
         });
         return item;
     };
@@ -202,6 +215,20 @@ export function createSettingsPanel(options: SettingsPanelOptions): SettingsPane
         mainRow.appendChild(buildTree());
 
         const right = h("div", "syfe-set__right");
+        // 窄屏钻取的返回条:桌面隐藏,手机进入内容页后显示「‹ 返回 + 页名」
+        detailBar = h("div", "syfe-set__detailbar");
+        const backBtn = h("button", "syfe-set__back", "‹ 返回");
+        backBtn.addEventListener("click", () => {
+            if (searchInput) searchInput.value = "";
+            restoreMoved();
+            if (resultEl) { resultEl.style.display = "none"; resultEl.innerHTML = ""; }
+            if (pageShell) pageShell.style.display = "";
+            setDetail(false);
+        });
+        detailBar.appendChild(backBtn);
+        detailLabel = h("span", "syfe-set__detaillabel");
+        detailBar.appendChild(detailLabel);
+        right.appendChild(detailBar);
         pageShell = h("div", "syfe-set__pages");
         right.appendChild(pageShell);
         resultEl = h("div", "syfe-set__results");
@@ -232,6 +259,25 @@ export function createSettingsPanel(options: SettingsPanelOptions): SettingsPane
         return mainEl;
     };
 
+    /** 建一个新 Dialog;销毁时只搬回仍挂在自己身上的 mainEl */
+    const createDialog = (): Dialog => {
+        let self: Dialog | undefined;
+        self = new Dialog({
+            title: options.title || "设置",
+            content: `<div class="syfe-set__mount"></div>`,
+            // 窄屏必须全屏:固定 900px 在手机上会超出视口造成横向溢出与裁切
+            width: narrow() ? "100vw" : (options.width || "900px"),
+            height: narrow() ? "100%" : (options.height || "660px"),
+            destroyCallback: () => {
+                if (dialog === self) dialog = undefined;
+                // 重复 open 留下的空壳销毁时,mainEl 已经搬到复用中的 Dialog;
+                // 这里若无条件搬回缓存,会把正在显示的内容一起抽走
+                if (mainEl && self?.element.contains(mainEl)) cacheHost.appendChild(mainEl);
+            },
+        });
+        return self;
+    };
+
     const open = (): void => {
         if (!built) {
             built = true;
@@ -242,19 +288,29 @@ export function createSettingsPanel(options: SettingsPanelOptions): SettingsPane
         const first = pages.find(p => !p.parent);
         if (first && !currentId) currentId = first.id;
 
-        dialog = new Dialog({
-            title: options.title || "设置",
-            content: `<div class="syfe-set__mount"></div>`,
-            width: options.width || "900px",
-            height: options.height || "660px",
-            destroyCallback: () => {
-                dialog = undefined;
-                if (mainEl) cacheHost.appendChild(mainEl);
-            },
-        });
+        // 同一面板只允许一个 Dialog。旧实现每次 open 都 new 一个,而 mainEl 是
+        // 单例 DOM:第二次 open 会把它从旧 Dialog 搬走,留下一个空白「设置」框
+        // 盖在界面上(移动端「更多」菜单重复触发时尤其明显)。
+        // 按 mount 标记认领本面板的 Dialog 复用,多余空壳顺手销毁。
+        const owned = (((window as any).siyuan?.dialogs || []) as Dialog[])
+            .filter(d => d?.element?.querySelector?.(".syfe-set__mount"));
+        for (const stale of owned.slice(1)) stale.destroy();
+        const active = owned[0] || createDialog();
+        const container = active.element.querySelector<HTMLElement>(".b3-dialog__container");
+        if (container) {
+            // 视口跨过 640px 断点后复用旧尺寸会错位,按当前宽度重设
+            container.style.width = narrow() ? "100vw" : (options.width || "900px");
+            container.style.height = narrow() ? "100%" : (options.height || "660px");
+        }
+        dialog = active;
         options.onOpen?.();
-        const mount = dialog.element.querySelector(".syfe-set__mount");
-        if (!mount) return;
+        const mount = active.element.querySelector(".syfe-set__mount");
+        if (!mount) {
+            // 内容还没挂上就别把空壳留给使用者
+            active.destroy();
+            dialog = undefined;
+            return;
+        }
         if (!mainEl) buildMain();
         if (mainEl && searchInput) searchInput.value = "";
         mount.appendChild(mainEl as Node);
