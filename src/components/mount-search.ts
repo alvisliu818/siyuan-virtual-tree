@@ -15,8 +15,7 @@ import {getRoots, MountItem} from "../mount-tree";
 import {virtualListDir} from "../utils/virtual-tree";
 import {listChildBlocks} from "../utils/blocks";
 import {TEXT_EXTENSIONS} from "../constants";
-import {joinPath, extname} from "../utils/path";
-import {isBaiduPath} from "../utils/baidu-path";
+import {joinPath, extname, isRemotePath} from "../utils/path";
 
 // 一次搜索最多枚举多少个内容项
 export const MAX_ITEMS = 300;
@@ -105,8 +104,8 @@ export async function enumerateMountItems(): Promise<{items: MountSearchItem[]; 
             }
             return;
         }
-        // 网盘文件不参与(逐个下载代价过高)
-        if (isBaiduPath(path)) return;
+        // 远程文件(网盘 / Git 仓库)不参与(逐个下载代价过高)
+        if (isRemotePath(path)) return;
         if (!TEXT_EXTENSIONS.has(extname(path))) return;
         push({id: path, title: path.split("/").pop() || path, subtitle: path, kind: "file"});
     };

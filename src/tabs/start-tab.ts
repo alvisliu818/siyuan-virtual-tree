@@ -2,6 +2,8 @@
 // 内容:顶部文件搜索框(索引文件名,↑↓ 选择、回车打开)+ 固定区 + 最近打开 + 收藏。
 // 固定/收藏数据来自 src/start-page.ts;最近打开来自 src/recent-files.ts(含思源文档)。
 import {openTab, showMessage} from "siyuan";
+import {isMobileFrontend} from "../utils/platform";
+import {openFileOnMobile} from "./mobile-open";
 import {START_TAB_TYPE} from "../constants";
 import {EditorConfig} from "../types";
 import {basename, dirname} from "../utils/path";
@@ -239,6 +241,10 @@ export function triggerNativeNewDoc(scope?: HTMLElement | null): boolean {
 //   都新建一个起始页(data 唯一,绕过思源 openFile 按 type+data 的同类合并)
 // - 其余调用(命令等):全局同类型只开一个,已存在则聚焦
 export function openStartTab(plugin: IPluginForStartTab, opts?: {position?: "right" | "bottom"; wndId?: string; newTab?: boolean}): void {
+    if (isMobileFrontend()) {
+        openFileOnMobile(plugin, "/data", true);
+        return;
+    }
     const opened = plugin.getOpenedTab()[START_TAB_TYPE] || [];
     if (opts?.wndId) {
         focusWnd(opts.wndId);

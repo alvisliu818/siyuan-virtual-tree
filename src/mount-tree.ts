@@ -10,6 +10,7 @@ import {parseStoredData} from "./utils/stored-data";
 import {VIRTUAL_PREFIX, NOTEBOOK_PREFIX, virtualId} from "./utils/virtual-tree";
 import {querySQL} from "./api/file";
 import {soloImageInfo, SoloImage} from "./utils/blocks";
+import {LIBRARY_ROOT} from "./utils/library-path";
 
 // 可挂载类型:
 //   file     真实文件/文件夹(来自插件文件树的右键菜单,isDir 已知,无需再探测)
@@ -145,6 +146,15 @@ export function getRoots(): MountItem[] {
 
 export function isMountTreeEmpty(): boolean {
     return getRoots().length === 0;
+}
+
+// 插件库根:内置常驻挂载(库内条目是指向外部真实路径的链接,见 api/library.ts)。
+// 走正常挂载流程而不是在面板里合成一行 —— 合成行的 uid 不在挂载树里,
+// 展开状态与右键菜单的 findMountItem 都会落空。
+export async function ensureLibraryMount(plugin: Plugin): Promise<void> {
+    if (!loaded) await initMountTree(plugin);
+    if (getRoots().some(r => r.kind === "file" && r.path === LIBRARY_ROOT)) return;
+    await addMountItem(plugin, {kind: "file", name: "插件库", path: LIBRARY_ROOT, isDir: true});
 }
 
 // 深度优先查找某 uid 的挂载项

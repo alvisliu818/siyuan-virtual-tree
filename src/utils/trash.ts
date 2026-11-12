@@ -21,6 +21,9 @@ import {getNativeRequire} from "./native-require";
 import {getWorkspacePath, toSystemPath} from "./system-path";
 import {isSiyuanPath, basename} from "./path";
 import {isBaiduPath} from "./baidu-path";
+import {isGitRepoPath} from "./git-repo-path";
+import {isLibraryEntryRoot, libraryEntryNameOf} from "./library-path";
+import {removeLibraryEntry} from "../api/library";
 import {removeFile} from "../api/file";
 import {revealInSystemExplorer} from "./external-app";
 
@@ -219,12 +222,25 @@ export interface DeleteResult {
 }
 
 // 统一删除入口:按当前模式把文件移入回收站。
-// 网盘路径不走本地回收站(数据在云端,由网盘自己的回收站兜底)。
+// 网盘路径不走本地回收站(数据在云端,由网盘自己的回收站兜底);
+// Git 仓库路径直接提交删除(历史可追溯,不需要本地回收站)。
 // 环境不支持回收站时抛错中止 —— 文件保持原样,绝不静默永久删除。
 export async function deleteToTrash(path: string, isDir: boolean): Promise<DeleteResult> {
+    // 插件库条目根是链接:删除只摘链接,外部真实数据一个字节都不动。
+    // 必须挡在回收站流程之前 —— 系统回收站 API 与跨卷 copy+rm 都可能顺着链接搬走外部数据。
+    if (isLibraryEntryRoot(path)) {
+        await removeLibraryEntry(libraryEntryNameOf(path));
+        return {mode: "plugin", note: "已取消同步,外部文件保持原样"};
+    }
+
     if (isBaiduPath(path)) {
         await removeFile(path);
         return {mode: "plugin", note: "网盘文件已删除,可在百度网盘回收站找回"};
+    }
+
+    if (isGitRepoPath(path)) {
+        await removeFile(path);
+        return {mode: "plugin", note: "已提交删除到仓库,可在提交历史中找回"};
     }
 
     if (!isNativeAvailable()) {

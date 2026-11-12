@@ -1,9 +1,9 @@
-import {openTab} from "siyuan";
+import {openTab, showMessage} from "siyuan";
+import {isMobileFrontend} from "../utils/platform";
 import {SEARCH_TAB_TYPE, TEXT_EXTENSIONS} from "../constants";
 import {EditorConfig, SearchResult} from "../types";
 import {readDir, readTextFile} from "../api/file";
-import {joinPath, extname, dirname} from "../utils/path";
-import {isBaiduPath} from "../utils/baidu-path";
+import {joinPath, extname, dirname, isRemotePath} from "../utils/path";
 import {openFileTab, IPluginForTab} from "../tabs/editor-tab";
 import {openImageTab} from "../tabs/image-tab";
 import {openOfficeTab} from "../tabs/office-tab";
@@ -210,7 +210,7 @@ export async function enumerateAll(rootPath: string, maxFileSize: number): Promi
             } else {
                 const ext = extname(entry.name);
                 // 网盘文件不参与内容搜索(逐个下载代价过高),保留名称搜索
-                if (!isBaiduPath(fullPath) && TEXT_EXTENSIONS.has(ext) && entry.size <= maxFileSize) {
+                if (!isRemotePath(fullPath) && TEXT_EXTENSIONS.has(ext) && entry.size <= maxFileSize) {
                     textFiles.push(fullPath);
                 }
             }
@@ -222,6 +222,10 @@ export async function enumerateAll(rootPath: string, maxFileSize: number): Promi
 
 // 打开搜索 Tab(同根路径去重)
 export function openSearchTab(plugin: IPluginForSearch, rootPath: string): void {
+    if (isMobileFrontend()) {
+        showMessage("移动端暂不支持搜索面板,请在虚拟文档树里浏览文件", 4000, "info");
+        return;
+    }
     const opened = plugin.getOpenedTab()[SEARCH_TAB_TYPE] || [];
     const existing = opened.find((c: any) => c?.data?.rootPath === rootPath);
     if (existing) {

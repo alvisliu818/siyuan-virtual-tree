@@ -6,6 +6,7 @@
 // {"code":409,"msg":"path is a directory"}。
 import {getNativeRequire} from "./native-require";
 import {getWorkspacePath, toSystemPath} from "./system-path";
+import {gitRepoCachedIsDir} from "../api/git-repo";
 
 /**
  * 路径是否是文件夹。
@@ -14,6 +15,8 @@ import {getWorkspacePath, toSystemPath} from "./system-path";
  *   1. 已渲染的文件树项 —— 节点上有 data-is-dir,直接读,零成本
  *   2. 原生 fs.statSync —— 转成系统路径后 stat,覆盖没渲染/未展开的节点
  *   3. 都不行 → 按 false 处理(当文件),宁可开错也不能什么都不响应
+ *
+ * Git 仓库虚拟路径(github:// / gitee://)没有本地实体,单独查已缓存的仓库整树。
  *
  * 纯同步:调用方(如 openFileTab)本身是同步的,改成异步要动一大片调用链。
  */
@@ -27,6 +30,10 @@ export function isDirectory(path: string): boolean {
     );
     if (li?.dataset.isDir === "true") return true;
     if (li?.dataset.isDir === "false") return false;
+
+    // Git 仓库:根恒为目录,子项查内存里的整树(树未加载时返回 null,继续往下兜底)
+    const gitIsDir = gitRepoCachedIsDir(path);
+    if (gitIsDir !== null) return gitIsDir;
 
     // 2. 原生 fs(内核路径先转系统绝对路径;非内核路径原样)
     const req = getNativeRequire();

@@ -5,6 +5,7 @@
 import {Menu, Dialog, confirm, showMessage} from "siyuan";
 import {MOUNT_TREE_DOCK_TYPE} from "../constants";
 import {readDir, querySQL} from "../api/file";
+import {clearGitRepoCache} from "../api/git-repo";
 import {DirEntry} from "../types";
 import {basename, dirname, joinPath} from "../utils/path";
 import {fileIconHTML, folderIconHTML} from "../utils/icons";
@@ -15,6 +16,7 @@ import {listChildBlocks, blockTitle, blockGutterIcon, soloImageInfo, BlockNode} 
 import {loadBlockDisplayModes, blockDisplayMode, setBlockDisplayMode} from "../utils/block-names";
 import {copyText, revealInFileTree, pickMountTargetDialog, showFileTreeMenu, findTreeRootEl, createNewFile, createNewFolder, buildFileTreeActions} from "../components/file-tree";
 import {openBaiduPanDialog} from "../components/baidu-pan-dialog";
+import {openGitRepoDialog} from "../components/git-repo-dialog";
 import {tagIconHTML} from "../tags/tag-ui";
 import {
     getAllTags,
@@ -338,6 +340,9 @@ interface MountTreeDockInstance {
     _expanded?: Set<string>;                       // 展开的节点键
     _cache?: Map<string, DirEntry[] | BlockNode[]>;// 已加载的子项
     _loading?: Set<string>;                        // 正在加载的节点键
+    // 预取失败的节点键:不写进 _cache(否则用户点开时命中缓存,永远看不到失败原因),
+    // 但要记住,否则 render → prefetch → 失败 → render 会无限重试
+    _prefetchFailed?: Set<string>;
     _nbIcons?: Map<string, string>;                // 笔记本 id → 自定义图标(后台取到后重绘)
     // 挂载块根行 → 块元数据(类型/子类型/markdown/命名):每次重绘现查比对,变了才重绘。
     // 块在文档里被转换类型(如标题转文档)后只要块 id 没变,树上就按新类型正常展示;
@@ -414,6 +419,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
             self._expanded = new Set<string>();
             self._cache = new Map<string, DirEntry[] | BlockNode[]>();
             self._loading = new Set<string>();
+            self._prefetchFailed = new Set<string>();
             self._nbIcons = new Map<string, string>();
             self._blockMeta = new Map<string, {type: string; subtype: string; markdown: string; name: string}>();
 
@@ -1013,8 +1019,12 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 try {
                     const kids = await loader();
                     self._cache!.set(key, Array.isArray(kids) ? kids : []);
-                } catch {
+                    self._prefetchFailed!.delete(key);
+                } catch (e) {
+                    // 用户主动展开却失败:必须说明原因。静默当成空目录会让人以为
+                    // 文件夹真是空的(移动端展开未绑定 Git 的插件库条目就是这种情况)
                     self._cache!.set(key, []);
+                    showMessage(`展开失败: ${(e as Error)?.message || e}`, 6000, "error");
                 } finally {
                     self._loading!.delete(key);
                     render();
@@ -1025,7 +1035,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
             // 结果直接写进 _cache,用户再点开时**无需二次请求**。
             // 不逐个重绘,整批结束后统一 render 一次;数量超上限则放弃预取,保持乐观显示箭头。
             const prefetch = (list: {key: string; loader: () => Promise<DirEntry[] | BlockNode[]>}[]): void => {
-                const todo = list.filter(x => !self._cache!.has(x.key) && !self._loading!.has(x.key));
+                const todo = list.filter(x => !self._cache!.has(x.key) && !self._loading!.has(x.key) && !self._prefetchFailed!.has(x.key));
                 if (todo.length === 0 || todo.length > MAX_PREFETCH) return;
                 void (async () => {
                     let cursor = 0;
@@ -1037,7 +1047,10 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                                 const kids = await t.loader();
                                 self._cache!.set(t.key, Array.isArray(kids) ? kids : []);
                             } catch {
-                                self._cache!.set(t.key, []);
+                                // 预取是后台行为,不打扰用户;但**不能**把失败当成空目录缓存,
+                                // 否则用户点开时命中缓存,失败原因永远没机会显示。
+                                // 留空 → hasKidsOf 乐观返回 true → 箭头保留 → 点击走 load() 报错
+                                self._prefetchFailed!.add(t.key);
                             } finally {
                                 self._loading!.delete(t.key);
                             }
@@ -1141,7 +1154,9 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                     return;
                 }
                 for (const e of sortEntries(kids)) {
-                    const full = joinPath(path, e.name);
+                    // 虚拟条目自带完整路径(思源文档 sydoc://、插件库在移动端指向 github://),
+                    // 与 file-tree 的 createEntryHTML 保持同一套规则
+                    const full = e.path || joinPath(path, e.name);
                     const ex = self._expanded!.has("f:" + full);
                     out.push({kind: "file", path: full, name: String(e.name), isDir: !!e.isDir, depth, expanded: ex});
                     if (e.isDir && ex) emitDir(full, depth + 1, out);
@@ -1363,6 +1378,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 const rootEl = findTreeRootEl(dir);
                 await createNewFile(dir, rootEl, rootEl?.dataset.path || "");
                 self._cache = new Map<string, DirEntry[] | BlockNode[]>();
+                self._prefetchFailed!.clear();
                 render();
             };
 
@@ -1375,6 +1391,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 const rootEl = findTreeRootEl(dir);
                 await createNewFolder(dir, rootEl, rootEl?.dataset.path || "");
                 self._cache = new Map<string, DirEntry[] | BlockNode[]>();
+                self._prefetchFailed!.clear();
                 render();
             };
 
@@ -1995,6 +2012,33 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                             });
                         },
                     },
+                    // Git 仓库(readDir 原生支持 github:// 与 gitee:// 路径,挂完可直接逐级列目录)
+                    {
+                        icon: "iconCloud",
+                        label: `挂载 GitHub 仓库${where}`,
+                        click: () => {
+                            openGitRepoDialog({
+                                provider: "github",
+                                title: where ? `挂载 GitHub 仓库到「${where}」` : "挂载 GitHub 仓库到虚拟文档树",
+                                onPicked: (vPath: string, label: string) => {
+                                    void uidOf().then(uid => mountPayload(plugin, {kind: "file", name: label, path: vPath, isDir: true}, uid));
+                                },
+                            });
+                        },
+                    },
+                    {
+                        icon: "iconCloud",
+                        label: `挂载 Gitee 仓库${where}`,
+                        click: () => {
+                            openGitRepoDialog({
+                                provider: "gitee",
+                                title: where ? `挂载 Gitee 仓库到「${where}」` : "挂载 Gitee 仓库到虚拟文档树",
+                                onPicked: (vPath: string, label: string) => {
+                                    void uidOf().then(uid => mountPayload(plugin, {kind: "file", name: label, path: vPath, isDir: true}, uid));
+                                },
+                            });
+                        },
+                    },
                     // 思源块:关键词搜索或粘贴块 ID;挂载后按 parent_id 递归展开子块
                     {
                         icon: "iconList",
@@ -2018,6 +2062,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
             // 文档类操作后的统一收尾:文档结构变了,清子项缓存重绘(getDocInfo 缓存由 doc-menu 内部清)
             const afterDocOp = () => {
                 self._cache = new Map<string, DirEntry[] | BlockNode[]>();
+                self._prefetchFailed!.clear();
                 render();
             };
 
@@ -2025,6 +2070,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
             // 引用链会变,必须强制重建,否则树上显示的还是旧名字/旧结构
             const afterRelationDocOp = () => {
                 self._cache = new Map<string, DirEntry[] | BlockNode[]>();
+                self._prefetchFailed!.clear();
                 ensureRelationTree(true);
             };
 
@@ -2428,6 +2474,9 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                     openMenuAtButton("action", "more", m);
                 } else if (action === "refresh") {
                     self._cache = new Map<string, DirEntry[] | BlockNode[]>();
+                    self._prefetchFailed!.clear();
+                    // Git 仓库整树有 5 分钟 TTL,不清就还是旧树(别处推了新提交时看不到)
+                    clearGitRepoCache();
                     render();
                     // 顺带把"已在编辑器里打开、但外部被改过"的文件同步一次:
                     // 外部改动不会触发 syfe:files-changed(那是插件自己的操作才派发),
@@ -2915,6 +2964,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
             this._expanded = undefined;
             this._cache = undefined;
             this._loading = undefined;
+            this._prefetchFailed = undefined;
             this._nbIcons = undefined;
             this._blockMeta = undefined;
         },

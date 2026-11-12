@@ -9,38 +9,45 @@ declare const __non_webpack_require__: NativeRequire | undefined;
 
 let cachedNativeRequire: NativeRequire | null = null;
 
+// 思源加载插件时注入的 require 形参(app/src/plugin/loader.ts 的 requireFunc)
+// 对非 "siyuan" 的键走 window.require?.(key) —— 无 Node 集成时**返回 undefined 而不抛错**。
+// 所以"调用没抛异常"不能作为判据,必须确认拿到了真的模块对象。
+function resolvesNodeBuiltin(req: NativeRequire): boolean {
+    try {
+        const cp = req("child_process");
+        return !!cp && typeof cp.exec === "function";
+    } catch {
+        return false;
+    }
+}
+
 export function getNativeRequire(): NativeRequire | null {
     if (cachedNativeRequire) return cachedNativeRequire;
-    // 优先使用 webpack 特有的 __non_webpack_require__
+    const candidates: NativeRequire[] = [];
+    // 优先使用 webpack 特有的 __non_webpack_require__(编译后就是插件工厂的 require 形参)
     try {
-        if (typeof __non_webpack_require__ !== "undefined") {
-            cachedNativeRequire = __non_webpack_require__;
-            return cachedNativeRequire;
-        }
+        if (typeof __non_webpack_require__ === "function") candidates.push(__non_webpack_require__);
     } catch {
         // __non_webpack_require__ 未定义,忽略
     }
-    // 回退:通过 eval 绕过 webpack 的静态分析
+    // 回退:通过 eval 绕过 webpack 的静态分析。
+    // 必须**调用**这个匿名函数:它本身只是个工厂,直接当 require 用会把任意模块名都解析成 require 函数自己
     try {
-        const r = (new Function("return typeof require !== 'undefined' ? require : null")) as NativeRequire | null;
-        if (r) {
+        const r = new Function("return typeof require !== 'undefined' ? require : null")();
+        if (typeof r === "function") candidates.push(r as NativeRequire);
+    } catch {
+        // 忽略
+    }
+    for (const r of candidates) {
+        if (resolvesNodeBuiltin(r)) {
             cachedNativeRequire = r;
             return cachedNativeRequire;
         }
-    } catch {
-        // 忽略
     }
     return null;
 }
 
 // 检测当前环境是否支持 Node 原生模块
 export function isNodeModulesAvailable(): boolean {
-    const req = getNativeRequire();
-    if (!req) return false;
-    try {
-        req("child_process");
-        return true;
-    } catch {
-        return false;
-    }
+    return getNativeRequire() !== null;
 }

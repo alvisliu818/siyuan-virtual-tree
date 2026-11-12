@@ -1,6 +1,7 @@
 import {DirEntry} from "../types";
 import {isKernelPath} from "../utils/path";
 import {isBaiduPath} from "../utils/baidu-path";
+import {isGitRepoPath} from "../utils/git-repo-path";
 import {decodeAuto} from "../utils/encoding";
 import {
     bdCreateDir,
@@ -10,6 +11,14 @@ import {
     bdRename,
     bdUploadFile,
 } from "./baidu-pan";
+import {
+    gitCreateDir,
+    gitDownloadFile,
+    gitListDir,
+    gitRemove,
+    gitRename,
+    gitUploadFile,
+} from "./git-repo";
 import {
     nativeCopyFile,
     nativeMkdir,
@@ -21,12 +30,21 @@ import {
     nativeWriteBinaryFile,
     nativeWriteFile,
 } from "./native-fs";
+import {isLibraryPath} from "../utils/library-path";
+import {libraryListDir, libraryRemove, libraryRename, redirectLibraryPath} from "./library";
 
 // 文件访问多后端:
 // - 内核路径(工作空间根相对路径:/data/...、/conf/...、/ 等,见 isKernelPath) → 思源内核 /api/file/*
 // - 系统绝对路径(如 E:\HOME\BaiduSyncdisk) → 原生 Node fs(工作空间外)
 // - 百度网盘虚拟路径(bdpan://...) → 网盘网页接口(cookie 鉴权,见 api/baidu-pan.ts)
+// - Git 仓库虚拟路径(github://...、gitee://...) → 官方 REST API(见 api/git-repo.ts)
+// - 插件库路径(/data/storage/petal/<插件>/library/...) → 见下方 redirectLibraryPath
 // 每个导出函数按路径类型分流,外部路径在非桌面端(无 Node 集成)会抛出可读错误。
+//
+// 插件库分流放在最前面,把库内路径**换成当前形态真正能访问的路径**后复用下面所有分支:
+// 桌面端换成系统绝对路径(走原生 fs,原地写,保住 junction/符号链接);
+// 移动端换成条目绑定的 github:// / gitee:// 路径(链接不会被思源同步到移动端)。
+// 详见 api/library.ts 顶部说明。
 
 // 内核 API 鉴权头(本地桌面端无需 token,此处防御性补充)
 function authHeaders(): Record<string, string> {
@@ -52,8 +70,10 @@ export async function postJSON<T = any>(url: string, data: any): Promise<T> {
 // 读取文本文件内容(/api/file/getFile 返回原始二进制,必须用原生 fetch)
 // 自动检测编码:UTF-8 优先,失败回退 GBK(保存时统一写回 UTF-8)
 export async function readTextFile(path: string): Promise<string> {
+    path = redirectLibraryPath(path);
     // 百度网盘路径走网盘接口下载
     if (isBaiduPath(path)) return decodeAuto(new Uint8Array(await bdDownloadFile(path)));
+    if (isGitRepoPath(path)) return decodeAuto(new Uint8Array(await gitDownloadFile(path)));
     // 工作空间外路径走原生 fs
     if (!isKernelPath(path)) return nativeReadTextFile(path);
     const resp = await fetch("/api/file/getFile", {
@@ -67,8 +87,10 @@ export async function readTextFile(path: string): Promise<string> {
 
 // 读取二进制文件内容
 export async function readBinaryFile(path: string): Promise<ArrayBuffer> {
+    path = redirectLibraryPath(path);
     // 百度网盘路径走网盘接口下载
     if (isBaiduPath(path)) return bdDownloadFile(path);
+    if (isGitRepoPath(path)) return gitDownloadFile(path);
     // 工作空间外路径走原生 fs
     if (!isKernelPath(path)) return nativeReadBinaryFile(path);
     const resp = await fetch("/api/file/getFile", {
@@ -82,8 +104,10 @@ export async function readBinaryFile(path: string): Promise<ArrayBuffer> {
 
 // 写入文件内容(/api/file/putFile,multipart)
 export async function writeFile(path: string, content: string): Promise<void> {
+    path = redirectLibraryPath(path);
     // 百度网盘路径走 precreate/分片/create 上传(覆盖)
     if (isBaiduPath(path)) return bdUploadFile(path, new TextEncoder().encode(content));
+    if (isGitRepoPath(path)) return gitUploadFile(path, new TextEncoder().encode(content));
     if (!isKernelPath(path)) return nativeWriteFile(path, content);
     const fd = new FormData();
     fd.append("path", path);
@@ -102,10 +126,15 @@ export async function writeFile(path: string, content: string): Promise<void> {
 // 写入二进制文件内容(/api/file/putFile,multipart)
 // 用于 Office 文档(docx/xlsx/pptx)等二进制格式的保存
 export async function writeBinaryFile(path: string, data: ArrayBuffer | Uint8Array): Promise<void> {
+    path = redirectLibraryPath(path);
     // 百度网盘路径走 precreate/分片/create 上传(覆盖)
     if (isBaiduPath(path)) {
         const bytes = data instanceof Uint8Array ? new Uint8Array(data) : new Uint8Array(data);
         return bdUploadFile(path, bytes);
+    }
+    if (isGitRepoPath(path)) {
+        const bytes = data instanceof Uint8Array ? new Uint8Array(data) : new Uint8Array(data);
+        return gitUploadFile(path, bytes);
     }
     if (!isKernelPath(path)) return nativeWriteBinaryFile(path, data);
     const fd = new FormData();
@@ -127,8 +156,10 @@ export async function writeBinaryFile(path: string, data: ArrayBuffer | Uint8Arr
 
 // 创建目录(/api/file/putFile,isDir=true)
 export async function mkdir(path: string): Promise<void> {
+    path = redirectLibraryPath(path);
     // 百度网盘路径走网盘建目录接口
     if (isBaiduPath(path)) return bdCreateDir(path);
+    if (isGitRepoPath(path)) return gitCreateDir(path);
     if (!isKernelPath(path)) return nativeMkdir(path);
     const fd = new FormData();
     fd.append("path", path);
@@ -150,6 +181,9 @@ export async function mkdir(path: string): Promise<void> {
 export async function readDir(path: string): Promise<DirEntry[]> {
     // 百度网盘路径走网盘列目录接口(条目自带 bdpan:// 子路径)
     if (isBaiduPath(path)) return bdListDir(path);
+    if (isGitRepoPath(path)) return gitListDir(path);
+    // 插件库:桌面端读真实链接,移动端按注册表合成(条目自带 github:// 子路径)
+    if (isLibraryPath(path)) return libraryListDir(path);
     if (!isKernelPath(path)) return nativeReadDir(path);
     const data = await postJSON<any>("/api/file/readDir", {path});
     // 情况1:data 本身是数组
@@ -163,25 +197,36 @@ export async function readDir(path: string): Promise<DirEntry[]> {
 
 // 重命名/移动文件(/api/file/renameFile)
 export async function renameFile(path: string, newPath: string): Promise<void> {
+    // 插件库条目改名要同步注册表,否则「取消同步」按名字找不到条目
+    if (isLibraryPath(path) || isLibraryPath(newPath)) return libraryRename(path, newPath);
     // 百度网盘路径走网盘改名接口(仅同目录改名)
     if (isBaiduPath(path)) return bdRename(path, newPath);
+    if (isGitRepoPath(path)) return gitRename(path, newPath);
     if (!isKernelPath(path)) return nativeRenameFile(path, newPath);
     await postJSON("/api/file/renameFile", {path, newPath});
 }
 
 // 删除文件或目录(/api/file/removeFile)
 export async function removeFile(path: string): Promise<void> {
+    // 插件库条目根只摘链接(外部数据不动),条目内部按普通文件删除
+    if (isLibraryPath(path)) return libraryRemove(path);
     // 百度网盘路径走网盘删除接口(目录递归删除,进回收站)
     if (isBaiduPath(path)) return bdRemove(path);
+    if (isGitRepoPath(path)) return gitRemove(path);
     if (!isKernelPath(path)) return nativeRemoveFile(path);
     await postJSON("/api/file/removeFile", {path});
 }
 
 // 复制文件(/api/file/copyFile)
 export async function copyFile(src: string, dest: string): Promise<void> {
+    src = redirectLibraryPath(src);
+    dest = redirectLibraryPath(dest);
     // 百度网盘路径暂不支持复制(读端下载 + 写端分片上传的代价较高)
     if (isBaiduPath(src) || isBaiduPath(dest)) {
         throw new Error("百度网盘目录暂不支持复制,请使用官方客户端");
+    }
+    if (isGitRepoPath(src) || isGitRepoPath(dest)) {
+        throw new Error("Git 仓库暂不支持复制,请在仓库网页端操作");
     }
     if (!isKernelPath(src)) return nativeCopyFile(src, dest);
     await postJSON("/api/file/copyFile", {src, dest});

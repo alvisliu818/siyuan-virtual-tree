@@ -38,6 +38,8 @@ import {toSystemPath} from "../utils/system-path";
 import {buildFileRefMd, consumePendingRef} from "../utils/file-ref";
 import {copyText} from "../components/file-tree";
 import {isDirectory} from "../utils/path-kind";
+import {isMobileFrontend} from "../utils/platform";
+import {openFileOnMobile} from "./mobile-open";
 import {revealInFileTree, showFileTreeMenu, findTreeRootEl, buildFileTreeActions} from "../components/file-tree";
 import {dispatchMountTreeEvent} from "../utils/mount-locate";
 import {showVersionHistory} from "../version-control/version-ui";
@@ -161,6 +163,11 @@ export function openFileTab(plugin: IPluginForTab, rawPath: string, opts?: OpenT
     // 两种 key 并存 —— Monaco URI 相同(Map key 不同)→ createModel 抛
     // "Cannot add model because it already exists",且页签复用检查也失效(实测)
     const path = (rawPath || "").replace(/\\/g, "/");
+    // 移动端没有页签系统(openTab 空实现),改走全屏 Dialog
+    if (isMobileFrontend()) {
+        openFileOnMobile(plugin, path, isDirectory(path));
+        return;
+    }
     if (isDirectory(path)) {
         void addRecent(plugin as any, path);
         openFolderInTree(path);

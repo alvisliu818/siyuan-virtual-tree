@@ -16,6 +16,11 @@ export function isBacklinkScanAllTextEnabled(): boolean {
     return configCache?.filesBacklinkScanAllText !== false;
 }
 
+// 插件库「取消同步」时对已绑定 Git 远端的处理方式
+export function getLibraryUnlinkMode(): "push" | "keep" | "deleteRemote" {
+    return configCache?.libraryUnlinkMode || DEFAULT_CONFIG.libraryUnlinkMode;
+}
+
 // 索引白/黑名单(按规则文本缓存编译结果;保存设置后 saveConfig 更新 configCache,
 // 文本一变自动重编译,无需手动失效)
 let indexFilterCache: {white: string; black: string; rules: IndexFilter} | null = null;

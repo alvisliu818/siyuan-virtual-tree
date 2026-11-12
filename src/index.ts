@@ -48,6 +48,7 @@ import {createSettingsPanel, settingsRow, SettingsPanel} from "./settings/plugin
 import {normalizeHotkeyText, formatHotkey, hotkeyFromEvent} from "./utils/hotkey";
 import {querySQL, lsNotebooks} from "./api/file";
 import {basename} from "./utils/path";
+import {isMobileFrontend} from "./utils/platform";
 import {openCreateSiyuanDocDialog, fileBaseName} from "./components/siyuan-new-doc";
 import {loadAllExtensions} from "./extensions/extension-manager";
 import {loadBuiltinGrammars} from "./extensions/grammar-loader";
@@ -64,6 +65,9 @@ import {loadStartPage, itemFromPath, itemFromDoc, toggleInGroup, START_PAGE_CHAN
 import {isVirtualPath, virtualId, initMountStore, getMountList, dropSyDocMounts} from "./utils/virtual-tree";
 import {initBaiduPanStore} from "./api/baidu-pan";
 import {openBaiduPanDialog} from "./components/baidu-pan-dialog";
+import {initGitRepoStore} from "./api/git-repo";
+import {initLibraryStore} from "./api/library";
+import {openGitRepoDialog} from "./components/git-repo-dialog";
 import {registerSlashCommands, emitBacklinkRefresh} from "./protyle/slash-commands";
 import {registerDocWikilinkHint} from "./protyle/doc-wikilink-hint";
 import {onDidSaveModel} from "./editor/model-manager";
@@ -73,7 +77,7 @@ import {registerDocExternalFilesMenu} from "./protyle/doc-external-files";
 import {registerMountMenu} from "./protyle/mount-menu";
 import {registerCodeBlockRun, disposeCodeBlockRun} from "./protyle/code-block-run";
 import {loadCodeBlockRunData, flushCodeBlockRunData} from "./protyle/code-block-run-store";
-import {initMountTree, reloadMountTreeIfChanged, migrateSyDocMounts, SYFE_RELATION_TREE_CHANGED_EVENT, getRoots} from "./mount-tree";
+import {initMountTree, reloadMountTreeIfChanged, migrateSyDocMounts, SYFE_RELATION_TREE_CHANGED_EVENT, getRoots, ensureLibraryMount} from "./mount-tree";
 import {createMountTreeDockConfig} from "./dock/mount-tree-dock";
 import {createBacklinkDockConfig} from "./dock/backlink-dock";
 import {createTerminalDockConfig} from "./dock/terminal-dock";
@@ -214,6 +218,8 @@ export default class FileEditorPlugin extends Plugin {
     private newDocSameNameInput?: HTMLInputElement;
     // 文件右键挂载思源文档的落点(文件下 / 所在文件夹下)
     private fileMountTargetSelect?: HTMLSelectElement;
+    // 插件库「取消同步」时对已绑定 Git 远端的处理方式
+    private libraryUnlinkModeSelect?: HTMLSelectElement;
     private _unregisterDocOpenTakeover?: () => void;
     // 文档右键「引用的外部文件」的 window 监听注销(正文入口走 eventBus 无需处理)
     private _unregisterDocExternalFiles?: () => void;
@@ -314,9 +320,64 @@ export default class FileEditorPlugin extends Plugin {
         this.addDock(asSiyuanCustom(cfg));
     }
 
+    /**
+     * 移动端注册链。
+     *
+     * 只注册移动端真正可用的东西:dock 是官方支持的插件载体(思源 plugin/index.ts
+     * 的 MOBILE 分支会走 MobileCustom),Dialog 可全屏,Command 无门禁。
+     * 页签系统(addTab/openTab)、Monaco、终端、Python LSP、Protyle 正文注入
+     * 全部跳过 —— 它们在移动端要么空实现要么没有 Node。
+     * 文件打开改走 tabs/mobile-open.ts 的全屏 Dialog。
+     */
+    private onloadMobile(): void {
+        this.pruneStalePluginDocks();
+        // 保存快照与删除方式:移动端编辑同样要落历史版本、同样受删除方式约束
+        void initFileVersions(this);
+        setVersionKeepCount(this.config.versionKeepCount ?? 10);
+        setTrashMode(this.config.deleteMode || "plugin");
+
+        this.addDockOnce(createRecentDockConfig(this as any));
+        this.addDockOnce(createTagDockConfig(this as any));
+        this.addDockOnce(createMountTreeDockConfig(this as any));
+        this.addDockOnce(createBacklinkDockConfig(this as any));
+        this.addDockOnce(createDocPropertiesDockConfig(this as any));
+        initDocProperties(this as any);
+
+        onDidSaveModel((path) => {
+            clearBacklinkCache();
+            emitBacklinkRefresh(path);
+        });
+
+        // 图标主题切换后重绘文件树;页签头图标在移动端不存在,不刷
+        const onIconThemeChanged = () => this.refreshFileTrees();
+        window.addEventListener(ICON_THEME_CHANGED_EVENT, onIconThemeChanged);
+        onDispose(() => window.removeEventListener(ICON_THEME_CHANGED_EVENT, onIconThemeChanged));
+
+        this.addCommand({
+            langKey: "globalSearch",
+            hotkey: "",
+            callback: () => this.openSearch(WORKSPACE_ROOT),
+        });
+
+        this.settingsPanel = createSettingsPanel({
+            title: "虚拟文档树 设置",
+            onOpen: () => this.syncSettingUI(),
+            onSave: () => this.saveSettings(),
+        });
+        this.buildSettingItems();
+        // startThemeSync 驱动的是 Monaco 主题,移动端没有 Monaco 编辑器,不启动
+    }
+
     onload(): void {
         // 换届自愈(与入口 banner 双保险):摘掉上一轮 bundle 残留的全局资源。
         disposeAllGlobal();
+        // 移动端走独立的注册链:桌面 onload 里的 addTab / Monaco / 终端 / Python LSP
+        // 在移动端要么空实现要么没有 Node,中途抛错会让思源跳过 kernelInit 与
+        // onLayoutReady,连移动端官方支持的 dock 都注册不上(见 utils/platform.ts)。
+        if (isMobileFrontend()) {
+            this.onloadMobile();
+            return;
+        }
         // 内置 TextMate 语法(python/js/ts 等官方语法接管着色,不依赖扩展)。
         // 放 onload 最前:布局恢复建模型之前就开始取语法,注册完成后对既有
         // 模型强制重分词(见 loadBuiltinGrammars)。内置先注册、扩展后注册 ——
@@ -581,19 +642,22 @@ export default class FileEditorPlugin extends Plugin {
 
     async onLayoutReady(): Promise<void> {
         this.config = await loadConfig(this);
+        const mobile = isMobileFrontend();
         // settings.json(VS Code 风格用户设置):优先级高于 config.json。
         // 读完后把值回写进 config,这样所有读 plugin.config 的既有代码都自动拿到最终值,
         // 不需要在各处再加一层"先查 settings.json"的判断。
         try {
             await initUserSettings(this);
             applyUserSettingsToConfig(this.config);
-            // 布局恢复的编辑器可能创建于 settings.json 读取完成之前(读到空值时
-            // buildEditorOptions 出的是空选项)→ 这里统一刷一遍已存在的编辑器
-            applyEditorOptions();
-            // Python 解释器同理:pyright 若在 settings.json 读到之前就启动了,
-            // 拿到的是空配置;与 server 已应用值不同则在这里补一次重启
-            void maybeRestartForInterpreterChange();
-            registerSettingsJsonSchema();
+            if (!mobile) {
+                // 布局恢复的编辑器可能创建于 settings.json 读取完成之前(读到空值时
+                // buildEditorOptions 出的是空选项)→ 这里统一刷一遍已存在的编辑器
+                applyEditorOptions();
+                // Python 解释器同理:pyright 若在 settings.json 读到之前就启动了,
+                // 拿到的是空配置;与 server 已应用值不同则在这里补一次重启
+                void maybeRestartForInterpreterChange();
+                registerSettingsJsonSchema();
+            }
         } catch (e) {
             console.error("[siyuan-file-editor] 加载 settings.json 失败:", e);
         }
@@ -620,16 +684,19 @@ export default class FileEditorPlugin extends Plugin {
         setTrashMode(this.config.deleteMode || "plugin");
         // 关闭未保存行为跟随磁盘配置生效
         setCloseUnsavedAction(this.config.closeUnsavedAction);
-        // 文档面包屑(并入自 fake-doc-breadcrumb):按总开关启用;启用时会自动给已打开文档补插面包屑
-        applyFakeDocBreadcrumb(this as any, this.config.fakeDocBreadcrumbEnabled !== false);
-        // 习惯与目标(并入自 siyuan-planner):按总开关启用(读档 + 计时引擎 + 首次迁移),并补注册 Dock
-        void applyPlannerEnabled(this as any, this.config.plannerEnabled !== false).then(() => {
-            this.ensurePlannerDock();
-            this.applyPlannerTopBarIcon();
-            // 布局恢复的新标签页早于模块激活,且设置里切换总开关后也要同步:
-            // 数据/启用状态就绪后通知新标签页重绘「习惯与目标」速览区
-            window.dispatchEvent(new CustomEvent(PLANNER_CHANGED_EVENT));
-        });
+        // 文档面包屑与习惯目标都依赖桌面页签/Protyle 注入,移动端跳过
+        if (!mobile) {
+            // 文档面包屑(并入自 fake-doc-breadcrumb):按总开关启用;启用时会自动给已打开文档补插面包屑
+            applyFakeDocBreadcrumb(this as any, this.config.fakeDocBreadcrumbEnabled !== false);
+            // 习惯与目标(并入自 siyuan-planner):按总开关启用(读档 + 计时引擎 + 首次迁移),并补注册 Dock
+            void applyPlannerEnabled(this as any, this.config.plannerEnabled !== false).then(() => {
+                this.ensurePlannerDock();
+                this.applyPlannerTopBarIcon();
+                // 布局恢复的新标签页早于模块激活,且设置里切换总开关后也要同步:
+                // 数据/启用状态就绪后通知新标签页重绘「习惯与目标」速览区
+                window.dispatchEvent(new CustomEvent(PLANNER_CHANGED_EVENT));
+            });
+        }
         // 设置面板控件同步当前值
         this.syncSettingUI();
         // 配置就位后按真实设置重扫文档内属性面板(onload 时 config 还是 DEFAULT_CONFIG)
@@ -682,6 +749,8 @@ export default class FileEditorPlugin extends Plugin {
             // 空根 —— 这里把「已加载那份」的读取函数挂到 window 上兜底
             // (project_memory「webpack 分块双实例」同款修法,参 __syfeMonacoBlock)
             (window as any).__syfeMountTreeGetRoots = getRoots;
+            // 插件库根常驻在虚拟文档树里(库内条目 = 指向外部路径的链接)
+            await ensureLibraryMount(this);
         } catch (e) {
             console.error("[siyuan-file-editor] 加载虚拟文档树失败:", e);
         }
@@ -704,6 +773,18 @@ export default class FileEditorPlugin extends Plugin {
         } catch (e) {
             console.error("[siyuan-file-editor] 加载百度网盘配置失败:", e);
         }
+        // 加载 Git 仓库配置(GitHub / Gitee 访问令牌;失败不影响其他功能)
+        try {
+            await initGitRepoStore(this as any);
+        } catch (e) {
+            console.error("[siyuan-file-editor] 加载 Git 仓库配置失败:", e);
+        }
+        // 加载插件库注册表(库内链接条目 → 外部路径 + Git 绑定;移动端靠它访问库内容)
+        try {
+            await initLibraryStore(this as any);
+        } catch (e) {
+            console.error("[siyuan-file-editor] 加载插件库失败:", e);
+        }
         // 记录最近使用的思源文档(必须在 loadRecents 之后注册,否则会被加载结果覆盖)
         this.eventBus.on("switch-protyle", (e: any) => {
             const protyle = e?.detail?.protyle;
@@ -720,7 +801,8 @@ export default class FileEditorPlugin extends Plugin {
                 this.refreshFileTrees();
             }, 800);
         });
-        // 加载已安装的 VSCode 扩展
+        // 加载已安装的 VSCode 扩展(语法/主题/代码片段都服务于 Monaco,移动端用不到)
+        if (mobile) return;
         try {
             const results = await loadAllExtensions(this);
             const loaded = results.filter(r => r.status === "loaded");
@@ -1464,6 +1546,24 @@ export default class FileEditorPlugin extends Plugin {
         bdPanBtn.addEventListener("click", () => openBaiduPanDialog());
         addRow("baiduPan", "百度网盘", "接入方式:官方 API(推荐,开放平台 AppKey/SecretKey + 设备码授权,未过审仅能访问 /apps/应用名/ 目录)或网页 Cookie(全盘 + 同步空间,非官方)。配置后点击文件树工具栏云图标挂载网盘目录,支持浏览、编辑并保存回网盘", bdPanBtn);
 
+        // ---------- Git 仓库 ----------
+        const gitRepoBtn = document.createElement("button");
+        gitRepoBtn.className = "b3-button b3-button--outline";
+        gitRepoBtn.textContent = "Git 仓库令牌…";
+        gitRepoBtn.addEventListener("click", () => openGitRepoDialog({title: "Git 仓库(GitHub / Gitee)"}));
+        addRow("gitRepo", "Git 仓库", "把 GitHub / Gitee 仓库的某个分支挂进虚拟文档树:可浏览、编辑,保存即提交回该分支(新建/删除/改名同样提交)。公开仓库不填令牌也能浏览(匿名 60 次/小时),私有仓库与写回提交需要令牌。在文件树空白处右键 →「挂载 GitHub 仓库 / 挂载 Gitee 仓库」", gitRepoBtn);
+
+        // ---------- 插件库 ----------
+        // 库内条目是指向外部真实路径的正向链接,库内与外部是同一份数据:
+        // 取消同步永远只摘链接,这里选的是「顺带怎么处理已绑定的 Git 远端」。
+        this.libraryUnlinkModeSelect = document.createElement("select");
+        this.libraryUnlinkModeSelect.className = "b3-select";
+        this.libraryUnlinkModeSelect.innerHTML = `
+            <option value="push">先推送本地改动到远端,再解绑(推荐)</option>
+            <option value="keep">直接解绑,远端保持原样</option>
+            <option value="deleteRemote">解绑并在远端删除该条目(外部文件仍保留)</option>`;
+        addRow("library", "取消同步:远端处理方式", "在插件库里右键条目选「取消同步」时,只移除库内链接,外部文件与文件夹一个字节都不动。这里决定已绑定的 Git 远端仓库怎么处理:先推送(不丢改动)、原样保留,或在远端提交一次删除(仍可从 Git 历史恢复)。未绑定远端的条目不受此设置影响", this.libraryUnlinkModeSelect);
+
         // ---------- 文件树 ----------
         // 搜索最大文件大小
         this.searchMaxSizeInput = document.createElement("input");
@@ -1710,6 +1810,8 @@ export default class FileEditorPlugin extends Plugin {
         addRowsPage("tags", "标签");
         addRowsPage("fileTree", "文件树");
         addRowsPage("baiduPan", "百度网盘");
+        addRowsPage("gitRepo", "Git 仓库");
+        addRowsPage("library", "插件库");
         addRowsPage("terminal", "终端");
         addRowsPage("newTab", "新标签页");
         addRowsPage("docProperties", "文档属性");
@@ -1765,6 +1867,7 @@ export default class FileEditorPlugin extends Plugin {
         if (this.newDocSubPathInput) this.newDocSubPathInput.value = this.config.newDocSubPath || "";
         if (this.newDocSameNameInput) this.newDocSameNameInput.checked = this.config.newDocSameName !== false;
         if (this.fileMountTargetSelect) this.fileMountTargetSelect.value = this.config.fileMountTarget === "folder" ? "folder" : "file";
+        if (this.libraryUnlinkModeSelect) this.libraryUnlinkModeSelect.value = this.config.libraryUnlinkMode || "push";
         // 引用关系设置回填(只回填设置项;collapsed 由面板维护,拖拽顺序在挂载配置里)
         const rel = this.config.mountTreeRelation || DEFAULT_CONFIG.mountTreeRelation;
         if (this.mountTreeRelationEnabledInput) this.mountTreeRelationEnabledInput.checked = rel.enabled === true;
@@ -1865,6 +1968,7 @@ export default class FileEditorPlugin extends Plugin {
             newDocSubPath: (this.newDocSubPathInput?.value || "").trim().replace(/^[\\/]+/, "").replace(/[\\/]+$/, ""),
             newDocSameName: this.newDocSameNameInput?.checked ?? true,
             fileMountTarget: ((this.fileMountTargetSelect?.value || "file") as "file" | "folder"),
+            libraryUnlinkMode: ((this.libraryUnlinkModeSelect?.value || "push") as "push" | "keep" | "deleteRemote"),
             closeUnsavedAction: ((this.closeUnsavedSelect?.value || "ask") as "ask" | "discard" | "save"),
             takeoverSplitOpen: this.takeoverSplitOpenInput?.checked ?? false,
             treeBacklinkIcon: this.treeBacklinkIconInput?.checked ?? true,

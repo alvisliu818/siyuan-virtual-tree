@@ -1,4 +1,6 @@
 import {openTab, showMessage} from "siyuan";
+import {isMobileFrontend} from "../utils/platform";
+import {openFileOnMobile} from "./mobile-open";
 import {applyFileTabHeadIconWhenReady} from "../utils/tab-icon";
 import {IMAGE_TAB_TYPE} from "../constants";
 import {getImageMime, formatFileSize, isImageFile} from "../constants";
@@ -36,6 +38,10 @@ function escapeHTML(s: string): string {
 // 打开图片查看 Tab(同图片去重,聚焦已有 Tab)
 // opts.position 指定时,在指定方向以分栏方式打开
 export function openImageTab(plugin: IPluginForImageTab, path: string, opts?: { position?: "right" | "bottom" }): void {
+    if (isMobileFrontend()) {
+        openFileOnMobile(plugin, path, false);
+        return;
+    }
     const opened = plugin.getOpenedTab()[IMAGE_TAB_TYPE] || [];
     const matches = opened.filter((c: any) => c?.data?.path === path);
     if (matches.length) {

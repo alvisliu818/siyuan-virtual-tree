@@ -1,13 +1,14 @@
 import {openTab, confirm, showMessage} from "siyuan";
+import {isMobileFrontend} from "../utils/platform";
+import {openFileOnMobile} from "./mobile-open";
 import Vditor from "vditor";
 import {MARKDOWN_TAB_TYPE, getImageMime} from "../constants";
-import {basename, dirname, sepFor, isSiyuanPath} from "../utils/path";
+import {basename, dirname, sepFor, isSiyuanPath, isRemotePath} from "../utils/path";
 import {EditorConfig} from "../types";
 import {createEditor, getCurrentMode} from "../editor/monaco";
 import {getModel, saveModel, markDirty, isDirty, consumePendingReveal} from "../editor/model-manager";
 import {readBinaryFile} from "../api/file";
 import {nativeStat} from "../api/native-fs";
-import {isBaiduPath} from "../utils/baidu-path";
 import {createBacklinkPanel, navigateBacklink, BacklinkPanel} from "../components/backlink-panel";
 import {renderPathSegments, showPathSwitchMenu, enableCrumbScroll} from "../components/path-crumbs";
 import {applyFileTabHeadIconWhenReady} from "../utils/tab-icon";
@@ -665,6 +666,10 @@ export function openMarkdownTab(plugin: IPluginForMarkdownTab, rawPath: string, 
     // 同一文件两种 key 并存 —— Monaco URI 相同(Map key 不同)→ createModel 抛
     // "Cannot add model because it already exists",且页签复用检查也失效(实测)
     const path = (rawPath || "").replace(/\\/g, "/");
+    if (isMobileFrontend()) {
+        openFileOnMobile(plugin, path, false);
+        return;
+    }
     const opened = plugin.getOpenedTab()[MARKDOWN_TAB_TYPE] || [];
     const matches = opened.filter((c: any) => c?.data?.path === path);
     if (matches.length) {
@@ -1650,7 +1655,7 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                 // 本地路径且文件不存在:getModel 会静默用空内容(便于新建),这里补一条
                 // 明确提示 —— 否则"打开一个空白页签"让人以为内容丢了(实测踩过:路径抄错)。
                 // 注意插在页签容器(bar 之下)而不是 contentEl:后续 enterXxx 会清空 contentEl
-                if (!self._model.getValue() && isSiyuanPath(path) === false && !isBaiduPath(path)) {
+                if (!self._model.getValue() && isSiyuanPath(path) === false && !isRemotePath(path)) {
                     const stat = nativeStat(path);
                     if (!stat && !self.element.querySelector(".syfe-md__missing")) {
                         self.element.querySelector(".syfe-md__bar")!.insertAdjacentHTML("afterend",

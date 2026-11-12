@@ -126,6 +126,12 @@ export interface EditorConfig {
     // 习惯与目标(并入自 siyuan-planner 模块)总开关:习惯打卡/目标/任务待办/番茄计时/倒数日。
     // 细分设置(番茄时长等)存 planner.json 的 settings 段,由设置面板「习惯与目标」页直接修改(即时生效)
     plannerEnabled: boolean;
+    // 插件库「取消同步」时如何处理 Git 远端。库内条目是指向外部路径的正向链接,
+    // 库内与外部是同一份数据,所以本地侧只有一种语义:摘掉链接,外部文件绝不删改。
+    //   push         先把本地改动推送到远端,再解绑(默认,不丢改动)
+    //   keep         直接解绑,远端保持原样
+    //   deleteRemote 解绑并在远端提交删除该条目目录(外部文件仍保持原样)
+    libraryUnlinkMode: "push" | "keep" | "deleteRemote";
 }
 
 /** 引用关系树配置(移植自独立插件 siyuan-virtual-tree) */
@@ -357,4 +363,6 @@ export const DEFAULT_CONFIG: EditorConfig = {
     fileMountTarget: "file",
     // 习惯与目标默认开启;关闭后 Dock 图标需重启思源才消失(思源无 removeDock),面板/命令会提示已停用
     plannerEnabled: true,
+    // 取消同步默认先推送再解绑:外部文件不动,远端也不丢本地改动
+    libraryUnlinkMode: "push",
 };

@@ -20,7 +20,8 @@ import {DirEntry} from "../types";
 import {STORAGE_BD_CONFIG} from "../constants";
 import {parseStoredData} from "../utils/stored-data";
 import {decodeAuto} from "../utils/encoding";
-import {getNativeRequire, isNodeModulesAvailable} from "../utils/native-require";
+import {isNodeModulesAvailable} from "../utils/native-require";
+import {httpRequest, HttpResponse} from "./http";
 import {basename} from "../utils/path";
 import {
     BDPAN_PREFIX,
@@ -159,12 +160,6 @@ const BD_APP_ID = "266719"; // cookie 模式 PCS 接口 app_id(与 BaiduPCS-Go �
 const BD_UA = "netdisk;P2SP;3.0.0.8;netdisk;11.12.3;ANG-AN00;android-android;10.0;JSbridge4.4.0;jointBridge;1.1.0;";
 const OFFICIAL_UA = "pan.baidu.com"; // 官方下载链路要求的 UA
 
-interface BdResp {
-    status: number;
-    bytes: ArrayBuffer;
-    contentType: string;
-}
-
 function bdCookie(): string {
     const parts = [`BDUSS=${bdConfig.bduss}`];
     if (bdConfig.stoken) parts.push(`STOKEN=${bdConfig.stoken}`);
@@ -183,131 +178,11 @@ function bdDefaultHeaders(): Record<string, string> {
     return {"User-Agent": OFFICIAL_UA};
 }
 
-// 内核鉴权头(与 api/file.ts 一致;本地桌面端无需 token,此处防御性补充)
-function kernelAuthHeaders(): Record<string, string> {
-    const w = window as any;
-    const token = w?.siyuan?.config?.system?.conf?.api?.token;
-    return token ? {Authorization: `Token ${token}`} : {};
-}
-
-// RawURL base64(内核代理参数编码)
-function b64url(s: string): string {
-    const bytes = new TextEncoder().encode(s);
-    let bin = "";
-    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-    return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
-// Node https/http 请求(桌面端):任意头、二进制 body,自动跟随 30x 跳转
-function nodeRequest(
-    url: string,
-    method: string,
-    headers: Record<string, string>,
-    body: string | Uint8Array | null,
-    redirects = 0,
-): Promise<BdResp> {
-    return new Promise((resolve, reject) => {
-        const req = getNativeRequire()!;
-        let mod: any;
-        try {
-            mod = req(url.startsWith("http://") ? "http" : "https");
-        } catch (e) {
-            reject(new Error(`无法加载 Node http(s) 模块: ${e}`));
-            return;
-        }
-        let u: URL;
-        try {
-            u = new URL(url);
-        } catch {
-            reject(new Error(`URL 无效: ${url}`));
-            return;
-        }
-        const r = mod.request(u, {method, headers, timeout: 60000}, (res: any) => {
-            const status = res.statusCode || 0;
-            const loc = res.headers?.location;
-            if (status >= 300 && status < 400 && loc && redirects < 5) {
-                res.resume(); // 丢弃跳转响应体
-                nodeRequest(new URL(loc, u).toString(), method, headers, body, redirects + 1).then(resolve, reject);
-                return;
-            }
-            const chunks: Buffer[] = [];
-            res.on("data", (c: Buffer) => chunks.push(c));
-            res.on("end", () => {
-                const buf = Buffer.concat(chunks);
-                const out = new Uint8Array(buf.length);
-                out.set(buf);
-                resolve({status, bytes: out.buffer, contentType: String(res.headers?.["content-type"] || "")});
-            });
-            res.on("error", reject);
-        });
-        r.on("timeout", () => r.destroy(new Error("请求超时(60s)")));
-        r.on("error", reject);
-        if (body !== null) {
-            const payload = typeof body === "string" ? Buffer.from(body, "utf8") : Buffer.from(body);
-            r.setHeader("Content-Length", payload.length);
-            r.write(payload);
-        }
-        r.end();
-    });
-}
-
-// 内核代理端点探测结果(浏览器端;"" = 未探测)
-let proxyMode: "" | "new" | "old" = "";
-
-// 浏览器端:经思源内核代理请求(新版透传方法与请求体,旧版 JSON 包裹)
-async function proxyRequest(
-    url: string,
-    method: string,
-    headers: Record<string, string>,
-    body: string | null,
-): Promise<BdResp> {
-    if (proxyMode !== "old") {
-        // 新版内核(v3.8+):/api/network/proxy?u=<b64url>&h=<b64url(headers)>&t=<timeout>
-        // 方法与请求体由本请求透传;响应为原始字节流(上限 32MB)
-        try {
-            const h = b64url(JSON.stringify(headers));
-            const resp = await fetch(`/api/network/proxy?u=${b64url(url)}&h=${encodeURIComponent(h)}&t=90s`, {
-                method,
-                headers: {
-                    ...kernelAuthHeaders(),
-                    ...(body !== null ? {"Content-Type": headers["Content-Type"] || "application/x-www-form-urlencoded"} : {}),
-                },
-                body: body !== null ? body : undefined,
-            });
-            if (resp.status !== 404) {
-                proxyMode = "new";
-                return {status: resp.status, bytes: await resp.arrayBuffer(), contentType: resp.headers.get("content-type") || ""};
-            }
-        } catch {
-            // 请求失败继续尝试旧端点
-        }
-        if (proxyMode === "") proxyMode = "old";
-    }
-    // 旧版内核:/api/fetch/proxy(JSON 包裹,payload 仅支持字符串)
-    const resp = await fetch("/api/fetch/proxy", {
-        method: "POST",
-        headers: {"Content-Type": "application/json", ...kernelAuthHeaders()},
-        body: JSON.stringify({
-            url,
-            method,
-            headers,
-            timeout: 90000,
-            ...(body !== null ? {contentType: headers["Content-Type"] || "application/x-www-form-urlencoded", payload: body} : {}),
-        }),
-    });
-    if (resp.status === 404) {
-        throw new Error("思源内核代理不可用,请升级思源或使用桌面端");
-    }
-    proxyMode = "old";
-    return {status: resp.status, bytes: await resp.arrayBuffer(), contentType: resp.headers.get("content-type") || ""};
-}
-
-// 统一请求入口:桌面端走 Node https,浏览器端走内核代理
+// 统一请求入口:注入网盘默认头后交给共享传输层(桌面 Node https / 浏览器内核代理)
 async function bdHttp(
     url: string,
     opts: {method?: string; headers?: Record<string, string>; body?: string | Uint8Array | null} = {},
-): Promise<BdResp> {
-    const method = opts.method || "GET";
+): Promise<HttpResponse> {
     const headers = {
         Accept: "application/json, text/plain, */*",
         "Accept-Encoding": "identity", // 避免 gzip,无需解压
@@ -315,14 +190,11 @@ async function bdHttp(
         ...opts.headers,
     };
     const body = opts.body === undefined ? null : opts.body;
-    if (isNodeModulesAvailable()) {
-        return await nodeRequest(url, method, headers, body);
-    }
     // 浏览器端:二进制 body(上传分片)无法经代理传输
-    if (body instanceof Uint8Array) {
+    if (body instanceof Uint8Array && !isNodeModulesAvailable()) {
         throw new Error("浏览器端暂不支持上传网盘文件,请使用思源桌面端");
     }
-    return await proxyRequest(url, method, headers, typeof body === "string" ? body : null);
+    return await httpRequest(url, {method: opts.method, headers, body});
 }
 
 // ==== 错误处理 ====
@@ -693,7 +565,7 @@ async function officialDownload(cloud: string): Promise<ArrayBuffer> {
 }
 
 // 下载失败时百度可能返回 200 + JSON(errno),按内容嗅探避免把错误 JSON 当文件内容
-function sniffErrorJSON(resp: BdResp): ArrayBuffer {
+function sniffErrorJSON(resp: HttpResponse): ArrayBuffer {
     const bytes = new Uint8Array(resp.bytes);
     if (bytes.length > 0 && bytes.length < 64 * 1024 && (bytes[0] === 0x7b /* { */ || bytes[0] === 0x20 || bytes[0] === 0x0a)) {
         try {

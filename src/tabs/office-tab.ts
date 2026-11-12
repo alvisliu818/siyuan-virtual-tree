@@ -1,4 +1,6 @@
 import {openTab, confirm, showMessage} from "siyuan";
+import {isMobileFrontend} from "../utils/platform";
+import {openFileOnMobile} from "./mobile-open";
 import {applyFileTabHeadIconWhenReady} from "../utils/tab-icon";
 import {guardUnsavedClose} from "../utils/close-guard";
 import {OFFICE_TAB_TYPE, getOfficeKind} from "../constants";
@@ -44,6 +46,10 @@ const KIND_LABEL: Record<string, string> = {
 // 打开 Office 文档 Tab(同文件去重,聚焦已有 Tab)
 // opts.position 指定时,在指定方向以分栏方式打开
 export function openOfficeTab(plugin: IPluginForOfficeTab, path: string, opts?: { position?: "right" | "bottom" }): void {
+    if (isMobileFrontend()) {
+        openFileOnMobile(plugin, path, false);
+        return;
+    }
     const opened = plugin.getOpenedTab()[OFFICE_TAB_TYPE] || [];
     const matches = opened.filter((c: any) => c?.data?.path === path);
     if (matches.length) {

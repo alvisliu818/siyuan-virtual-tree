@@ -14,7 +14,7 @@ import {showMessage} from "siyuan";
 import {readDir} from "../api/file";
 import {DirEntry} from "../types";
 import {basename, dirname, extname, isSiyuanPath, joinPath, pathDepth} from "./path";
-import {isBaiduPath} from "./baidu-path";
+import {isRemotePath} from "./path";
 import {getRoots, MountItem} from "../mount-tree";
 import {parseFileRef, stripFileRef, setPendingRef, FileRef} from "./file-ref";
 import {fileUrlToPath} from "./system-path";
@@ -44,19 +44,19 @@ export const ATTR_RE = /\b(?:src|href)\s*=\s*["']([^"']+)["']/g;
 //   1) 虚拟文档树的挂载根(mount-tree 内存配置,启动时 initMountTree 已加载;
 //      含嵌套挂载的 children,只取 kind=file 的真实路径 —— 文档/块挂载不参与文件扫描)
 //   2) 旧「文件」面板的树根(仍开着的存量用户;.syfe-tree__root)
-// 多个根去重;百度网盘根不参与文件扫描(扫描走内核/本地 readDir)。
+// 多个根去重;远程根(百度网盘 / Git 仓库)不参与文件扫描(扫描走内核/本地 readDir)。
 export function collectScanRoots(): string[] {
     const roots = new Set<string>();
     const walkMounts = (items: MountItem[]) => {
         for (const it of items) {
-            if (it.kind === "file" && it.path && !isBaiduPath(it.path)) roots.add(it.path);
+            if (it.kind === "file" && it.path && !isRemotePath(it.path)) roots.add(it.path);
             if (it.children && it.children.length > 0) walkMounts(it.children);
         }
     };
     walkMounts(mountRootsSnapshot());
     document.querySelectorAll<HTMLElement>(".syfe-tree__root[data-path]").forEach(el => {
         const p = el.dataset.path;
-        if (p && !p.startsWith("sydoc://") && !isBaiduPath(p)) roots.add(p);
+        if (p && !p.startsWith("sydoc://") && !isRemotePath(p)) roots.add(p);
     });
     return Array.from(roots);
 }

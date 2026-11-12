@@ -10,6 +10,8 @@
 //   所以存盘后用 Jupyter / VS Code 打开也是合法的。
 // 结构对齐 office-tab:独立 _dirty + 保存/重载 + beforeDestroy 确认。
 import {openTab, confirm, showMessage, Menu} from "siyuan";
+import {isMobileFrontend} from "../utils/platform";
+import {openFileOnMobile} from "./mobile-open";
 import {applyFileTabHeadIconWhenReady} from "../utils/tab-icon";
 import {guardUnsavedClose} from "../utils/close-guard";
 import * as monaco from "monaco-editor";
@@ -202,6 +204,10 @@ function fitEditorHeight(host: HTMLElement, editor: monaco.editor.IStandaloneCod
 
 // 打开 Notebook Tab(同文件去重,聚焦已有 Tab)
 export function openNotebookTab(plugin: IPluginForNotebookTab, path: string, opts?: { position?: "right" | "bottom" }): void {
+    if (isMobileFrontend()) {
+        openFileOnMobile(plugin, path, false);
+        return;
+    }
     const opened = plugin.getOpenedTab()[NOTEBOOK_TAB_TYPE] || [];
     const matches = opened.filter((c: any) => c?.data?.path === path);
     if (matches.length) {

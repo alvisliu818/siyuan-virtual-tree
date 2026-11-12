@@ -286,3 +286,83 @@ export async function nativeIsDirectory(path: string): Promise<boolean> {
         return false;
     }
 }
+
+// ===== 链接原语(插件库用) =====
+
+// 不跟随链接取状态:isLink 为 true 表示这一项本身是 junction/符号链接。
+// 注意 Windows 目录 junction 的 lstat 报 isDirectory()=false、isSymbolicLink()=true,
+// 想知道它指向目录还是文件必须再 stat 一次(跟随链接)。
+export async function nativeLstat(path: string): Promise<{isDir: boolean; isLink: boolean; size: number; mtimeMs: number} | null> {
+    const f = getFs();
+    try {
+        const st = await f.promises.lstat(path);
+        return {
+            isDir: st.isDirectory(),
+            isLink: st.isSymbolicLink(),
+            size: Number(st.size || 0),
+            mtimeMs: Number(st.mtimeMs || 0),
+        };
+    } catch {
+        return null;
+    }
+}
+
+// 读链接指向的真实路径;不是链接或读不到返回 null
+export async function nativeReadlink(path: string): Promise<string | null> {
+    const f = getFs();
+    try {
+        return String(await f.promises.readlink(path));
+    } catch {
+        return null;
+    }
+}
+
+export type NativeLinkKind = "junction" | "symlink" | "hardlink";
+
+// 创建链接。junction 与 hardlink 在 Windows 上都不需要管理员权限;
+// symlink(文件符号链接)需要管理员或开发者模式,失败时由调用方降级到 hardlink。
+// 用 fs.symlink 而不是 spawn mklink:同一个 Win32 API,但省掉 cmd 对路径里 & ^ 等字符的转义风险。
+export async function nativeCreateLink(target: string, linkPath: string, kind: NativeLinkKind): Promise<void> {
+    const f = getFs();
+    try {
+        if (kind === "hardlink") {
+            await f.promises.link(target, linkPath);
+        } else {
+            await f.promises.symlink(target, linkPath, kind === "junction" ? "junction" : "file");
+        }
+    } catch (e) {
+        throw wrapError("创建链接", linkPath, e);
+    }
+}
+
+// 只删除链接本身,**绝不递归进入目标**。真实目录一律拒绝,避免把外部数据删掉。
+export async function nativeRemoveLink(path: string): Promise<void> {
+    const f = getFs();
+    let st: any;
+    try {
+        st = await f.promises.lstat(path);
+    } catch (e) {
+        throw wrapError("删除链接", path, e);
+    }
+    if (st.isDirectory()) {
+        throw new Error(`删除链接失败: ${path} 是真实目录而不是链接,已拒绝删除`);
+    }
+    try {
+        if (st.isSymbolicLink()) {
+            let targetIsDir = false;
+            try {
+                targetIsDir = (await f.promises.stat(path)).isDirectory();
+            } catch {
+                // 断链:按文件处理
+            }
+            // 目录 junction 要用 rmdir(RemoveDirectory 只摘掉重解析点,不动目标)
+            if (targetIsDir) await f.promises.rmdir(path);
+            else await f.promises.unlink(path);
+            return;
+        }
+        // 硬链接:unlink 只删这个名字,外部那份数据仍在
+        await f.promises.unlink(path);
+    } catch (e) {
+        throw wrapError("删除链接", path, e);
+    }
+}

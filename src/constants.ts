@@ -2,6 +2,10 @@
 // 注:WORKSPACE_ROOT 定义在 utils/path.ts(避免与 path.ts 形成循环依赖)
 import {extname, SIYUAN_ROOT} from "./utils/path";
 
+// 插件名(与 plugin.json 的 name 一致)。插件数据存储目录 data/storage/petal/<名>/ 由它拼出,
+// 深层模块拿不到 plugin 实例,只能按约定硬编码。
+export const PLUGIN_NAME = "siyuan-virtual-tree";
+
 export const TAB_TYPE = "siyuan-file-editor-tab";
 export const IMAGE_TAB_TYPE = "siyuan-file-editor-image";
 export const OFFICE_TAB_TYPE = "siyuan-file-editor-office";
@@ -46,6 +50,10 @@ export const STORAGE_CONFIG = "config.json";
 export const STORAGE_SY_MOUNTS = "sy-mounts.json";
 // 百度网盘配置(Cookie 凭据与同步空间目录,bdpan:// 虚拟条目依赖)
 export const STORAGE_BD_CONFIG = "baidu-pan.json";
+// Git 仓库配置(GitHub / Gitee 访问令牌,github:// 与 gitee:// 虚拟条目依赖)
+export const STORAGE_GIT_CONFIG = "git-repo.json";
+// 插件库注册表(库内链接条目 → 外部真实路径 + Git 远端绑定)
+export const STORAGE_LIBRARY = "library.json";
 
 // 文件浏览根目录(思源工作空间 data 目录)
 export const WORKSPACE_ROOT = SIYUAN_ROOT;

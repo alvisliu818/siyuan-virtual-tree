@@ -1,4 +1,6 @@
 import {openTab, showMessage} from "siyuan";
+import {isMobileFrontend} from "../utils/platform";
+import {openFileOnMobile} from "./mobile-open";
 import {applyFileTabHeadIconWhenReady} from "../utils/tab-icon";
 import {
     MEDIA_TAB_TYPE,
@@ -75,6 +77,10 @@ function formatDuration(sec: number): string {
 // 打开播放器 Tab(同文件去重,聚焦已有 Tab)
 // opts.position 指定时,在指定方向以分栏方式打开
 export function openMediaTab(plugin: IPluginForMediaTab, path: string, opts?: { position?: "right" | "bottom" }): void {
+    if (isMobileFrontend()) {
+        openFileOnMobile(plugin, path, false);
+        return;
+    }
     const opened = plugin.getOpenedTab()[MEDIA_TAB_TYPE] || [];
     const matches = opened.filter((c: any) => c?.data?.path === path);
     if (matches.length) {

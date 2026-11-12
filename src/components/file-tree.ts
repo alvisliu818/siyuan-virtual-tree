@@ -2,19 +2,24 @@ import {Menu, Dialog, confirm, showMessage, IMenu} from "siyuan";
 import {readDir, renameFile, mkdir, writeFile, lsNotebooks, listDocsByPath, importStdMd, readBinaryFile, uploadAsset, insertBlockAtDocTop} from "../api/file";
 import {deleteToTrash, getTrashMode} from "../utils/trash";
 import {isImportMdSourceAssetEnabled} from "../utils/config";
-import {joinPath, basename, dirname, pathDepth, extname, isSiyuanPath, isKernelPath} from "../utils/path";
+import {joinPath, basename, dirname, pathDepth, extname, isSiyuanPath, isKernelPath, isRemotePath} from "../utils/path";
 import {toFileLink, toMarkdownFileLink, getWorkspacePath, toSystemPath} from "../utils/system-path";
 import {buildWikilink} from "../utils/wikilink";
 import {openWithExternalApp, revealInSystemExplorer, openTreeFileWithExternalApp, launchOpenWith} from "../utils/external-app";
 import {BINARY_EXTENSIONS, isImageFile, isOfficeFile, isMarkdownFile, isMediaFile, getMediaKind} from "../constants";
 import {isVirtualPath, getMountsUnder, getMountList, normDirKey} from "../utils/virtual-tree";
 import {isBaiduPath} from "../utils/baidu-path";
+import {isGitHubPath, isGitRepoPath, gitRepoWebUrl} from "../utils/git-repo-path";
+import {clearGitRepoCache} from "../api/git-repo";
 import {baiduCloudPath} from "../api/baidu-pan";
 import {nativeCopyToTemp, nativeWriteTempFile, isNativeFsAvailable} from "../api/native-fs";
 // 新标签页的固定/收藏:菜单里按当前状态显示「固定 / 取消固定」
 import {isPinned, isFavorite, itemFromPath} from "../start-page";
 import {fileIconHTML, folderIconHTML} from "../utils/icons";
 import {addMountMenuItem} from "./mount-menu";
+import {addToLibrary, unlinkLibrary} from "./library-menu";
+import {openLibrarySyncDialog} from "./library-sync-dialog";
+import {isLibraryEntryRoot, isLibraryPath, libraryEntryNameOf} from "../utils/library-path";
 import {openTagMenu, tagBadgesHTML} from "../tags/tag-ui";
 import {expandWithDescendants, pathMatchesFilter, pathHasAnyTag} from "../tags/tag-store";
 import {getOpenWithItems, openWithMatches} from "../open-with/open-with-store";
@@ -157,8 +162,8 @@ export async function computeTagFilterAllowed(
                 allowed.add(full);
                 markAncestors(full);
             }
-            // 挂载的虚拟条目(bdpan://)不递归:云盘子树不参与标签筛选,也避免逐目录请求网盘
-            if (entry.path && isBaiduPath(entry.path)) continue;
+            // 挂载的远程条目(bdpan:// / github:// / gitee://)不递归:远程子树不参与标签筛选,也避免逐目录请求
+            if (entry.path && isRemotePath(entry.path)) continue;
             if (entry.isDir) await walk(full, depth + 1);
         }
     };
@@ -660,17 +665,20 @@ export async function renameEntry(path: string, rootEl: HTMLElement | null, root
 }
 
 // 删除:统一走回收站(插件回收站 / 系统回收站,设置里二选一,没有"直接删除"选项)。
-// 网盘条目走网盘删除接口,由网盘自己的回收站兜底;环境不支持回收站时
-// deleteToTrash 会抛错中止,文件保持原样 —— 确认框文案按实际模式变化。
+// 网盘条目走网盘删除接口,由网盘自己的回收站兜底;Git 仓库条目提交一次删除,历史可追溯;
+// 环境不支持回收站时 deleteToTrash 会抛错中止,文件保持原样 —— 确认框文案按实际模式变化。
 export function deleteEntry(path: string, isDir: boolean, rootEl: HTMLElement | null, rootPath: string): void {
     const name = basename(path);
     const typeStr = isDir ? "文件夹" : "文件";
     const isBd = isBaiduPath(path);
+    const isGit = isGitRepoPath(path);
     const actionText = isBd
         ? "删除(可在百度网盘回收站找回)"
-        : getTrashMode() === "system"
-            ? "移入系统回收站"
-            : "移入插件回收站(可在回收站中恢复)";
+        : isGit
+            ? "删除并提交到仓库(可在提交历史中找回)"
+            : getTrashMode() === "system"
+                ? "移入系统回收站"
+                : "移入插件回收站(可在回收站中恢复)";
     confirm(
         `删除${typeStr}`,
         `确定把${typeStr}「${name}」${!isBd && isDir ? "连同全部内容" : ""}${actionText}吗?`,
@@ -846,14 +854,14 @@ async function doImportToSiyuan(treePath: string, isDir: boolean): Promise<void>
             let temp: {tempPath: string; cleanup: () => Promise<void>} | null = null;
             try {
                 let localPath = treePath;
-                if (isBaiduPath(treePath)) {
-                    // 网盘文件先下载到系统临时目录(仅支持文件;文件夹需整树下载,代价过高)
+                if (isRemotePath(treePath)) {
+                    // 远程文件(网盘 / Git 仓库)先下载到系统临时目录(仅支持文件;文件夹需整树下载,代价过高)
                     if (isDir) {
-                        showMessage("网盘文件夹暂不支持导入思源,请先同步到本地后再导入", 4000, "error");
+                        showMessage("远程文件夹暂不支持导入思源,请先同步到本地后再导入", 4000, "error");
                         return;
                     }
                     if (!isNativeFsAvailable()) {
-                        showMessage("下载网盘文件需要思源桌面端(原生 fs)", 4000, "error");
+                        showMessage("下载远程文件需要思源桌面端(原生 fs)", 4000, "error");
                         return;
                     }
                     temp = await nativeWriteTempFile(name, await readBinaryFile(treePath));
@@ -896,8 +904,8 @@ async function doImportToSiyuan(treePath: string, isDir: boolean): Promise<void>
     );
 }
 
-// 下载网盘文件到临时目录并用系统默认应用打开(桌面端)
-function downloadBaiduAndOpen(path: string): void {
+// 下载远程文件(网盘 / Git 仓库)到临时目录并用系统默认应用打开(桌面端)
+function downloadRemoteAndOpen(path: string): void {
     runExternal(() => openTreeFileWithExternalApp(path));
 }
 
@@ -1056,11 +1064,12 @@ export function showFileTreeMenu(
     const menu = new Menu();
 
     // 注:思源文档(sydoc://)的文件树菜单与挂载能力已整体迁到侧边栏「虚拟文档树」面板,
-    // 文件树不再渲染/挂载思源文档,这里只剩百度网盘(bdpan://)。
+    // 文件树不再渲染/挂载思源文档,这里只剩远程条目(bdpan:// / github:// / gitee://)。
 
-    // 百度网盘节点(bdpan://):云盘专用菜单(打开/下载/改名/删除/取消挂载;无系统路径类操作)
-    if (isBaiduPath(path)) {
-        const cloud = baiduCloudPath(path);
+    // 远程节点:专用菜单(打开/下载/改名/删除/取消挂载;无系统路径类操作)
+    if (isRemotePath(path)) {
+        const isGit = isGitRepoPath(path);
+        const webUrl = isGit ? gitRepoWebUrl(path, isDir) : "";
         const openWith: IMenu[] = [];
         if (isDir) {
             openWith.push({
@@ -1122,7 +1131,7 @@ export function showFileTreeMenu(
                 openWith.push({
                     icon: "iconDownload",
                     label: "下载副本并用系统应用打开",
-                    click: () => downloadBaiduAndOpen(path),
+                    click: () => downloadRemoteAndOpen(path),
                 });
             }
         }
@@ -1161,7 +1170,26 @@ export function showFileTreeMenu(
             label: "删除",
             click: () => deleteEntry(path, isDir, rootEl, rootPath),
         });
-        // 挂载在真实目录下的网盘条目:可取消挂载(条目本身是树根/挂载根时不适用)
+        if (isGit) {
+            // 整树有 5 分钟 TTL:别处推了新提交后,靠这里立刻拉最新
+            menu.addItem({
+                icon: "iconRefresh",
+                label: "刷新(重新拉取仓库)",
+                click: () => {
+                    clearGitRepoCache();
+                    void refreshPath(rootEl, isDir ? path : dirname(path), rootPath);
+                    notifyFilesChanged();
+                },
+            });
+            menu.addItem({
+                icon: "iconLink",
+                label: `在 ${isGitHubPath(path) ? "GitHub" : "Gitee"} 中打开`,
+                click: () => {
+                    window.open(webUrl, "_blank");
+                },
+            });
+        }
+        // 挂载在真实目录下的远程条目:可取消挂载(条目本身是树根/挂载根时不适用)
         const mountParentDir = li ? findMountParentDir(li, rootEl, path) : null;
         if (mountParentDir !== null && actions.unmountDoc) {
             menu.addSeparator();
@@ -1183,17 +1211,31 @@ export function showFileTreeMenu(
                 );
             },
         });
-        menu.addItem({
-            icon: "iconLink",
-            label: "复制网盘路径",
-            click: () => {
-                copyText(cloud).then(
-                    ok => ok
-                        ? showMessage("网盘路径已复制", 2000, "info")
-                        : showMessage("复制失败", 2000, "error"),
-                );
-            },
-        });
+        if (isGit) {
+            menu.addItem({
+                icon: "iconLink",
+                label: "复制网页链接",
+                click: () => {
+                    copyText(webUrl).then(
+                        ok => ok
+                            ? showMessage("网页链接已复制", 2000, "info")
+                            : showMessage("复制失败", 2000, "error"),
+                    );
+                },
+            });
+        } else {
+            menu.addItem({
+                icon: "iconLink",
+                label: "复制网盘路径",
+                click: () => {
+                    copyText(baiduCloudPath(path)).then(
+                        ok => ok
+                            ? showMessage("网盘路径已复制", 2000, "info")
+                            : showMessage("复制失败", 2000, "error"),
+                    );
+                },
+            });
+        }
         // 调用方追加项(如标签面板的「从此标签中移除」)
         if (extra && extra.length > 0) {
             menu.addSeparator();
@@ -1393,13 +1435,43 @@ openWith.push({
             isDir,
         });
     }
+    // 插件库:外部文件/文件夹接进库(正向链接,不搬移数据)。建链接需要 Node,移动端不显示
+    if (!isLibraryPath(path) && isNativeFsAvailable()) {
+        menu.addItem({
+            icon: "iconCloud",
+            label: "添加到插件库",
+            click: () => addToLibrary(path, () => {
+                void refreshPath(rootEl, dirname(path), rootPath);
+                notifyFilesChanged();
+            }),
+        });
+    }
+    // 库条目根:绑定 Git 远端 + 双向同步(移动端靠这个远端访问库内容)
+    if (isLibraryEntryRoot(path) && isNativeFsAvailable()) {
+        menu.addItem({
+            icon: "iconRefresh",
+            label: "Git 同步…",
+            click: () => openLibrarySyncDialog(libraryEntryNameOf(path), () => {
+                void refreshPath(rootEl, path, rootPath);
+                notifyFilesChanged();
+            }),
+        });
+    }
     menu.addSeparator();
     menu.addItem({
         icon: "iconEdit",
         label: "重命名",
         click: () => renameEntry(path, rootEl, rootPath),
     });
-    menu.addItem({
+    // 库条目根的「删除」就是取消同步:只摘链接。绝不能走回收站 —— 那会顺着链接搬走外部数据
+    menu.addItem(isLibraryEntryRoot(path) ? {
+        icon: "iconClose",
+        label: "取消同步(保留外部文件)",
+        click: () => unlinkLibrary(path, () => {
+            void refreshPath(rootEl, dirname(path), rootPath);
+            notifyFilesChanged();
+        }),
+    } : {
         icon: "iconTrashcan",
         label: "删除",
         click: () => deleteEntry(path, isDir, rootEl, rootPath),

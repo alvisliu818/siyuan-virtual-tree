@@ -1,3 +1,6 @@
+import {BDPAN_PREFIX, isBaiduPath} from "./baidu-path";
+import {GITEE_PREFIX, GITHUB_PREFIX, isGitRepoPath} from "./git-repo-path";
+
 // 思源虚拟路径根(放在这里由 constants.ts 引用,避免 path.ts → constants.ts 的循环依赖)
 export const SIYUAN_ROOT = "/data";
 
@@ -47,6 +50,12 @@ export function extname(path: string): string {
     return idx > 0 ? b.slice(idx).toLowerCase() : "";
 }
 
+// 是否为远程虚拟路径(百度网盘 / GitHub / Gitee):没有本地文件系统实体,
+// 全文搜索、wikilink 索引、资源管理器定位等本地能力必须跳过
+export function isRemotePath(path: string): boolean {
+    return isBaiduPath(path) || isGitRepoPath(path);
+}
+
 // 是否为思源虚拟路径(/data 或 /data/...)
 export function isSiyuanPath(path: string): boolean {
     if (!path) return false;
@@ -88,6 +97,10 @@ export function pathDepth(path: string): number {
 // 规范化路径:思源相对路径补 /data 前缀;系统绝对路径原样保留(仅去掉结尾分隔符)
 export function normalizePath(path: string): string {
     if (!path || path === "/" || path === "") return SIYUAN_ROOT;
+    // 远程虚拟路径(bdpan://、github://、gitee://)不是文件系统路径,补 /data 前缀会彻底失效
+    if (path.startsWith(BDPAN_PREFIX) || path.startsWith(GITHUB_PREFIX) || path.startsWith(GITEE_PREFIX)) {
+        return path.replace(/\/+$/, "");
+    }
     // 系统绝对路径(E:\HOME\BaiduSyncdisk 等)不做转换,仅去掉多余结尾分隔符
     if (isExternalPath(path)) {
         const trimmed = path.replace(/[\\/]+$/, "");

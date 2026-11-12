@@ -68,27 +68,31 @@
     color: var(--b3-theme-on-surface-light);
 }
 
-/* 百度网盘对话框(账号配置 + 挂载目标选择) */
-.syfe-bdpan__sec + .syfe-bdpan__sec {
+/* 云端账号对话框(百度网盘 / Git 仓库:账号配置 + 挂载目标选择) */
+.syfe-bdpan__sec + .syfe-bdpan__sec,
+.syfe-gitrepo__sec + .syfe-gitrepo__sec {
     margin-top: 14px;
     padding-top: 12px;
     border-top: 1px solid var(--b3-border-color);
 }
 
-.syfe-bdpan__title {
+.syfe-bdpan__title,
+.syfe-gitrepo__title {
     font-size: 13px;
     font-weight: 600;
     margin-bottom: 6px;
 }
 
-.syfe-bdpan__hint {
+.syfe-bdpan__hint,
+.syfe-gitrepo__hint {
     font-size: 12px;
     color: var(--b3-theme-on-surface-light);
     line-height: 1.6;
     margin-bottom: 8px;
 }
 
-.syfe-bdpan__field {
+.syfe-bdpan__field,
+.syfe-gitrepo__field {
     display: flex;
     align-items: center;
     gap: 8px;
@@ -102,14 +106,16 @@
     }
 }
 
-.syfe-bdpan__actions {
+.syfe-bdpan__actions,
+.syfe-gitrepo__actions {
     display: flex;
     align-items: center;
     gap: 10px;
     margin-top: 4px;
 }
 
-.syfe-bdpan__status {
+.syfe-bdpan__status,
+.syfe-gitrepo__status {
     font-size: 12px;
     color: var(--b3-theme-on-surface-light);
 }

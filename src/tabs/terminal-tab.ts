@@ -1,4 +1,5 @@
-import {openTab} from "siyuan";
+import {openTab, showMessage} from "siyuan";
+import {isMobileFrontend} from "../utils/platform";
 import {Terminal} from "@xterm/xterm";
 import {FitAddon} from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
@@ -90,6 +91,10 @@ export function applyTerminalStatusBarVisibility(plugin: IPluginForTerminalTab):
 
 // 打开终端 Tab(同工作目录+同 shell 去重;shellOverride 非空时本页签固定用该 shell)
 export function openTerminalTab(plugin: IPluginForTerminalTab, cwd?: string, shellOverride?: string): void {
+    if (isMobileFrontend()) {
+        showMessage("移动端不支持内置终端(需要 Node 与 node-pty)", 4000, "info");
+        return;
+    }
     const targetCwd = cwd || plugin.config.fileTreeRoot || "/data";
     const targetShell = shellOverride || "";
     const opened = plugin.getOpenedTab()[TERMINAL_TAB_TYPE] || [];

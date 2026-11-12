@@ -1,8 +1,7 @@
 import {getNativeRequire} from "./native-require";
 import {toSystemPath} from "./system-path";
-import {basename} from "./path";
-import {isBaiduPath} from "./baidu-path";
-import {bdDownloadFile} from "../api/baidu-pan";
+import {basename, isRemotePath} from "./path";
+import {readBinaryFile} from "../api/file";
 import {nativeWriteTempFile} from "../api/native-fs";
 import type {OpenWithItem} from "../types";
 
@@ -108,11 +107,11 @@ export async function openWithExternalApp(siyuanPath: string): Promise<void> {
     }
 }
 
-// 文件树路径统一的外部打开入口:网盘文件(bdpan://)先下载到系统临时目录再交给系统应用,
-// 其余路径直接透传 openWithExternalApp。供 Office/Media Tab 的「外部打开」与文件树菜单共用。
+// 文件树路径统一的外部打开入口:远程文件(bdpan:// / github:// / gitee://)先下载到系统临时目录
+// 再交给系统应用,其余路径直接透传 openWithExternalApp。供 Office/Media Tab 的「外部打开」与文件树菜单共用。
 export async function openTreeFileWithExternalApp(path: string): Promise<void> {
-    if (isBaiduPath(path)) {
-        const temp = await nativeWriteTempFile(basename(path), await bdDownloadFile(path));
+    if (isRemotePath(path)) {
+        const temp = await nativeWriteTempFile(basename(path), await readBinaryFile(path));
         try {
             await openWithExternalApp(temp.tempPath);
         } finally {
@@ -256,11 +255,11 @@ export async function launchOpenWith(item: OpenWithItem, siyuanPath: string): Pr
     const req = getNativeRequire();
     if (!req) throw new Error("当前环境不支持调用外部程序(Node 集成不可用)");
 
-    // 网盘文件(bdpan://)没有本地路径,得先下载到临时目录
+    // 远程文件(bdpan:// / github:// / gitee://)没有本地路径,得先下载到临时目录
     let targetPath = siyuanPath;
     let tempCleanup: (() => Promise<void>) | null = null;
-    if (isBaiduPath(siyuanPath)) {
-        const temp = await nativeWriteTempFile(basename(siyuanPath), await bdDownloadFile(siyuanPath));
+    if (isRemotePath(siyuanPath)) {
+        const temp = await nativeWriteTempFile(basename(siyuanPath), await readBinaryFile(siyuanPath));
         targetPath = temp.tempPath;
         tempCleanup = temp.cleanup;
     }
