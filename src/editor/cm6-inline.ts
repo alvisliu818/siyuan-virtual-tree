@@ -115,17 +115,36 @@ interface BaseRange {
     to: number;
 }
 
+/**
+ * 构造命中判定 —— 对齐 md-editor/src/editor/livePreview.ts 的 inBlock(184-194):
+ *   ① 选区与构造**开区间**重叠(r.to > from && r.from < to)算进入;
+ *   ② 光标恰好停在 from(widget 点击 / 从上方进入)也算进入;
+ *   ③ 光标停在 to(构造末端)算「在构造之后」,**不**还原源码 —— 否则光标
+ *      落到标记右端、引述块行末、公式块尾时整块莫名翻回源码。
+ * 参考实现里行内标记对用 inInterior(开区间)、块级用 inBlock(多一个 from
+ * 特例);这里统一用 inBlock:QuoteMark/ListMark 等长度 1 的标记,光标只能停在
+ * 两个端点上,没有 from 特例就永远无法还原(编辑不可达)。
+ */
 const rangeTouchesRange = (a: BaseRange, b: BaseRange): boolean =>
-    a.from <= b.to && b.from <= a.to;
+    (b.to > a.from && b.from < a.to) || (b.from === a.from && b.to === a.from);
 
-/** 选区(光标)触到 [from,to] 即还原源码;失焦时一律视为未触到(重新隐藏)。
- *  与 ProseMark/PurrMD/Obsidian 对齐:节点外缘(紧贴标记左右一格)也算"在内",
- *  光标停在格式文本旁源码即显示;离开节点才隐藏。 */
+/** 选区(光标)触到 [from,to] 即还原源码;失焦时一律视为未触到(重新隐藏)。 */
 const selectionTouches = (state: EditorState, from: number, to: number): boolean => {
     // 只读阅读态:即使有选区也不还原源码(禁止点击进入编辑)
     if (state.readOnly) return false;
     if (!hasFocus(state)) return false;
     return state.selection.ranges.some((r) => rangeTouchesRange({from, to}, r));
+};
+
+/**
+ * 行级构造(标题 / Setext 标题 / 分隔线)用 onLine 闭区间判定 —— 参考
+ * livePreview.ts:309-334 的 heading/hr:光标在该行任意位置(含行尾)都还原
+ * 源码,与行内标记对的端点语义不同。
+ */
+const onLineTouches = (state: EditorState, from: number, to: number): boolean => {
+    if (state.readOnly) return false;
+    if (!hasFocus(state)) return false;
+    return state.selection.ranges.some((r) => r.from <= to && r.to >= from);
 };
 
 /** 选区是否覆盖 [from,to] 所在的行(引用块 > 标记按行还原用) */
@@ -510,11 +529,11 @@ function buildInlineDecorations(state: EditorState, opts: Cm6InlineOptions): Inl
                 return;
             }
 
-            // --- ATX 标题:隐藏行首 "# "(光标进入标题文字才还原) ---
+            // --- ATX 标题:隐藏行首 "# "(行级 onLine:光标在标题行即还原) ---
             if (name.startsWith("ATXHeading")) {
                 const header = node.node.firstChild;
                 if (!header || header.name !== "HeaderMark") return;
-                if (selectionTouches(state, node.from, node.to)) return;
+                if (onLineTouches(state, node.from, node.to)) return;
                 hideRange(header.from, Math.min(header.to + 1, node.to));
                 return;
             }
@@ -522,7 +541,7 @@ function buildInlineDecorations(state: EditorState, opts: Cm6InlineOptions): Inl
             // --- Setext 标题:隐藏下划线行(整块替换,避免留空行) ---
             if (name.startsWith("SetextHeading")) {
                 if (inFrontmatter(node.from)) return;
-                if (selectionTouches(state, node.from, node.to)) return;
+                if (onLineTouches(state, node.from, node.to)) return;
                 iterSubNodes(node.node, "HeaderMark", (m) => {
                     // block replace 必须覆盖整行,扩到行边界(行尾可能有空白)
                     const l = doc.lineAt(m.from);
@@ -649,10 +668,10 @@ function buildInlineDecorations(state: EditorState, opts: Cm6InlineOptions): Inl
                 return;
             }
 
-            // --- 分隔线:渲染成横线 ---
+            // --- 分隔线:渲染成横线(行级 onLine) ---
             if (name === "HorizontalRule") {
                 if (inFrontmatter(node.from)) return;
-                if (selectionTouches(state, node.from, node.to)) return;
+                if (onLineTouches(state, node.from, node.to)) return;
                 const l = doc.lineAt(node.from);
                 const d = Decoration.replace({widget: new HRWidget()})
                     .range(l.from, doc.lineAt(node.to).to);   // 覆盖整行(含行尾空白)

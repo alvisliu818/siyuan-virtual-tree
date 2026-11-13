@@ -1355,7 +1355,14 @@ function buildDecorations(state: EditorState, opts: Cm6RenderOptions): Decoratio
             const usedRanges: Array<{from: number; to: number}> = [];
 
             const overlapsUsed = (from: number, to: number) => usedRanges.some(r => from < r.to && to > r.from);
-            const cursorInRange = (from: number, to: number) => cursor >= from && cursor <= to;
+            // 光标与块的关系 —— 对齐 md-editor/livePreview.ts 的 inBlock/onLine:
+            //   · 块级构造(表格/公式/代码块):开右区间。光标停在块尾(to)算
+            //     「在块之后」,保留富渲染,不再整块翻回源码;from 端仍算进入,
+            //     clickHandler 点击渲染物时把光标落到块内,照常进编辑态。
+            //   · 行级构造(行内图片):onLine 闭区间,光标在该行(含行尾)
+            //     一律保持源码态,便于编辑图片地址。
+            const cursorInBlock = (from: number, to: number) => cursor >= from && cursor < to;
+            const cursorOnLine = (from: number, to: number) => cursor >= from && cursor <= to;
 
             // 0) Obsidian 页面属性:只认文档开头且闭合的 YAML frontmatter(--- ... ---)。
             //    光标在块内时回源码态,与表格/公式块同一套编辑模型。
@@ -1396,7 +1403,7 @@ function buildDecorations(state: EditorState, opts: Cm6RenderOptions): Decoratio
             for (const info of fencedCodeInfos(state)) {
                 if (!isCodeBlockMonacoEnabled()) continue;
                 const editing = !view.state.readOnly && getEditingKey() === String(info.from);
-                if (!editing && cursorInRange(info.from, info.to)) continue;
+                if (!editing && cursorInBlock(info.from, info.to)) continue;
                 usedRanges.push({from: info.from, to: info.to});
                 const widget = new CodeBlockWidget(info.lang, info.code, String(info.from));
                 const replace = Decoration.replace({widget, block: true});
@@ -1418,7 +1425,7 @@ function buildDecorations(state: EditorState, opts: Cm6RenderOptions): Decoratio
                     const to = doc.line(j).to;
                     if (overlapsUsed(from, to)) { i = j + 1; continue; }
                     usedRanges.push({from, to});
-                    if (cursorInRange(from, to)) {
+                    if (cursorInBlock(from, to)) {
                         for (let ln = i; ln <= j; ln++) {
                             lineDecos.push(mathSrcLineDeco.range(doc.line(ln).from));
                         }
@@ -1447,7 +1454,7 @@ function buildDecorations(state: EditorState, opts: Cm6RenderOptions): Decoratio
                 const from = line.from;
                 const to = line.to;
                 usedRanges.push({from, to});
-                if (cursorInRange(from, to)) {
+                if (cursorInBlock(from, to)) {
                     lineDecos.push(mathSrcLineDeco.range(from));
                 } else {
                     const widget = new MathWidget(sm[1].trim(), [], (window as any).__syfeKatex || null);
@@ -1506,7 +1513,7 @@ function buildDecorations(state: EditorState, opts: Cm6RenderOptions): Decoratio
                 usedRanges.push({from, to});
                 const tableLines: string[] = [];
                 for (let k = ln; k <= end; k++) tableLines.push(doc.line(k).text);
-                if (cursorInRange(from, to)) {
+                if (cursorInBlock(from, to)) {
                     for (let k = ln; k <= end; k++) {
                         lineDecos.push(tableSrcLineDeco.range(doc.line(k).from));
                     }
@@ -1523,7 +1530,7 @@ function buildDecorations(state: EditorState, opts: Cm6RenderOptions): Decoratio
             for (let ln = 1; ln <= doc.lines; ln++) {
                 const line = doc.line(ln);
                 if (overlapsUsed(line.from, line.to)) continue;
-                if (cursorInRange(line.from, line.to)) continue;
+                if (cursorOnLine(line.from, line.to)) continue;
                 const text = line.text;
                 const hits: Array<{from: number; to: number; src: string; alt: string}> = [];
                 for (const m of text.matchAll(RE_IMAGE_INLINE)) {
@@ -1564,7 +1571,7 @@ function buildDecorations(state: EditorState, opts: Cm6RenderOptions): Decoratio
                     const from = line.from + part.from;
                     const to = line.from + part.to;
                     if (overlapsUsed(from, to)) continue;
-                    if (cursorInRange(from, to)) continue;
+                    if (cursorInBlock(from, to)) continue;
                     ranges.push(Decoration.replace({
                         widget: new InlineMathWidget(part.math, part.text),
                     }).range(from, to));
