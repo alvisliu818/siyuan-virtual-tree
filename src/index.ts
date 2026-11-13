@@ -1283,16 +1283,18 @@ export default class FileEditorPlugin extends Plugin {
         this.markdownEditorSelect.className = "b3-select";
         this.markdownEditorSelect.innerHTML = `
             <option value="vditor">Vditor(所见即所得)</option>
-            <option value="cm6">CodeMirror 6(源码编辑)</option>`;
-        addRow("openFiles", "Markdown 编辑器", "实时预览模式的编辑引擎,对新开页签生效:vditor = 所见即所得(光标行显示源码,其余实时渲染);cm6 = CodeMirror 6 源码编辑(整篇源码 + 语法高亮,大文件更流畅)。阅读模式的渲染引擎由下面的独立设置决定。已有页签按页签顶部按钮重新切换即可应用", this.markdownEditorSelect);
+            <option value="cm6">CodeMirror 6(源码编辑)</option>
+            <option value="structured">结构化内核(ProseMirror)</option>`;
+        addRow("openFiles", "Markdown 编辑器", "实时预览模式的编辑引擎,对新开页签生效:vditor = 所见即所得(光标行显示源码,其余实时渲染);cm6 = CodeMirror 6 源码编辑(整篇源码 + 语法高亮,大文件更流畅);structured = 结构化内核(ProseMirror 层级容器渲染即编辑,块级原文锚定保存,源码揭示+两态)。阅读模式的渲染引擎由下面的独立设置决定。已有页签按页签顶部按钮重新切换即可应用", this.markdownEditorSelect);
 
         // 阅读模式引擎:vditor = Vditor wysiwyg 只读;cm6 = CM6 只读富渲染(禁止点击进入编辑)
         this.markdownReadingEngineSelect = document.createElement("select");
         this.markdownReadingEngineSelect.className = "b3-select";
         this.markdownReadingEngineSelect.innerHTML = `
             <option value="vditor">Vditor(静态阅读)</option>
-            <option value="cm6">CodeMirror 6(只读富渲染)</option>`;
-        addRow("openFiles", "Markdown 阅读模式引擎", "阅读(只读)模式用哪个引擎渲染:vditor = Vditor wysiwyg 只读(旧行为);cm6 = CodeMirror 6 只读富渲染,代码块/公式/表格/图片/页面属性与实时预览同一套渲染,但禁止点击进入编辑(contenteditable=false,点击渲染物不回源码、不挂 Monaco)。对新开页签或重新点「阅读」按钮生效", this.markdownReadingEngineSelect);
+            <option value="cm6">CodeMirror 6(只读富渲染)</option>
+            <option value="structured">结构化内核(ProseMirror 只读)</option>`;
+        addRow("openFiles", "Markdown 阅读模式引擎", "阅读(只读)模式用哪个引擎渲染:vditor = Vditor wysiwyg 只读(旧行为);cm6 = CodeMirror 6 只读富渲染;structured = 结构化内核只读(=禁止点击编辑的实时编辑态),代码块/公式/表格/图片/页面属性与实时预览同一套渲染,但禁止点击进入编辑(contenteditable=false)。对新开页签或重新点「阅读」按钮生效", this.markdownReadingEngineSelect);
 
         // CM6 代码块 Monaco 渲染/编辑开关(仅 markdownEditor=cm6 的实时预览生效)
         this.cm6CodeBlockMonacoInput = document.createElement("input");
@@ -2034,8 +2036,8 @@ export default class FileEditorPlugin extends Plugin {
             iconTheme: this.iconThemeSelect?.value || "",
             marketTopBarIcon: this.marketTopBarIconInput?.checked ?? true,
             markdownDefaultMode: (this.markdownModeSelect?.value as "live" | "source" | "reading") || "live",
-            markdownEditor: (this.markdownEditorSelect?.value as "vditor" | "cm6") || "vditor",
-            markdownReadingEngine: (this.markdownReadingEngineSelect?.value as "vditor" | "cm6") || "vditor",
+            markdownEditor: (this.markdownEditorSelect?.value as "vditor" | "cm6" | "structured") || "vditor",
+            markdownReadingEngine: (this.markdownReadingEngineSelect?.value as "vditor" | "cm6" | "structured") || "vditor",
             cm6CodeBlockMonaco: this.cm6CodeBlockMonacoInput?.checked ?? true,
             cm6GutterOpacity: Math.min(1, Math.max(0, parseFloat(this.cm6GutterOpacityInput?.value || "0.4") || 0.4)),
             cm6HighlightActiveLine: this.cm6HighlightActiveLineInput?.checked ?? false,
