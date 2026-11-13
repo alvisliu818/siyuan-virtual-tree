@@ -1063,13 +1063,13 @@ export const PLUGIN_DEFS: SettingDef[] = [
         group: G_MD,
         title: "Markdown 编辑器",
         description: "vditor = 所见即所得(实时预览/阅读均为 Vditor);cm6 = CodeMirror 6 源码编辑" +
-            "(实时预览为源码态编辑,阅读仍为静态渲染),对新开页签生效",
-        default: "vditor",
-        enum: ["vditor", "cm6"],
-        enumLabels: {vditor: "Vditor(所见即所得)", cm6: "CodeMirror 6(源码编辑)"},
+            "(实时预览为源码态编辑,阅读仍为静态渲染);structured = 结构化内核(ProseMirror 层级容器渲染即编辑,块级原文锚定保存,阅读态=只读实时编辑态),对新开页签生效",
+        default: "structured",
+        enum: ["vditor", "cm6", "structured"],
+        enumLabels: {vditor: "Vditor(所见即所得)", cm6: "CodeMirror 6(源码编辑)", structured: "结构化内核(ProseMirror)"},
         get: (c) => c.markdownEditor,
         set: (c, v) => {
-            c.markdownEditor = v === "cm6" ? "cm6" : "vditor";
+            c.markdownEditor = v === "cm6" ? "cm6" : v === "structured" ? "structured" : "vditor";
         },
     },
     {
@@ -1077,12 +1077,14 @@ export const PLUGIN_DEFS: SettingDef[] = [
         kind: "enum",
         group: G_MD,
         title: "Markdown 阅读模式引擎",
-        description: "阅读(只读)模式的渲染引擎,独立于实时预览编辑器:vditor = Vditor wysiwyg 只读;cm6 = CM6 只读富渲染(代码块/公式/表格/图片/属性面板同实时预览,但 contenteditable=false,点击不会进入编辑、不挂 Monaco)。对新开/重进阅读态的页签生效",
-        default: "vditor",
-        enum: ["vditor", "cm6"],
-        enumLabels: {vditor: "Vditor(静态阅读)", cm6: "CodeMirror 6(只读富渲染)"},
+        description: "阅读(只读)模式的渲染引擎,独立于实时预览编辑器:vditor = Vditor wysiwyg 只读;cm6 = CM6 只读富渲染;structured = 结构化内核只读(=禁止点击编辑的实时编辑态)。对新开/重进阅读态的页签生效",
+        default: "structured",
+        enum: ["vditor", "cm6", "structured"],
+        enumLabels: {vditor: "Vditor(静态阅读)", cm6: "CodeMirror 6(只读富渲染)", structured: "结构化内核(ProseMirror 只读)"},
         get: (c) => c.markdownReadingEngine,
-        set: (c, v) => { c.markdownReadingEngine = v === "cm6" ? "cm6" : "vditor"; },
+        set: (c, v) => {
+            c.markdownReadingEngine = v === "cm6" ? "cm6" : v === "structured" ? "structured" : "vditor";
+        },
     },
     {
         key: "markdown.cm6CodeBlockMonaco",

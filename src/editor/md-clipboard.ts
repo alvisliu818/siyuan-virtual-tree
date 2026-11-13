@@ -58,6 +58,8 @@ export interface MdClipboardHost {
     /** 当前编辑面是否需要原生复制(CM6 等标准 contentEditable 实现):
      *  true 时本模块不接管 copy/cut,交还宿主原生行为;粘贴(图片落盘)不受影响 */
     nativeCopy?(): boolean;
+    /** 结构化内核等自管模型:直接把当前选区序列化为 Markdown(返回 null 时走 DOM/lute 路径) */
+    selectionMarkdown?(): string | null;
 }
 
 export interface MdClipboardHandle {
@@ -120,7 +122,7 @@ export function installMarkdownClipboard(host: MdClipboardHost): MdClipboardHand
         // Markdown 必须先用「未加工」的 DOM 算(见文件头说明)
         const mdHolder = document.createElement("div");
         mdHolder.appendChild(range.cloneContents());
-        const md = domToMarkdown(host, mdHolder.innerHTML);
+        const md = host.selectionMarkdown?.() ?? domToMarkdown(host, mdHolder.innerHTML);
 
         // 富文本:另起一份副本清洗 + 内联图片
         const htmlHolder = document.createElement("div");

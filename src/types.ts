@@ -47,10 +47,10 @@ export interface EditorConfig {
     markdownDefaultMode: "live" | "source" | "reading"; // Markdown 默认模式:实时预览 / 源码 / 阅读(对齐 Obsidian)
     // Markdown 编辑器引擎:vditor = 所见即所得(实时预览/阅读);cm6 = CodeMirror 6
     // 源码编辑(实时预览)+ Vditor.preview 静态渲染(阅读)。默认 vditor
-    markdownEditor: "vditor" | "cm6";
+    markdownEditor: "vditor" | "cm6" | "structured";
     // 阅读模式的渲染引擎(独立于实时预览的 markdownEditor):
     // vditor = Vditor wysiwyg 只读;cm6 = CM6 只读富渲染,禁止点击进入编辑
-    markdownReadingEngine: "vditor" | "cm6";
+    markdownReadingEngine: "vditor" | "cm6" | "structured";
     // CM6 编辑面代码块是否用 Monaco 渲染/编辑(colorize 卡片 + 单例编辑器);
     // 关闭后代码块回落为 CM6 原生源码行(与点语言标签的围栏态一致)
     cm6CodeBlockMonaco: boolean;
@@ -312,8 +312,8 @@ export const DEFAULT_CONFIG: EditorConfig = {
     iconTheme: "", // 自动
     marketTopBarIcon: true, // 顶栏默认显示「扩展市场」图标
     markdownDefaultMode: "live", // 实时预览(类 Obsidian Live Preview)
-    markdownEditor: "vditor",    // Markdown 编辑器引擎:vditor(所见即所得)默认;cm6 备选
-    markdownReadingEngine: "vditor", // 阅读态引擎:vditor(保持旧行为)/ cm6(CM6 只读富渲染)
+    markdownEditor: "structured",    // 结构化内核为唯一 markdown 编辑引擎
+    markdownReadingEngine: "structured", // 阅读态引擎:structured(只读实时编辑态)默认;vditor/cm6 备选
     cm6CodeBlockMonaco: true,     // CM6 代码块 Monaco 渲染/编辑默认开
     cm6GutterOpacity: 0.4,
     cm6HighlightActiveLine: false,

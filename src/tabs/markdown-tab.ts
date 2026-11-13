@@ -32,6 +32,7 @@ import {highlightMatches, clearFindHighlights, setCurrentFindHit} from "../compo
 import {installMarkdownClipboard, getVditorLute, type MdClipboardHandle} from "../editor/md-clipboard";
 // CM6 编辑面(设置「Markdown 编辑器 = CM6」时的实时预览/编辑面)
 import {createCm6MarkdownEditor, type Cm6MarkdownHandle} from "../editor/cm6-markdown";
+import {createStructuredEditor, type StructuredHandle} from "../editor/structured";
 import {createPropertiesElement} from "../editor/cm6-render";
 // vditor 与思源共用 window.Lute,且 vditor 那份缺 SetTabs —— 详见 utils/lute-guard 的说明
 import {ensureSiyuanLute} from "../utils/lute-guard";
@@ -68,6 +69,8 @@ export interface MarkdownTabInstance {
     _editor?: import("monaco-editor").editor.IStandaloneCodeEditor;
     // CM6 编辑面(设置「Markdown 编辑器 = cm6」时,live 态的编辑器)
     _cm6?: Cm6MarkdownHandle;
+    // 结构化内核编辑面(ProseMirror;设置「Markdown 编辑器 = structured」时 live/reading)
+    _structured?: StructuredHandle;
     _model?: import("monaco-editor").editor.ITextModel;
     _dirtyDot?: HTMLElement;
     _contentEl?: HTMLElement;
@@ -569,6 +572,13 @@ function applyRefToVditor(tab: MarkdownTabInstance, ref: FileRef): void {
 
 // 按当前模式应用位置(源码态走 Monaco 的行定位;CM6 live 同为源码态语义)
 function applyFileRef(tab: MarkdownTabInstance, ref: FileRef): void {
+    // 结构化内核:行号走 revealLine,锚点走标题 DOM 匹配(h1-h6)
+    if ((tab._mode === "live" || tab._mode === "reading") && tab._structured) {
+        if (ref.line) { tab._structured.revealLine(ref.line, false); return; }
+        const el = ref.anchor ? findHeadingByAnchor(tab._contentEl, ref.anchor) : null;
+        if (el) { scrollToTopOf(el); flashHeading(el); }
+        return;
+    }
     if (tab._mode === "live" && tab._cm6) {
         let line = ref.line ?? 0;
         if (!line && ref.anchor) {
@@ -980,13 +990,17 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
             };
 
             // 当前 Markdown 编辑器引擎(每次进入模式时**现读**,设置改完点模式按钮即生效)
-            const mdEditorKind = (): "vditor" | "cm6" =>
-                plugin.config.markdownEditor === "cm6" ? "cm6" : "vditor";
+            const mdEditorKind = (): "vditor" | "cm6" | "structured" =>
+                plugin.config.markdownEditor === "cm6" ? "cm6"
+                    : plugin.config.markdownEditor === "structured" ? "structured"
+                    : "vditor";
 
             // 阅读态引擎独立配置(不再跟随 live 的 markdownEditor):
             // cm6 = CM6 只读富渲染(禁止点击进入编辑);vditor = Vditor wysiwyg disabled
-            const mdReadingKind = (): "vditor" | "cm6" =>
-                plugin.config.markdownReadingEngine === "cm6" ? "cm6" : "vditor";
+            const mdReadingKind = (): "vditor" | "cm6" | "structured" =>
+                plugin.config.markdownReadingEngine === "cm6" ? "cm6"
+                    : plugin.config.markdownReadingEngine === "structured" ? "structured"
+                    : "vditor";
 
             // CM6 两个面(live 编辑 / reading 只读)共用的图片地址解析
             const resolveCmImageSrc = async (src: string): Promise<string | null> => {
@@ -1003,6 +1017,8 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                 flushActiveBlock();   // 编辑态代码块的最新内容先同步回 cm6 文档
                 if (self._cm6) {
                     self._model.setValue(self._cm6.getValue());
+                } else if (self._structured) {
+                    self._model.setValue(self._structured.getValue());
                 } else if (self._vditor) {
                     self._model.setValue(getVditorValue(self));
                 }
@@ -1024,6 +1040,12 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                             "行链接已复制,粘贴到思源文档点击可定位",
                         ),
                         openBacklinkItem: (item: BacklinkItem) => navigateBacklink(plugin as any, item),
+                        // 结构化内核:行号槽挂 contentEl,顶层渲染块与 mdBlockStarts 对齐(排除空行块)
+                        gutterRoot: () => (self._structured ? self._contentEl ?? null : null),
+                        gutterBlocks: (root: HTMLElement) => self._structured
+                            ? Array.from(root.querySelector(".ProseMirror")?.children ?? [])
+                                .filter((n): n is HTMLElement => n.nodeType === 1 && !n.classList.contains("blk-blank"))
+                            : null,
                     });
                 } catch (e) {
                     console.warn("[syfe-ref] 行号槽安装失败:", e);
@@ -1044,6 +1066,8 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                     if (self._mode === "live" && self._model && isDirty(path)) {
                         if (self._cm6) {
                             self._model.setValue(self._cm6.getValue());
+                        } else if (self._structured) {
+                            self._model.setValue(self._structured.getValue());
                         } else if (self._vditor) {
                             // 取值走 lute.dom2md(读 DOM),先清掉查找高亮避免多余 span 参与序列化
                             if (self._findHits && self._findHits.length > 0) {
@@ -1206,6 +1230,7 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                 }
                 destroyVditor(self);
                 destroyCm6(self);
+                destroyStructured(self);
                 self._contentEl?.classList.remove("syfe-md__content--reading");
                 if (self._imgDebounce) {
                     window.clearTimeout(self._imgDebounce);
@@ -1264,6 +1289,7 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                 closeFind();   // 离开源码态:关掉查找栏并清高亮
                 destroyMonaco(self);
                 destroyCm6(self);
+                destroyStructured(self);
                 // 同一容器上可能已有 Vditor(live ⇄ reading 切换),必须先销毁
                 destroyVditor(self);
                 self._mode = readOnly ? "reading" : "live";
@@ -1362,6 +1388,7 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                 destroyVditor(self);
                 destroyMonaco(self);
                 destroyCm6(self);
+                destroyStructured(self);
                 self._contentEl?.classList.remove("syfe-md__content--reading");
                 if (self._imgDebounce) {
                     window.clearTimeout(self._imgDebounce);
@@ -1438,6 +1465,7 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                 destroyMonaco(self);
                 destroyCm6(self);
                 destroyVditor(self);
+                destroyStructured(self);
                 self._mode = "reading";
                 syncModeButtons();
                 self._contentEl!.classList.add("syfe-md__content--reading");
@@ -1476,34 +1504,88 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                 }
             };
 
+            // 结构化内核唯一编辑面:live=可编辑渲染态;reading=同一编辑面禁止点击编辑
+            // (editable=false + 丢弃 docChanged)。阅读态即「只读的实时编辑态」,不另设引擎。
+            const enterStructured = (readOnly: boolean, reveal?: number) => {
+                closeFind();
+                destroyVditor(self);
+                destroyMonaco(self);
+                destroyCm6(self);
+                destroyStructured(self);
+                self._mode = readOnly ? "reading" : "live";
+                syncModeButtons();
+                self._contentEl!.classList.toggle("syfe-md__content--reading", readOnly);
+                self._contentEl!.classList.add("syfe-structured");
+                if (self._imgDebounce) {
+                    window.clearTimeout(self._imgDebounce);
+                    self._imgDebounce = undefined;
+                }
+                self._imgObserver?.disconnect();
+                self._contentEl!.innerHTML = "";
+                const handle = createStructuredEditor(self._contentEl!, {
+                    value: self._model?.getValue() ?? "",
+                    readOnly,
+                    resolveImageSrc: resolveCmImageSrc,
+                    onSave: readOnly ? undefined : save,
+                    onInput: readOnly ? undefined : () => {
+                        markDirty(path, true);
+                        updateDirtyUI(true);
+                        self._hcrumbsHandle?.refresh();
+                    },
+                    onCursor: () => self._hcrumbsHandle?.refresh(),
+                });
+                self._structured = handle;
+                self._hcrumbsHandle?.refresh();
+                attachLinkClickDelegate(self, plugin, path);
+                if (readOnly) processWikilinks(self);
+                installGutter();
+                let revealLine = reveal !== undefined ? reveal : consumePendingReveal(path);
+                if (reveal === undefined) {
+                    const ref = consumePendingRef(path);
+                    if (ref) {
+                        revealLine = ref.line
+                            ?? (ref.anchor ? headingLineOfAnchor(self._model?.getValue() ?? "", ref.anchor) ?? null : null);
+                    }
+                }
+                if (revealLine !== null) {
+                    setTimeout(() => { if (self._structured === handle) handle.revealLine(revealLine!, false); }, 300);
+                }
+            };
+
             // 配置就位后的引擎重进(布局恢复时序补偿,由 index.ts onLayoutReady 调用):
             // 布局恢复的页签创建于 onLayoutReady loadConfig 之前,挂引擎时 mdEditorKind()
             // 读到的是 DEFAULT_CONFIG(vditor),设置 cm6 的用户恢复出来的 live/reading
             // 页签会挂错引擎。这里按当前配置重进当前模式 —— 挂对的页签是 no-op。
             self._resyncEngineForConfig = () => {
                 if (self._mode === "source" || !self._model) return;   // 源码态引擎无关;模型未载完时初始进入会按新配置挂
-                if (!self._cm6 && !self._vditor) return;               // 编辑面还没挂出来:同上,交给初始进入
+                if (!self._cm6 && !self._vditor && !self._structured) return;   // 编辑面还没挂出来:同上,交给初始进入
                 const kind = mdEditorKind();
                 const readingKind = mdReadingKind();
                 if (self._mode === "live") {
                     if (kind === "cm6" && !self._cm6) enterLive();
+                    else if (kind === "structured" && !self._structured) enterLive();
                     else if (kind === "vditor" && !self._vditor) enterLive();
                 } else if (self._mode === "reading") {
                     // cm6 阅读态挂只读 _cm6;vditor 阅读态挂 _vditor(wysiwyg)。
                     // 引擎判定用独立的阅读态配置,不再跟随 live 的 markdownEditor
                     if (readingKind === "cm6" && !self._cm6) enterReading();
+                    else if (readingKind === "structured" && !self._structured) enterReading();
                     else if (readingKind === "vditor" && !self._vditor) enterReading();
                 }
             };
 
             // 实时预览(类 Obsidian Live Preview):引擎按设置选择
             const enterLive = () => {
-                if (mdEditorKind() === "cm6") void enterCm6Live();
+                const ek = mdEditorKind();
+                if (ek === "cm6") void enterCm6Live();
+                else if (ek === "structured") enterStructured(false);
                 else void enterVditor("ir", false);
             };
             // 阅读模式(类 Obsidian Reading):完整渲染 + 只读,引擎由独立设置选择
             const enterReading = () => {
-                if (mdReadingKind() === "cm6") enterCm6Reading();
+                const rk = mdReadingKind();
+                if (rk === "cm6") enterCm6Reading();
+                else if (rk === "structured") enterStructured(true);
                 else void enterVditor("wysiwyg", true);
             };
 
@@ -1598,6 +1680,10 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
             // 图片跟不过去 —— md-clipboard 在 capture 阶段接管,补写内联了 data URI 的富文本。
             // 光标处插入 Markdown(live → vditor,source → Monaco);reading 只读返回 false
             const insertMd = (md: string): boolean => {
+                // 结构化内核编辑面:插到光标处
+                if (self._mode === "live" && self._structured) {
+                    return self._structured.insertAtCursor(md);
+                }
                 // CM6 编辑面:直接插到光标处
                 if (self._mode === "live" && self._cm6) {
                     return self._cm6.insertAtCursor(md);
@@ -1659,6 +1745,8 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                 // CM6 编辑面的复制/剪切语义完好(标准 contentEditable),交还原生;
                 // 粘贴图片落盘仍由本模块处理
                 nativeCopy: () => !!self._cm6,
+                // 结构化内核:选区直接序列化为 Markdown(带图片原始路径)
+                selectionMarkdown: () => self._structured ? self._structured.selectionMarkdown() : null,
             });
             // 供 openMarkdownTab 复用已开页签时直接定位(思源正文点带位置的链接走这里)
             self._applyFileRef = (ref: FileRef) => applyFileRef(self, ref);
@@ -1723,6 +1811,7 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
             flushActiveBlock();   // 编辑态代码块的最新内容先同步回 cm6 文档
             if (self._mode === "live" && self._model) {
                 if (self._cm6) self._model.setValue(self._cm6.getValue());
+                else if (self._structured) self._model.setValue(self._structured.getValue());
                 else if (self._vditor) self._model.setValue(getVditorValue(self));
             }
             saveModel(path)
@@ -1748,6 +1837,7 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
             destroyVditor(this);
             destroyMonaco(this);
             destroyCm6(this);
+            destroyStructured(this);
             this._clipboard?.destroy();
             this._clipboard = undefined;
             this._hcrumbsHandle?.dispose();
@@ -1835,4 +1925,21 @@ function destroyCm6(tab: MarkdownTabInstance): void {
         }
         tab._cm6 = undefined;
     }
+}
+
+// 销毁结构化内核编辑面(不碰 model:内容已由 syncLiveToModel 归位)
+function destroyStructured(tab: MarkdownTabInstance): void {
+    if (tab._structured) {
+        try {
+            tab._structured.dispose();
+        } catch {
+            // 忽略
+        }
+        tab._structured = undefined;
+    }
+    if (tab._vditorLinkClick && tab._contentEl) {
+        tab._contentEl.removeEventListener("click", tab._vditorLinkClick);
+        tab._vditorLinkClick = undefined;
+    }
+    tab._contentEl?.classList.remove("syfe-structured");
 }

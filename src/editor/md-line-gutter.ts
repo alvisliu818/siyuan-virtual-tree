@@ -28,6 +28,10 @@ export interface MdLineGutterHost {
     copyLineLink(line: number): void;
     /** 打开一条反向链接(跳到引用来源;可选) */
     openBacklinkItem?(item: BacklinkItem): void;
+    /** 结构化内核等自管 DOM:行号槽挂载/坐标系容器(返回 null 走 .vditor-reset 探测) */
+    gutterRoot?(): HTMLElement | null;
+    /** 结构化内核:顶层渲染块序列(与 mdBlockStarts 顶层块对齐;返回 null 走 [data-block]) */
+    gutterBlocks?(root: HTMLElement): HTMLElement[] | null;
 }
 
 // 反链标记:按目标行分组的反向链接(行号链接 / 锚点链接分开上色)
@@ -246,6 +250,8 @@ export function installMdLineGutter(host: MdLineGutterHost): MdLineGutterHandle 
     // 找真正装着块的 .vditor-reset:同容器常有 pre/div 两个同名元素(见 markdown-tab 的注释),
     // 带块子元素(data-block)的那个才是渲染体
     const findReset = (): HTMLElement | null => {
+        const custom = host.gutterRoot?.();
+        if (custom) return custom;
         const content = host.contentEl();
         if (!content) return null;
         let best: HTMLElement | null = null;
@@ -260,8 +266,11 @@ export function installMdLineGutter(host: MdLineGutterHost): MdLineGutterHandle 
         return bestN > 0 ? best : null;
     };
 
-    const blocksOf = (reset: HTMLElement): HTMLElement[] =>
-        Array.from(reset.querySelectorAll(":scope > [data-block]")) as HTMLElement[];
+    const blocksOf = (reset: HTMLElement): HTMLElement[] => {
+        const custom = host.gutterBlocks?.(reset);
+        if (custom) return custom;
+        return Array.from(reset.querySelectorAll(":scope > [data-block]")) as HTMLElement[];
+    };
 
     // 块顶部相对滚动容器内容顶部的偏移(槽位行要用同一个坐标系)
     const topOf = (reset: HTMLElement, el: HTMLElement): number => {

@@ -559,7 +559,7 @@ function buildInlineDecorations(state: EditorState, opts: Cm6InlineOptions): Inl
                 return;
             }
 
-            // --- 引用块:整段行样式 + 按行隐藏 ">"(该行有选区则还原) ---
+            // --- 引用块:整段行样式 + 隐藏 ">"(光标触到标记才还原) ---
             // Callout(> [!type] 标题)是引用块的超集:行样式换成类型配色,
             // 并隐藏 [!type] 标记、给标题加图标
             if (name === "Blockquote") {
@@ -600,8 +600,11 @@ function buildInlineDecorations(state: EditorState, opts: Cm6InlineOptions): Inl
                         }).range(tFrom, firstLine.to));
                     }
                 }
+                // `>` 只在光标真正触到标记本身时还原(与 ListMark 同模型)。
+                // 旧逻辑按整行还原:真实焦点下光标一进正文,"- >" 就会露成
+                // 可见源码,与引述块的富渲染态不一致(用户 2026-11-13 反馈)。
                 iterSubNodes(node.node, "QuoteMark", (m) => {
-                    if (!selectionTouchesLine(state, m.from)) hideRange(m.from, m.to);
+                    if (!selectionTouches(state, m.from, m.to)) hideRange(m.from, m.to);
                 });
                 return;
             }

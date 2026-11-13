@@ -105,11 +105,44 @@ function loadKatex(): Promise<any> {
  */
 const widgetObservers = new WeakMap<HTMLElement, ResizeObserver>();
 
-function observeWidgetResize(wrap: HTMLElement, view: EditorView): void {
+function observeWidgetResize(wrap: HTMLElement, view: EditorView, extra?: () => void): void {
     if (typeof ResizeObserver === "undefined" || widgetObservers.has(wrap)) return;
-    const ro = new ResizeObserver(() => view.requestMeasure());
+    const ro = new ResizeObserver(() => {
+        view.requestMeasure();
+        extra?.();
+    });
     ro.observe(wrap);
     widgetObservers.set(wrap, ro);
+}
+
+// 原生滚动条区域的 mousedown 阻断冒泡到 CM6:否则被劫持成进入编辑态/选区,
+// 滚动条按不住拖不动。只拦滚动条带,内容区点击行为不变。
+function guardScrollbarDrag(wrap: HTMLElement): void {
+    wrap.addEventListener("mousedown", (e) => {
+        const r = wrap.getBoundingClientRect();
+        const onH = e.clientY > r.top + wrap.clientHeight && e.clientY <= r.bottom;
+        const onV = e.clientX > r.left + wrap.clientWidth && e.clientX <= r.right;
+        if (onH || onV) e.stopPropagation();
+    }, true);
+}
+
+/**
+ * 公式容器统一滚动条策略:内容一行放得下时**完全不出现滚动条**。
+ * 默认 CSS 是 overflow:hidden,只有内容明显溢出才加 is-overflow → overflow-x:auto。
+ * 阈值留 6px 容差:KaTeX 的 mtable/分数边框常有 1~2px 亚像素舍入
+ * (实测 437 vs 435),这种"几乎能放下"的情况出滚动条毫无意义。
+ * KaTeX 异步就绪/字体加载会改变宽度,故 RO + rAF + 两次延时重算。
+ */
+function attachOverflowSync(wrap: HTMLElement, view: EditorView): () => void {
+    const sync = () => {
+        wrap.classList.toggle("is-overflow", wrap.scrollWidth > wrap.clientWidth + 6);
+    };
+    guardScrollbarDrag(wrap);
+    observeWidgetResize(wrap, view, sync);
+    requestAnimationFrame(sync);
+    setTimeout(() => { if (wrap.isConnected) sync(); }, 50);
+    setTimeout(() => { if (wrap.isConnected) sync(); }, 300);
+    return sync;
 }
 
 function disconnectWidgetResize(wrap: HTMLElement): void {
@@ -416,9 +449,13 @@ class MathWidget extends WidgetType {
     toDOM(view: EditorView): HTMLElement {
         const wrap = document.createElement("div");
         wrap.className = "syfe-cm-math";
-        // KaTeX 异步渲染完成会改变块高 → 通知 CM6 重新测量(行号槽对齐)
-        observeWidgetResize(wrap, view);
-        const requestRelayout = () => view.requestMeasure();
+        // 一行能放下时不出现任何滚动条;真溢出才允许横向拖动
+        const syncOverflow = attachOverflowSync(wrap, view);
+        // KaTeX 异步渲染完成会改变块高 → attachOverflowSync 已挂 RO 通知 CM6 重新测量
+        const requestRelayout = () => {
+            view.requestMeasure();
+            syncOverflow();
+        };
         const tryRender = (katex: any) => {
             try {
                 let html: string | null = null;
@@ -449,6 +486,180 @@ class MathWidget extends WidgetType {
             wrap.classList.add("is-error");
             loadKatex().then(k => {
                 if (k && wrap.isConnected) tryRender(k);
+            });
+        }
+        return wrap;
+    }
+
+    destroy(dom: HTMLElement): void {
+        disconnectWidgetResize(dom);
+    }
+
+    ignoreEvent(): boolean {
+        return false;
+    }
+}
+
+interface QuoteMathSlot {
+    tex: string;
+    raw: string;
+    display: boolean;
+}
+
+/**
+ * 引述块里的行内公式先抽成占位符再交给 Lute。
+ * Lute 的 SetInlineMath 对同一行多个 $...$ 会跨段错配 —— 实测
+ * "$0.48:0.08 = 6:1$；…$(0.857:0.143=6:1)$" 被解析成
+ * "；归一化之后依然" 这一段中文的怪公式,两段真公式反而留作带 $ 的纯文本。
+ * 这里用项目统一的 splitCellMath/findMathClose 逐段切分,Lute 只看到纯文本,
+ * 渲染完再把占位符回填成 KaTeX —— 与阅读态一致。
+ */
+function maskQuoteMath(md: string): {masked: string; slots: QuoteMathSlot[]} {
+    const slots: QuoteMathSlot[] = [];
+    let masked = "";
+    for (const part of splitCellMath(md)) {
+        if (part.math === undefined) {
+            masked += part.text;
+            continue;
+        }
+        const idx = slots.length;
+        slots.push({tex: part.math, raw: part.text, display: part.text.startsWith("$$")});
+        masked += `SYFEMATH${idx}ZSYFE`;
+    }
+    return {masked, slots};
+}
+
+/** 把 Lute 产物文本节点里的占位符换成 KaTeX 公式 span(未就绪时显示源码,就绪后 paint 重绘) */
+function fillQuoteMath(root: HTMLElement, slots: QuoteMathSlot[], katex: any): void {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    const texts: Text[] = [];
+    while (walker.nextNode()) texts.push(walker.currentNode as Text);
+    const re = /SYFEMATH(\d+)ZSYFE/g;
+    for (const node of texts) {
+        const text = node.nodeValue || "";
+        if (!/SYFEMATH\d+ZSYFE/.test(text)) continue;
+        const frag = document.createDocumentFragment();
+        let last = 0;
+        re.lastIndex = 0;
+        for (const m of text.matchAll(re)) {
+            frag.appendChild(document.createTextNode(text.slice(last, m.index)));
+            const slot = slots[Number(m[1])];
+            const span = document.createElement("span");
+            // 不加 language-math 类:下面 Lute 自带公式的填充选择器会把它当源码二次覆盖
+            span.className = "syfe-cm-quote-math";
+            if (slot && katex) {
+                try {
+                    span.innerHTML = inlineMathHtml(katex, slot.tex, slot.display);
+                    span.setAttribute("data-render", "true");
+                } catch {
+                    span.textContent = slot.raw;
+                    span.classList.add("is-error");
+                }
+            } else {
+                span.textContent = slot ? slot.raw : m[0];
+                span.classList.add("is-pending");
+            }
+            frag.appendChild(span);
+            last = m.index + m[0].length;
+        }
+        frag.appendChild(document.createTextNode(text.slice(last)));
+        node.parentNode?.replaceChild(frag, node);
+    }
+}
+
+/** 引述块:与思源原生文档编辑器(protyle)同一渲染 —— window.Lute 出 protyle DOM,
+ *  外层挂 protyle-wysiwyg 类直接吃思源应用级 CSS(左竖条/段距/行内样式与文档一致),
+ *  公式按 SiYuan mathRender 同款 data-subtype="math" + data-content 填 KaTeX。
+ *  光标入块回源码态编辑。 */
+class QuoteWidget extends WidgetType {
+    constructor(readonly lines: string[]) {
+        super();
+    }
+
+    eq(other: QuoteWidget): boolean {
+        return other.lines.join("\n") === this.lines.join("\n");
+    }
+
+    toDOM(view: EditorView): HTMLElement {
+        const wrap = document.createElement("div");
+        // 不挂 protyle-wysiwyg 容器类:它给每个 widget 加整篇级内边距(16/24px)造成大空白;
+        // 原生是整篇一次内边距。这里用 Lute(protyle 引擎)出 DOM + 自有紧凑样式,编辑/退出同一渲染
+        wrap.className = "syfe-cm-quote";
+        observeWidgetResize(wrap, view);
+        const md = this.lines.join("\n");
+        // 行内公式先抽走:Lute 遇到同一行多段 $...$ 会跨段错配(见 maskQuoteMath)
+        const {masked, slots} = maskQuoteMath(md);
+        const paint = (katex: any) => {
+            const LuteCtor = (window as any).Lute;
+            if (LuteCtor) {
+                try {
+                    const lute = LuteCtor.New();
+                    // protyle 渲染开关(对齐思源 setLute/getAgentLute 的关键项)
+                    lute.SetProtyleWYSIWYG(true);
+                    lute.SetInlineMath(true);
+                    lute.SetInlineAsterisk(true);
+                    lute.SetInlineUnderscore(true);
+                    lute.SetGFMStrikethrough(true);
+                    lute.SetMark(true);
+                    lute.SetSup(true);
+                    lute.SetSub(true);
+                    lute.SetTag(true);
+                    lute.SetRenderListStyle(true);
+                    lute.SetSanitize(true);
+                    lute.SetKramdownIAL(true);
+                    lute.SetSuperBlock(true);
+                    lute.SetCallout(true);
+                    lute.SetHeadingID(false);
+                    lute.SetYamlFrontMatter(false);
+                    lute.SetToC(false);
+                    lute.SetFootnotes(false);
+                    lute.SetLinkRef(false);
+                    lute.SetSpellcheck(false);
+                    wrap.innerHTML = lute.Md2HTML(masked);
+                    // 占位符回填 KaTeX(与 buildDecorations 的行内公式同一套规则/缓存)
+                    fillQuoteMath(wrap, slots, katex);
+                    // 公式填充(同 SiYuan mathRender:data-content 反解 → KaTeX;
+                    // Lute 默认行内公式输出 .language-math,一并处理)
+                    wrap.querySelectorAll('[data-subtype="math"], .language-math').forEach(el => {
+                        const tex = el.hasAttribute("data-content")
+                            ? LuteCtor.UnEscapeHTMLStr(el.getAttribute("data-content") || "")
+                            : (el.textContent || "");
+                        const isBlock = el.tagName === "DIV";
+                        try {
+                            const html = katex.renderToString(tex, {
+                                displayMode: isBlock,
+                                output: "html",
+                                throwOnError: false,
+                                strict: "ignore",
+                            });
+                            if (isBlock) {
+                                el.innerHTML = `<div contenteditable="false">${html}</div>`;
+                            } else {
+                                el.innerHTML = html;
+                            }
+                            el.setAttribute("data-render", "true");
+                        } catch {
+                            el.textContent = tex;
+                        }
+                    });
+                    view.requestMeasure();
+                    return;
+                } catch {
+                    // Lute 异常回落纯文本
+                }
+            }
+            wrap.innerHTML = `<div class="bq">${escapeHtml(masked).replace(/\n/g, "<br>")}</div>`;
+            // Lute 不可用时至少保证公式/粗体之外的内容不丢,公式仍按占位符回填
+            fillQuoteMath(wrap, slots, katex);
+            view.requestMeasure();
+        };
+        const ready = (window as any).katex;
+        if (ready) {
+            paint(ready);
+        } else {
+            paint(null);
+            loadKatex().then(k => {
+                if (k && wrap.isConnected) paint(k);
             });
         }
         return wrap;
@@ -532,13 +743,14 @@ class PropertiesWidget extends WidgetType {
 /** 行内公式 HTML 缓存:大文档(数百个公式)按键重建装饰时,只有可见 widget 会取用 */
 const inlineMathCache = new Map<string, string>();
 
-function inlineMathHtml(katex: any, tex: string): string {
-    const cached = inlineMathCache.get(tex);
+function inlineMathHtml(katex: any, tex: string, displayMode = false): string {
+    const cacheKey = (displayMode ? "D:" : "I:") + tex;
+    const cached = inlineMathCache.get(cacheKey);
     if (cached !== undefined) return cached;
     let html: string;
     try {
         html = katex.renderToString(tex, {
-            displayMode: false,
+            displayMode,
             throwOnError: false,
             strict: "ignore",
         });
@@ -547,7 +759,7 @@ function inlineMathHtml(katex: any, tex: string): string {
         html = `<span class="syfe-cm-math-inline is-error" title="${escapeHtml(msg)}">${escapeHtml(tex)}</span>`;
     }
     if (inlineMathCache.size >= 512) inlineMathCache.clear();
-    inlineMathCache.set(tex, html);
+    inlineMathCache.set(cacheKey, html);
     return html;
 }
 
@@ -571,19 +783,21 @@ class InlineMathWidget extends WidgetType {
         const span = document.createElement("span");
         span.className = "syfe-cm-inline-math";
         span.setAttribute("contenteditable", "false");
-        // KaTeX 未就绪时异步重绘会改变行高 → 通知 CM6 重新测量行号槽
-        observeWidgetResize(span, view);
+        // $$…$$ 用 display 模式(分数堆叠),列表项内保留圆点;一行能放下时不出滚动条
+        const display = this.raw.startsWith("$$");
+        const sync = attachOverflowSync(span, view);
         const katex = (window as any).__syfeKatex;
         if (katex) {
-            span.innerHTML = inlineMathHtml(katex, this.tex);
+            span.innerHTML = inlineMathHtml(katex, this.tex, display);
         } else {
             span.textContent = this.raw;
             span.classList.add("is-pending");
             loadKatex().then(k => {
                 if (!k || !span.isConnected) return;
                 span.classList.remove("is-pending");
-                span.innerHTML = inlineMathHtml(k, this.tex);
+                span.innerHTML = inlineMathHtml(k, this.tex, display);
                 view.requestMeasure();
+                sync();
             });
         }
         return span;
@@ -615,6 +829,7 @@ class TableWidget extends WidgetType {
     toDOM(view: EditorView): HTMLElement {
         const wrap = document.createElement("div");
         wrap.className = "syfe-cm-table";
+        guardScrollbarDrag(wrap);
         // 表格内公式重绘/字体加载会改变块高 → 通知 CM6 重新测量行号槽
         observeWidgetResize(wrap, view);
         const initial = renderGfmTable(this.lines, (window as any).__syfeKatex || null);
@@ -935,6 +1150,7 @@ export function notifyCm6RenderConfigChanged(): void {
 const tableSrcLineDeco = Decoration.line({class: "syfe-cm-tablesrc-line"});
 const mathSrcLineDeco = Decoration.line({class: "syfe-cm-mathsrc-line"});
 const propSrcLineDeco = Decoration.line({class: "syfe-cm-propsrc-line"});
+const quoteSrcLineDeco = Decoration.line({class: "syfe-cm-quotesrc-line syfe-cm-md-quote-line"});
 
 export function cm6MarkdownRender(opts: Cm6RenderOptions): Extension {
     const renderField = StateField.define<DecorationSet>({
@@ -974,7 +1190,7 @@ export function cm6MarkdownRender(opts: Cm6RenderOptions): Extension {
                 if (target.closest(".syfe-cm-codeblock-copy")) return false;
                 const wrap = target.closest(
                     ".syfe-cm-codeblock, .syfe-cm-table, .syfe-cm-math, .syfe-cm-inline-math, " +
-                    ".syfe-cm-img, .syfe-cm-properties",
+                    ".syfe-cm-img, .syfe-cm-properties, .syfe-cm-quote",
                 ) as HTMLElement | null;
                 if (!wrap) return false;
                 if (wrap.classList.contains("syfe-cm-codeblock")) {
@@ -1000,9 +1216,18 @@ export function cm6MarkdownRender(opts: Cm6RenderOptions): Extension {
                 // 光标一进该行,该行的行内装饰即撤销 → 回到可编辑源码态
                 const inline = wrap.classList.contains("syfe-cm-inline-math") ||
                     wrap.classList.contains("syfe-cm-img");
-                const anchor = inline
-                    ? Math.min(Math.max(pos, line.from), line.to)
-                    : Math.min(line.from + 1, line.to);
+                let anchor: number;
+                if (wrap.classList.contains("syfe-cm-quote")) {
+                    // 引述块:光标直接落到正文起点(跳过缩进 + 列表标记 + `>`)。
+                    // 若落在行首,cm6-inline 的 ListMark/QuoteMark 会把 "- >"
+                    // 还原成可见源码(真实焦点下),编辑态与渲染态就不一致了。
+                    const pm = /^\s*(?:[-*+]|\d+[.)])?\s*>\s*/.exec(line.text);
+                    anchor = Math.min(line.from + (pm ? pm[0].length : 1), line.to);
+                } else if (inline) {
+                    anchor = Math.min(Math.max(pos, line.from), line.to);
+                } else {
+                    anchor = Math.min(line.from + 1, line.to);
+                }
                 view.dispatch({selection: {anchor}});
                 view.focus();
                 // CM6 的 dispatch 同步完成 DOM 更新,此时 coordsAtPos 已是新布局;
@@ -1210,6 +1435,57 @@ function buildDecorations(state: EditorState, opts: Cm6RenderOptions): Decoratio
                     }
                     i = j + 1;
                 }
+            }
+
+            // 2.6) 独立单行显示公式 $$...$$(无列表标记):整行替换为显示公式 widget。
+            //     列表项内 `- $$…$$` 不在此处理(保留列表圆点),走 inline 渲染(step 5)
+            for (let ln = 1; ln <= doc.lines; ln++) {
+                const line = doc.line(ln);
+                if (overlapsUsed(line.from, line.to)) continue;
+                const sm = /^\s*\$\$(.+)\$\$\s*$/.exec(line.text);
+                if (!sm) continue;
+                const from = line.from;
+                const to = line.to;
+                usedRanges.push({from, to});
+                if (cursorInRange(from, to)) {
+                    lineDecos.push(mathSrcLineDeco.range(from));
+                } else {
+                    const widget = new MathWidget(sm[1].trim(), [], (window as any).__syfeKatex || null);
+                    ranges.push(Decoration.replace({widget}).range(from, to));
+                }
+            }
+
+            // 2.5) 引述块(含列表内 `- > …`):**不再整行替换为 widget**。
+            //     编辑 / 退出编辑 / 只读阅读态统一走同一套渲染 —— CM6 源码行 +
+            //     cm6-inline 的 WYSIWYM(圆点/粗体/公式) + 这里的一根引用竖线。
+            //     历史:曾用 Lute/protyle widget 整行替换,编辑时翻回源码行,两态
+            //     DOM 不同、层级相反(「引述块包裹列表」),用户 2026-11-13 反馈。
+            //     竖线按缩进层级定位,画在列表圆点**右侧**(= 列表包引用)。
+            //     ⚠ 不占 usedRanges、不加 atomicRanges:step 4/5 的行内图片/公式
+            //     照常渲染,光标也能自由进出该行。
+            for (let ln = 1; ln <= doc.lines; ln++) {
+                const line = doc.line(ln);
+                if (overlapsUsed(line.from, line.to)) continue;
+                const qm = /^(\s*)(?:[-*+]|\d+[.)])?\s*>/.exec(line.text);
+                if (!qm) continue;
+                const indent = qm[1];
+                let end = ln;
+                while (end + 1 <= doc.lines) {
+                    const nm = /^(\s*)(?:[-*+]|\d+[.)])?\s*>/.exec(doc.line(end + 1).text);
+                    if (!nm || nm[1] !== indent) break;
+                    end++;
+                }
+                const tabs = (indent.match(/\t/g) || []).length;
+                const spaces = indent.replace(/\t/g, "").length;
+                // 6px 行盒内边距 + tab(16px)/空格(4px) + 圆点及其后空白(8px)
+                const bar = 6 + tabs * 16 + spaces * 4 + 8;
+                for (let k = ln; k <= end; k++) {
+                    lineDecos.push(Decoration.line({
+                        class: "syfe-cm-quote-line",
+                        attributes: {style: `--syfe-quote-bar:${bar}px`},
+                    }).range(doc.line(k).from));
+                }
+                ln = end;
             }
 
             // 3) GFM 表格(≥2 行:表头 + 分隔行;光标在块内时只加底色)

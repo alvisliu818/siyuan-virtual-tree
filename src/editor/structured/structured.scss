@@ -1,0 +1,72 @@
+// 结构化内核(ProseMirror)阅读态样式。作用域 .syfe-structured 避免与现有引擎冲突。
+// 颜色走思源 --b3-* 主题变量,跟随明暗模式。
+.syfe-structured {
+  // 行号槽挂在 contentEl 上:给槽位让位,避免行号与正文重叠
+  &.syfe-md__gutter-on { position: relative; }
+  &.syfe-md__gutter-on .ProseMirror { padding-left: 68px; }
+  --s-fg: var(--b3-color-text, #24292f);
+  --s-muted: var(--b3-color-text-secondary, #6b7280);
+  --s-line: var(--b3-border-color, #e3e6ea);
+  --s-accent: var(--b3-theme-primary, #185fa5);
+  color: var(--s-fg);
+  line-height: 1.7;
+
+  .ProseMirror { outline: none; }
+  .blk { position: relative; padding-left: var(--indent, 0px); min-height: 1.7em; }
+  .blk .content { outline: none; min-height: 1.6em; white-space: pre-wrap; word-break: break-word; }
+  .blk-codeFence .content, .blk-tableRow .content, .blk-frontmatter .content,
+  .blk-logseqProp .content, .blk-blank .content { font-family: ui-monospace, Consolas, monospace; font-size: 12px; color: var(--s-muted); }
+  .blk.is-heading .content { font-size: 1.12em; font-weight: 600; }
+  .is-heading { margin: 0.4em 0; }
+
+  .lv-list { position: relative; }
+  .lv-items { padding-left: 22px; }
+  .lv-items > .blk, .lv-items > .math-block, .lv-items > .lv-quote { position: relative; }
+  .lv-items > .blk-list::before, .lv-items > .math-block::before, .lv-items > .lv-quote::before {
+    content: "•"; position: absolute; left: -18px; top: 0; color: var(--s-muted);
+    font-size: 15px; user-select: none;
+  }
+  .lv-quote { border-left: 3px solid var(--s-line); padding: 1px 0 1px 12px; margin: 2px 0; }
+  .lv-quote-inner { min-height: 1.6em; }
+
+  .math-block { position: relative; min-height: 1.7em; padding: 2px 0; overflow-x: auto; }
+  .math-pending { color: var(--s-muted); font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+  .math-block.math-pending { min-height: 2.2em; }
+  .math-block .katex-display { display: block !important; margin: 2px 0 !important; text-align: left !important; }
+  .math-block .katex-display > .katex { text-align: left !important; white-space: nowrap; }
+  .math { cursor: text; }
+  .math-display { display: inline-block; text-align: left; margin: 2px 0; }
+  .math-display .katex-display { display: inline-block !important; margin: 2px 0 !important; text-align: left !important; }
+
+  strong { font-weight: 600; }
+  code { background: var(--b3-protyle-code-background, #f2f4f7); padding: 1px 4px; border-radius: 3px; font-size: 12px; }
+  .math-edit { font: inherit; font-size: 12px; width: min(320px, 60vw); padding: 3px 6px;
+               border: 1px solid var(--s-accent); border-radius: 4px; outline: none; }
+
+  .image-atom { cursor: pointer; }
+  .syfe-link { color: var(--s-accent); text-decoration: underline; cursor: pointer; }
+  .image-img { max-width: 100%; max-height: 240px; vertical-align: middle; border-radius: 4px; }
+  .image-ph { display: inline-block; padding: 2px 8px; background: var(--b3-protyle-code-background, #f2f4f7);
+              border: 1px dashed var(--s-line); border-radius: 4px; color: var(--s-muted); font-size: 12px; }
+
+  .sb-preview { cursor: pointer; }
+  .sb-source { font-family: ui-monospace, Consolas, monospace; font-size: 12px; width: 100%;
+               min-height: 60px; padding: 6px 8px; border: 1px solid var(--s-accent); border-radius: 4px;
+               outline: none; white-space: pre; overflow: auto; }
+  .table-wrap { overflow-x: auto; }
+  .md-table { border-collapse: collapse; font-size: 13px; }
+  .md-table th, .md-table td { border: 1px solid var(--s-line); padding: 4px 10px; text-align: left; }
+  .md-table th { background: var(--b3-protyle-code-background, #f7f8fa); font-weight: 600; }
+  .code-wrap { border: 1px solid var(--s-line); border-radius: 6px; overflow: hidden; }
+  .code-lang { background: var(--b3-protyle-code-background, #f7f8fa); color: var(--s-muted); font-size: 11px;
+               padding: 2px 10px; border-bottom: 1px solid var(--s-line); font-family: ui-monospace, Consolas, monospace; }
+  .code-wrap pre { margin: 0; padding: 8px 10px; overflow-x: auto; }
+  .code-wrap code { background: none; padding: 0; font-size: 12px; }
+  .code-body { padding: 8px 10px; overflow-x: auto; white-space: pre; }
+  .code-body::-webkit-scrollbar { height: 10px; }
+  .code-edit-host { width: 100%; }
+  .prop-wrap { display: flex; gap: 6px; align-items: baseline; font-size: 13px; }
+  .prop-key { color: var(--s-accent); font-weight: 600; }
+  .prop-sep { color: var(--s-muted); }
+  .prop-val { color: var(--s-fg); }
+}

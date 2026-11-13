@@ -258,6 +258,25 @@ const syfeCmTheme = EditorView.theme({
     ".syfe-cm-tablesrc-line": {backgroundColor: "var(--b3-theme-surface)"},
     ".syfe-cm-mathsrc-line": {backgroundColor: "var(--b3-theme-surface)"},
     ".syfe-cm-propsrc-line": {backgroundColor: "var(--b3-theme-surface)"},
+    ".syfe-cm-quotesrc-line": {backgroundColor: "var(--b3-theme-surface)"},
+    // 引述块统一渲染:编辑 / 退出编辑 / 只读阅读态都是同一条 .cm-line(不再切换 widget)。
+    // 竖线用 background-image 画在列表圆点右侧(--syfe-quote-bar 按缩进层级算出),
+    // 层级 = 「列表包引用」;不用行盒左缘的 inset 竖线(那会变成「引述块包裹列表」)。
+    ".syfe-cm-quote-line": {
+        // ⚠ 不要给行加 padding-left/text-indent 去缩进折行续行:行内容区一变窄,
+        // 行内公式 widget 就会判溢出并出现横条,KaTeX 内容被裁(实测 0.48/(0.857 丢失)。
+        backgroundImage:
+            "linear-gradient(to right, transparent var(--syfe-quote-bar, 30px), " +
+            "var(--b3-border-color, rgba(128,128,128,.45)) var(--syfe-quote-bar, 30px), " +
+            "var(--b3-border-color, rgba(128,128,128,.45)) calc(var(--syfe-quote-bar, 30px) + 3px), " +
+            "transparent calc(var(--syfe-quote-bar, 30px) + 3px))",
+    },
+    // cm6-inline 自带的行级竖线画在行盒左缘 + opacity .88,统一渲染下关掉
+    ".syfe-cm-quote-line.syfe-cm-md-quote-line": {boxShadow: "none", opacity: "1"},
+    // 引述块编辑态与渲染态对齐:文字不变淡(.syfe-cm-md-quote-line 自带 .88),
+    // 列表圆点用与 Lute <li>::marker 同款灰色,竖线/粗体/公式都由行内装饰保留
+    ".syfe-cm-quotesrc-line.syfe-cm-md-quote-line": {opacity: "1"},
+    ".syfe-cm-quotesrc-line .syfe-cm-md-listmark-bullet::before": {opacity: ".45"},
     ".syfe-cm-img": {
         display: "inline-block",
         padding: "2px 0",
@@ -287,11 +306,31 @@ const syfeCmTheme = EditorView.theme({
         textAlign: "center",
     },
     ".syfe-cm-math": {
-        padding: "6px 10px",
+        padding: "6px 2px",
         margin: "2px 0",
-        overflowX: "auto",
+        // 一行能放下时不出现任何滚动条;真正溢出才切 auto(可拖动,见 attachOverflowSync)。
+        // overflowY 必须显式 hidden:CSS 规定 overflowX 非 visible 时,visible 的 Y 会被
+        // 计算成 auto —— 这正是「没溢出却冒出竖向滚动条」的根因。
+        overflowX: "hidden",
+        overflowY: "hidden",
         maxWidth: "100%",
     },
+    ".syfe-cm-math.is-overflow": {overflowX: "auto", overflowY: "hidden"},
+    ".syfe-cm-math .katex-display": {overflowX: "visible", overflowY: "visible", margin: "0", textAlign: "left"},
+    // 引述块:编辑/退出编辑同一渲染(block widget);原生 protyle 左竖条 + 紧凑边距。
+    // ⚠ CM6 的 .cm-content 是 white-space:pre-wrap,而 Lute 输出标签之间带换行/缩进 ——
+    // 这些格式化空白会被当成真实换行,每层(ul/li/blockquote)凭空多一行高,
+    // 2 行文字被撑到 220px、圆点与正文分离。这里恢复普通空白折叠。
+    ".syfe-cm-quote": {margin: "0", maxWidth: "100%", whiteSpace: "normal"},
+    ".syfe-cm-quote ul, .syfe-cm-quote ol": {margin: "0", paddingLeft: "1.4em"},
+    ".syfe-cm-quote li": {margin: "0"},
+    ".syfe-cm-quote ul > li::marker": {color: "var(--b3-theme-on-surface)", opacity: ".45"},
+    ".syfe-cm-quote blockquote, .syfe-cm-quote .bq": {
+        borderLeft: "3px solid var(--b3-border-color, rgba(128,128,128,.45))",
+        padding: "2px 10px",
+        margin: "2px 0",
+    },
+    ".syfe-cm-quote p": {margin: "2px 0"},
     ".syfe-cm-math.is-error": {
         fontFamily: "var(--b3-font-family-code, monospace)",
         color: "var(--b3-theme-on-surface)",
@@ -338,14 +377,31 @@ const syfeCmTheme = EditorView.theme({
         fontSize: ".92em",
         color: "var(--b3-theme-on-surface)",
     },
-    // 行内公式 widget(表格外的普通行):与单元格内公式同款收敛,长公式格内横向滚动
+    // 行内公式 widget(表格外的普通行/列表项内 $$…$$):默认不滚动,
+    // 只有内容明显溢出时才由 attachOverflowSync 加 is-overflow 允许横向拖动
     ".syfe-cm-inline-math": {
         display: "inline-block",
         maxWidth: "100%",
-        overflowX: "auto",
+        overflowX: "hidden",
         overflowY: "hidden",
         verticalAlign: "middle",
         cursor: "text",
+    },
+    ".syfe-cm-inline-math.is-overflow": {overflowX: "auto", overflowY: "hidden"},
+    // 列表项内 $$…$$ 用 display 模式但收敛边距/左对齐,保留列表圆点不撑破行
+    ".syfe-cm-inline-math .katex-display": {
+        overflowX: "visible", overflowY: "visible", margin: "0", textAlign: "left",
+    },
+    // 引述块内回填的行内公式:沿用 KaTeX 自带排版,不引入第二层滚动容器
+    ".syfe-cm-quote-math": {
+        display: "inline-block",
+        maxWidth: "100%",
+        verticalAlign: "baseline",
+    },
+    ".syfe-cm-quote-math .katex-display": {margin: "0", textAlign: "left"},
+    ".syfe-cm-quote-math.is-pending, .syfe-cm-quote-math.is-error": {
+        fontFamily: "var(--b3-font-family-code, monospace)",
+        color: "var(--b3-theme-on-surface)",
     },
     ".syfe-cm-inline-math.is-pending": {
         fontFamily: "var(--b3-font-family-code, monospace)",
