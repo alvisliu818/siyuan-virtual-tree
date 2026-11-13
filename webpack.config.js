@@ -373,9 +373,19 @@ module.exports = (env, argv) => {
             // 表现为"代码打开是纯黑白的,没有任何报错"(Monarch 注册不上,全落 mtk1)。
             publicPath: `/plugins/${PLUGIN_NAME}/`,
         },
-        externals: {
-            siyuan: "siyuan",
-        },
+        // Node 内置模块 → 运行时 require(Electron 渲染进程 nodeIntegration 下可用):
+        // imapflow 等 IMAP 依赖引用 node:net/tls/zlib 等,必须外部化才能打包
+        externals: [
+            ({request}, callback) => {
+                if (/^node:/i.test(request) || /^(assert|buffer|child_process|cluster|constants|crypto|dgram|dns|events|fs|http|https|inspector|module|net|os|path|process|punycode|querystring|readline|repl|stream|string_decoder|timers|tls|tty|url|util|v8|vm|worker_threads|zlib)((\/|\\).*)?$/.test(request)) {
+                    return callback(null, "commonjs " + request);
+                }
+                callback();
+            },
+            {
+                siyuan: "siyuan",
+            },
+        ],
         entry: {
             index: "./src/index.ts",
         },

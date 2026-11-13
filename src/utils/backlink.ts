@@ -10,7 +10,7 @@
 import {readTextFile, readDir, querySQL} from "../api/file";
 import {basename, dirname, isSiyuanPath} from "./path";
 import {TEXT_EXTENSIONS} from "../constants";
-import {isBacklinkScanAllTextEnabled} from "./config";
+import {isBacklinkScanAllTextEnabled, getBacklinkScanFilter} from "./config";
 import {
     MD_LINK_RE, WIKILINK_RE, ATTR_RE,
     collectScanRoots, walkFiles, isDataRootPath,
@@ -310,11 +310,11 @@ const refCache = new Map<string, {key: string; refs: ExtractedRef[]}>();
 async function forEachFileRef(handler: (ref: ExtractedRef, srcPath: string) => void): Promise<void> {
     const roots = collectScanRoots();
     if (roots.length === 0) return;
-    const files: {path: string; size: number; updated: string}[] = [];
+    const files: {path: string; name: string; size: number; updated: string}[] = [];
     const exts = isBacklinkScanAllTextEnabled() ? TEXT_EXTENSIONS : MD_ONLY_EXTS;
     for (const root of roots) {
         // 每根配额:超大挂载(盘根/同步盘全库)不至于把扫描拖死
-        await walkFiles(root, files, {exts, maxBytes: MAX_SCAN_BYTES, maxFiles: 5000, maxDirs: 8000}, isDataRootPath(root));
+        await walkFiles(root, files, {exts, maxBytes: MAX_SCAN_BYTES, maxFiles: 5000, maxDirs: 8000, filter: getBacklinkScanFilter()}, isDataRootPath(root));
     }
     // 分批并发读取,避免大目录一次发出过多请求
     const BATCH = 16;

@@ -15,12 +15,12 @@
 //    全盘可访问,支持同步空间(/apps/sync);请求被风控时会返回可读错误。
 //
 // 传输层:桌面端直接用 Node https(可自定义 UA、支持二进制上传,无大小限制);
-// 浏览器端回退思源内核代理(/api/network/proxy 新版 / /api/fetch/proxy 旧版),响应上限 32MB、不支持二进制上传。
+// 移动端/浏览器端回退思源内核代理(/api/network/proxy 新版透传二进制 body → 上传可用,
+// 旧版 /api/fetch/proxy 仅字符串 payload,上传需 3.8+ 内核),响应上限 32MB。
 import {DirEntry} from "../types";
 import {STORAGE_BD_CONFIG} from "../constants";
 import {parseStoredData} from "../utils/stored-data";
 import {decodeAuto} from "../utils/encoding";
-import {isNodeModulesAvailable} from "../utils/native-require";
 import {httpRequest, HttpResponse} from "./http";
 import {basename} from "../utils/path";
 import {
@@ -178,7 +178,9 @@ function bdDefaultHeaders(): Record<string, string> {
     return {"User-Agent": OFFICIAL_UA};
 }
 
-// 统一请求入口:注入网盘默认头后交给共享传输层(桌面 Node https / 浏览器内核代理)
+// 统一请求入口:注入网盘默认头后交给共享传输层(桌面 Node https / 移动端内核代理)。
+// 移动端同样可上传:二进制 body 经新内核代理流式转发(见 api/http.ts);凭据
+// (Cookie/UA)是浏览器禁设头,百度请求一律 forceProxy 跳过直连。
 async function bdHttp(
     url: string,
     opts: {method?: string; headers?: Record<string, string>; body?: string | Uint8Array | null} = {},
@@ -190,11 +192,7 @@ async function bdHttp(
         ...opts.headers,
     };
     const body = opts.body === undefined ? null : opts.body;
-    // 浏览器端:二进制 body(上传分片)无法经代理传输
-    if (body instanceof Uint8Array && !isNodeModulesAvailable()) {
-        throw new Error("浏览器端暂不支持上传网盘文件,请使用思源桌面端");
-    }
-    return await httpRequest(url, {method: opts.method, headers, body});
+    return await httpRequest(url, {method: opts.method, headers, body, forceProxy: true});
 }
 
 // ==== 错误处理 ====
@@ -596,7 +594,7 @@ export async function bdDownloadFile(vPath: string): Promise<ArrayBuffer> {
     return sniffErrorJSON(resp);
 }
 
-// ==== 上传(precreate → superfile2 分片 → create;二进制分片仅桌面端)====
+// ==== 上传(precreate → superfile2 分片 → create;分片二进制经内核代理流式转发,移动端可用)====
 const UPLOAD_CHUNK = 4 * 1024 * 1024;    // 分片大小(官方非会员上限 4MB)
 const SLICE_MD5_SIZE = 256 * 1024;       // slice-md5 取前 256KB
 

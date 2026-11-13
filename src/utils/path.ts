@@ -1,4 +1,9 @@
 import {BDPAN_PREFIX, isBaiduPath} from "./baidu-path";
+import {isOneDrivePath} from "./onedrive-path";
+import {isOutlookPath} from "./outlook-path";
+import {isImapPath} from "./imap-path";
+import {isWeblinkPath, isBmarksPath} from "./link-mount";
+import {isActionPath} from "./action-mount";
 import {GITEE_PREFIX, GITHUB_PREFIX, isGitRepoPath} from "./git-repo-path";
 
 // 思源虚拟路径根(放在这里由 constants.ts 引用,避免 path.ts → constants.ts 的循环依赖)
@@ -53,7 +58,7 @@ export function extname(path: string): string {
 // 是否为远程虚拟路径(百度网盘 / GitHub / Gitee):没有本地文件系统实体,
 // 全文搜索、wikilink 索引、资源管理器定位等本地能力必须跳过
 export function isRemotePath(path: string): boolean {
-    return isBaiduPath(path) || isGitRepoPath(path);
+    return isBaiduPath(path) || isGitRepoPath(path) || isOneDrivePath(path) || isOutlookPath(path) || isWeblinkPath(path) || isBmarksPath(path) || isActionPath(path) || isImapPath(path);
 }
 
 // 是否为思源虚拟路径(/data 或 /data/...)

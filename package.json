@@ -54,6 +54,7 @@
     "@xterm/xterm": "^6.0.0",
     "d3-timer": "^3.0.2",
     "docx": "^9.7.1",
+    "imapflow": "^2.11.0",
     "jszip": "^3.10.1",
     "mammoth": "^1.12.2",
     "markmap-common": "^0.18.9",
@@ -73,6 +74,9 @@
       "unplugged": true
     },
     "cmake-ts@1.0.2": {
+      "unplugged": true
+    },
+    "imapflow@2.11.0": {
       "unplugged": true
     },
     "vditor@4.0.1": {

@@ -264,6 +264,7 @@ function buildRow(d: SettingDef): {row: HTMLElement; sync: () => void} {
             input.type = "number";
             if (typeof d.min === "number") input.min = String(d.min);
             if (typeof d.max === "number") input.max = String(d.max);
+            if (typeof d.step === "number") input.step = String(d.step);
         } else {
             input.type = "text";
             if (d.placeholder) input.placeholder = d.placeholder;

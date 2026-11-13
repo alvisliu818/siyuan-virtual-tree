@@ -74,6 +74,18 @@ export interface Cm6MarkdownHandle {
 }
 
 // ===== 主题(全部思源 CSS 变量,明暗自适应) =====
+
+// 行号不透明度 / 当前行高亮走 CSS 变量:设置保存后即时生效,无需重建编辑器。
+// 在 onLayoutReady 与保存设置处调用(index.ts)。
+export function syncCm6StyleVars(cfg: {cm6GutterOpacity?: number; cm6HighlightActiveLine?: boolean}): void {
+    const root = document.documentElement;
+    const op = Math.min(1, Math.max(0, cfg.cm6GutterOpacity ?? 0.4));
+    root.style.setProperty("--syfe-cm-gutter-opacity", String(op));
+    const on = cfg.cm6HighlightActiveLine === true;
+    root.style.setProperty("--syfe-cm-active-line-bg", on ? "var(--b3-list-hover, rgba(0,0,0,.03))" : "transparent");
+    root.style.setProperty("--syfe-cm-active-gutter-color", on ? "var(--b3-theme-primary)" : "inherit");
+}
+
 const syfeCmTheme = EditorView.theme({
     "&": {
         height: "100%",
@@ -108,7 +120,8 @@ const syfeCmTheme = EditorView.theme({
     },
     ".cm-gutters": {
         backgroundColor: "var(--b3-theme-background)",
-        color: "var(--b3-theme-on-surface)",
+        // 行号弱化:用次级文本色,避免与正文同色抢眼
+        color: "var(--b3-theme-on-surface-light)",
         border: "none",
         userSelect: "none",
         // ⚠ 不要在这里加 marginTop 补偿:.cm-editor 的 padding 对 gutter 与
@@ -117,14 +130,20 @@ const syfeCmTheme = EditorView.theme({
         // 完全交给 CM6 高度图,块级 widget 的 margin 要圈进可测量范围
         // (见 .syfe-cm-properties-host / codeblock padding)。
     },
+    // 行号与正文拉开距离(CM6 默认右 3px 太贴);不透明度走设置变量
+    ".cm-lineNumbers .cm-gutterElement": {
+        padding: "0 12px 0 5px",
+        opacity: "var(--syfe-cm-gutter-opacity, 0.4)",
+    },
     // 属性面板宿主:flow-root 收住子元素的 margin,让 CM6 高度图量到完整占高
     ".syfe-cm-properties-host": {
         display: "flow-root",
     },
-    ".cm-activeLine": {backgroundColor: "var(--b3-list-hover, rgba(0,0,0,.03))"},
+    // 当前行/行号高亮走设置变量,默认不高亮
+    ".cm-activeLine": {backgroundColor: "var(--syfe-cm-active-line-bg, transparent)"},
     ".cm-activeLineGutter": {
-        backgroundColor: "transparent",
-        color: "var(--b3-theme-primary)",
+        backgroundColor: "var(--syfe-cm-active-line-bg, transparent)",
+        color: "var(--syfe-cm-active-gutter-color, inherit)",
     },
     "&.cm-focused": {outline: "none"},
     ".cm-selectionBackground, &.cm-focused .cm-selectionBackground": {

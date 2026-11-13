@@ -699,6 +699,25 @@ export async function gitFileSha(vPath: string): Promise<string | null> {
     return info && !info.isDir ? info.sha : null;
 }
 
+// 字节一致或仅 CRLF→LF 差异视为无差异(行尾 normalization 不该产生提交)
+function sameBytesIgnoreEol(a: Uint8Array, b: Uint8Array): boolean {
+    const norm = (u: Uint8Array): number[] => {
+        const out: number[] = [];
+        for (let i = 0; i < u.length; i++) {
+            if (u[i] === 13 && u[i + 1] === 10) continue;
+            out.push(u[i]);
+        }
+        return out;
+    };
+    const na = norm(a);
+    const nb = norm(b);
+    if (na.length !== nb.length) return false;
+    for (let i = 0; i < na.length; i++) {
+        if (na[i] !== nb[i]) return false;
+    }
+    return true;
+}
+
 // 保存文件(不存在则新建):GitHub Contents PUT / Gitee 批量提交
 export async function gitUploadFile(vPath: string, bytes: Uint8Array): Promise<void> {
     const loc = parseGitRepoPath(vPath);
@@ -709,6 +728,12 @@ export async function gitUploadFile(vPath: string, bytes: Uint8Array): Promise<v
     await serializeWrite(key, async () => {
         const info = await fileInfo(loc);
         if (info?.isDir) throw new Error(`「${loc.path}」是目录,不能写入文件内容`);
+        // 无差异不提交:远端内容与待写内容一致(或仅 CRLF/LF 行尾差)时直接跳过,
+        // 避免编辑器序列化 normalization 造成空提交
+        if (info) {
+            const remote = await gitDownloadFile(vPath).catch(() => null);
+            if (remote && sameBytesIgnoreEol(new Uint8Array(remote), bytes)) return;
+        }
         const content = bytesToB64(bytes);
         const message = commitMessage(info ? "Update" : "Add", loc.path);
         if (loc.provider === "github") {

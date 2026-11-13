@@ -14,6 +14,9 @@ export interface HttpRequestOptions {
     method?: string;
     headers?: Record<string, string>;
     body?: string | Uint8Array | null;
+    /** 非桌面端跳过直连、强制走内核代理。凭据在 Cookie/UA 头里的请求(如百度网盘)
+     *  必须开启:浏览器禁设这两个头,直连即使"成功"也是无凭据响应。 */
+    forceProxy?: boolean;
 }
 
 // 内核鉴权头(与 api/file.ts 一致;本地桌面端无需 token,此处防御性补充)
@@ -87,12 +90,15 @@ function nodeRequest(
 // 内核代理端点探测结果(浏览器端;"" = 未探测)
 let proxyMode: "" | "new" | "old" = "";
 
-// 浏览器端:经思源内核代理请求(新版透传方法与请求体,旧版 JSON 包裹)
+// 浏览器端:经思源内核代理请求(新版透传方法与请求体,旧版 JSON 包裹)。
+// body 支持 Uint8Array:内核 httpProxy 把进站 body 原样流式转发给上游
+// (kernel/api/network.go httpProxy:http.NewRequestWithContext(..., c.Request.Body)
+// + ContentLength/Content-Type 透传)—— 网盘上传分片(二进制 multipart)因此可行。
 async function proxyRequest(
     url: string,
     method: string,
     headers: Record<string, string>,
-    body: string | null,
+    body: string | Uint8Array | null,
 ): Promise<HttpResponse> {
     if (proxyMode !== "old") {
         // 新版内核(v3.8+):/api/network/proxy?u=<b64url>&h=<b64url(headers)>&t=<timeout>
@@ -109,7 +115,7 @@ async function proxyRequest(
                     ...kernelAuthHeaders(),
                     ...(body !== null ? {"Content-Type": headers["Content-Type"] || "application/x-www-form-urlencoded"} : {}),
                 },
-                body: body !== null ? body : undefined,
+                body: body !== null ? (body as unknown as BodyInit) : undefined,
             });
             if (resp.status !== 404) {
                 proxyMode = "new";
@@ -127,6 +133,9 @@ async function proxyRequest(
         if (proxyMode === "") proxyMode = "old";
     }
     // 旧版内核:/api/fetch/proxy(JSON 包裹,payload 仅支持字符串)
+    if (body instanceof Uint8Array) {
+        throw new Error("当前思源内核版本不支持经代理上传(需 3.8+ 或使用桌面端)");
+    }
     const resp = await fetch("/api/fetch/proxy", {
         method: "POST",
         headers: {"Content-Type": "application/json", ...kernelAuthHeaders()},
@@ -167,12 +176,19 @@ async function directRequest(
 
 // 统一请求入口:桌面端走 Node https,浏览器端优先直连、失败回退内核代理。
 // 调用方负责注入自己的默认头(鉴权 / UA / Accept-Encoding)。
+// body 支持 Uint8Array(经内核代理流式转发,移动端上传网盘分片用)。
 export async function httpRequest(url: string, opts: HttpRequestOptions = {}): Promise<HttpResponse> {
     const method = opts.method || "GET";
     const headers = opts.headers || {};
     const body = opts.body === undefined ? null : opts.body;
     if (isNodeModulesAvailable()) {
         return await nodeRequest(url, method, headers, body);
+    }
+    if (opts.forceProxy) {
+        if (proxyMode === "old" && body instanceof Uint8Array) {
+            throw new Error("当前思源内核版本不支持经代理上传(需 3.8+ 或使用桌面端)");
+        }
+        return await proxyRequest(url, method, headers, body);
     }
     try {
         return await directRequest(url, method, headers, body);
@@ -181,9 +197,5 @@ export async function httpRequest(url: string, opts: HttpRequestOptions = {}): P
         // 注意只在 fetch **抛异常**时回退 —— 401/403/404 是正常响应,
         // 再发一次等于把同一份凭据又塞进 URL 一遍
     }
-    // 代理不支持二进制请求体(如网盘上传分片)
-    if (body instanceof Uint8Array) {
-        throw new Error("直连失败且内核代理不支持二进制请求体,请使用思源桌面端");
-    }
-    return await proxyRequest(url, method, headers, typeof body === "string" ? body : null);
+    return await proxyRequest(url, method, headers, body);
 }

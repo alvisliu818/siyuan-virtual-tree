@@ -34,6 +34,18 @@ export function getIndexFilter(): IndexFilter {
     return indexFilterCache.rules;
 }
 
+// 双链扫描独立白/黑名单(缓存模式同 getIndexFilter)
+let backlinkScanFilterCache: {white: string; black: string; rules: IndexFilter} | null = null;
+
+export function getBacklinkScanFilter(): IndexFilter {
+    const white = configCache?.backlinkScanWhitelist ?? DEFAULT_CONFIG.backlinkScanWhitelist;
+    const black = configCache?.backlinkScanBlacklist ?? DEFAULT_CONFIG.backlinkScanBlacklist;
+    if (!backlinkScanFilterCache || backlinkScanFilterCache.white !== white || backlinkScanFilterCache.black !== black) {
+        backlinkScanFilterCache = {white, black, rules: compileFilter(white, black)};
+    }
+    return backlinkScanFilterCache.rules;
+}
+
 // 加载配置(合并默认值)
 export async function loadConfig(plugin: Plugin): Promise<EditorConfig> {
     try {
@@ -44,6 +56,11 @@ export async function loadConfig(plugin: Plugin): Promise<EditorConfig> {
             // 兼容旧配置:旧版"所见即所得"(wysiwyg)已并入"实时预览"(live)
             if ((merged.markdownDefaultMode as string) === "wysiwyg") {
                 merged.markdownDefaultMode = "live";
+            }
+            // 内嵌双链面板与侧边 dock 的入链/出链重合:老配置升级时默认隐藏一次
+            if (!merged.backlinkPanelHiddenMigrated) {
+                merged.backlinkPanelHidden = true;
+                merged.backlinkPanelHiddenMigrated = true;
             }
             configCache = merged;
             return merged;

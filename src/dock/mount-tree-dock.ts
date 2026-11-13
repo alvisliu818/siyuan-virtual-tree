@@ -3,12 +3,16 @@
 // 支持嵌套挂载(把条目挂到另一个挂载项下),可随时取消挂载。
 // 数据层 src/mount-tree.ts(virtual-tree.json);结构变化派发 syfe:mount-tree-changed 自动重绘。
 import {Menu, Dialog, confirm, showMessage} from "siyuan";
-import {MOUNT_TREE_DOCK_TYPE} from "../constants";
+import {MOUNT_TREE_DOCK_TYPE, IMAGE_EXTENSIONS, getMediaKind} from "../constants";
 import {readDir, querySQL} from "../api/file";
 import {clearGitRepoCache} from "../api/git-repo";
 import {DirEntry} from "../types";
-import {basename, dirname, joinPath} from "../utils/path";
+import {basename, dirname, joinPath, extname} from "../utils/path";
+import {walkFiles, isDataRootPath} from "../utils/wikilink";
 import {fileIconHTML, folderIconHTML} from "../utils/icons";
+import {isWeblinkPath, isBmarksPath, weblinkUrlOf, openExternalUrl, makeWeblinkVPath, BMARKS_PREFIX} from "../utils/link-mount";
+import {isActionPath, actionSpecOf, executeActionMount} from "../utils/action-mount";
+import {openActionMountDialog} from "../components/action-mount-dialog";
 import {toFileLink, getWorkspacePath} from "../utils/system-path";
 import {virtualListDir, virtualId, isNotebookRoot, isBoxDocEnabled} from "../utils/virtual-tree";
 import {docTreeIconHTML, cachedDocIcon, ensureDocIcons, getNotebookIcon} from "../utils/siyuan-icon";
@@ -16,6 +20,11 @@ import {listChildBlocks, blockTitle, blockGutterIcon, soloImageInfo, BlockNode} 
 import {loadBlockDisplayModes, blockDisplayMode, setBlockDisplayMode} from "../utils/block-names";
 import {copyText, revealInFileTree, pickMountTargetDialog, showFileTreeMenu, findTreeRootEl, createNewFile, createNewFolder, buildFileTreeActions} from "../components/file-tree";
 import {openBaiduPanDialog} from "../components/baidu-pan-dialog";
+import {openOneDriveDialog} from "../components/onedrive-dialog";
+import {openOutlookMailDialog} from "../components/outlook-mail-dialog";
+import {openImapMailDialog} from "../components/imap-mail-dialog";
+import {isNodeModulesAvailable} from "../utils/native-require";
+import {openMountTreeTab} from "../tabs/mount-tree-tab";
 import {openGitRepoDialog} from "../components/git-repo-dialog";
 import {tagIconHTML} from "../tags/tag-ui";
 import {
@@ -51,6 +60,8 @@ import {
     MOUNT_TREE_CHANGED_EVENT,
     SYFE_RELATION_TREE_CHANGED_EVENT,
     MountItem,
+    renameMountItemName,
+    updateMountItem,
 } from "../mount-tree";
 import {
     buildRelationForest,
@@ -201,6 +212,7 @@ const TREE_TOOLBAR_BUTTONS: TreeToolbarButton[] = [
     {key: "locate-mount", attr: "action", value: "locate-mount", label: "定位当前文档", icon: "iconFocus"},
     {key: "tag-filter", attr: "action", value: "tag-filter", label: "标签筛选", icon: "iconTags"},
     {key: "drag-mode", attr: "action", value: "drag-mode", label: "拖拽排序模式", icon: "iconDrag"},
+    {key: "type-view", attr: "action", value: "type-view", label: "按类型浏览", icon: "iconFilter"},
     {key: "search", attr: "action", value: "search", label: "搜索", icon: "iconSearch"},
     {key: "refresh", attr: "action", value: "refresh", label: "刷新", icon: "iconRefresh"},
     {key: "collapse", attr: "action", value: "collapse", label: "全部收起", icon: "iconRight"},
@@ -311,7 +323,7 @@ type FileLocateRow = Extract<Row, {kind: "file"}> | Extract<Row, {kind: "mount"}
 // 「文档定位」涉及的行种类:挂载行 + doc 行 + 引用关系树的 auto 行
 type DocLocateRow = Extract<Row, {kind: "doc"}> | Extract<Row, {kind: "auto"}> | Extract<Row, {kind: "mount"}>;
 
-interface MountTreeDockInstance {
+export interface MountTreeDockInstance {
     element: HTMLElement;
     _listEl?: HTMLElement;
     // 交互监听挂在滚动容器上:**<ul> 高度只随行数增长**,面板下方空白区域属于滚动容器,
@@ -399,22 +411,36 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
         },
         data: {},
         init(this: MountTreeDockInstance) {
-            this.element.classList.add("syfe-mtree-dock", "fn__flex-column");
+            mountTreePanelInit(this, plugin);
+        },
+        destroy(this: MountTreeDockInstance) {
+            mountTreePanelDestroy(this);
+        },
+    };
+}
+
+
+// ===== 虚拟文档树面板(dock 与页签两种宿主共用)=====
+// 宿主只需提供一个空 element(函数内补 class/结构)与实例状态对象;init/destroy
+// 原地注册/反注册全部监听。两个宿主并存时各自维护状态(展开/缓存),事件广播
+// (mount-tree-changed 等)会同时驱动两者重绘。
+
+export function mountTreePanelInit(self: MountTreeDockInstance, plugin: IPluginForMountTree): void {
+            self.element.classList.add("syfe-mtree-dock", "fn__flex-column");
             // 顶栏整条都是按钮(不放标题),按钮集合与顺序由「更多 → 编辑工具栏」配置,
             // 渲染见 renderToolbar();横向滚动 + 悬停滚轮转横向见 enableCrumbScroll
-            this.element.innerHTML = `
+            self.element.innerHTML = `
                 <div class="block__icons syfe-mtree__toolbar"></div>
                 <div class="fn__flex-1 syfe-mtree__scroll">
                     <div class="syfe-mtree__chips" style="display:none;"></div>
                     <ul class="syfe-mtree__list"></ul>
                 </div>`;
 
-            const listEl = this.element.querySelector(".syfe-mtree__list") as HTMLElement;
-            const chipsEl = this.element.querySelector(".syfe-mtree__chips") as HTMLElement;
-            const scrollEl = this.element.querySelector(".syfe-mtree__scroll") as HTMLElement;
-            this._listEl = listEl;
-            this._scrollEl = scrollEl;
-            const self = this;
+            const listEl = self.element.querySelector(".syfe-mtree__list") as HTMLElement;
+            const chipsEl = self.element.querySelector(".syfe-mtree__chips") as HTMLElement;
+            const scrollEl = self.element.querySelector(".syfe-mtree__scroll") as HTMLElement;
+            self._listEl = listEl;
+            self._scrollEl = scrollEl;
             self._rows = [];
             self._expanded = new Set<string>();
             self._cache = new Map<string, DirEntry[] | BlockNode[]>();
@@ -431,6 +457,13 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
             let dragMode = false;
             // 最近一次点击的目录(新建文件/文件夹、搜索的默认位置)
             let currentDir: string | null = null;
+            // 聚焦模式:树只渲染该文件夹子树(挂载行聚焦走完整 walk 保嵌套挂载语义)
+            let focusTarget: {kind: "mount"; uid: string} | {kind: "dir"; path: string} | null = null;
+            // 按类型浏览模式:开启后列表区显示类型分组 + 该类型下的文件(平铺)
+            let typeViewOn = false;
+            let typeSel = new Set<string>();          // 选中的类型 key(空 = 全部)
+            let typeFilesCache: {ts: number; files: {path: string; name: string; size: number; updated: string}[]} | null = null;
+            let typeViewLoading = false;
 
             // ===== 引用关系树(设置开关控制,只读派生视图)=====
             // 与手动挂载共存:关系树排在手动挂载**上方**,两者互不影响。
@@ -720,10 +753,11 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
             };
             // 外部触发:window.dispatchEvent(new CustomEvent("syfe:mount-tree-locate-folder", {detail:{path}}))
             const folderLocateHandler = (e: Event) => {
+                focusTarget = null; // 定位需要完整树
                 const p = (e as CustomEvent).detail?.path;
                 if (typeof p === "string" && p) void locateFolderInMountTree(p);
             };
-            this._folderLocateHandler = folderLocateHandler;
+            self._folderLocateHandler = folderLocateHandler;
             window.addEventListener("syfe:mount-tree-locate-folder", folderLocateHandler);
 
             /**
@@ -827,6 +861,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
             };
 
             const locateActiveInMountTree = async () => {
+                focusTarget = null; // 定位需要完整树,聚焦模式先退出
                 // 面板不可见 → 先点 dock 图标展开
                 const dockItem = document.querySelector(`.dock__item[data-type="${MOUNT_TREE_DOCK_TYPE}"]`) as HTMLElement | null;
                 const dockVisible = !!document.querySelector(".syfe-mtree-dock")?.getClientRects().length;
@@ -843,17 +878,18 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 await locateDocInMountTree(cur);
             };
             const locateMountHandler = () => { void locateActiveInMountTree(); };
-            this._locateMountHandler = locateMountHandler;
+            self._locateMountHandler = locateMountHandler;
             window.addEventListener("syfe:mount-tree-locate", locateMountHandler);
             // 外部触发:点击固定/最近里的思源文档时,顺带在树上闪烁定位(静默失败)。
             // detail.revealPanel=false(默认,见 entry-menu 的顺带定位)→ 面板没开就不展开
             const docLocateHandler = (e: Event) => {
+                focusTarget = null; // 定位需要完整树
                 const detail = (e as CustomEvent).detail || {};
                 const id = detail?.docId;
                 const revealPanel = detail?.revealPanel !== false;
                 if (typeof id === "string" && id) void locateDocInMountTree(id, true, revealPanel);
             };
-            this._docLocateHandler = docLocateHandler;
+            self._docLocateHandler = docLocateHandler;
             window.addEventListener("syfe:mount-tree-locate-doc", docLocateHandler);
 
             /** 定位当前文档:退出聚焦 → 展开沿途 → 滚动到该行并闪烁提示 */
@@ -1127,15 +1163,25 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
             const silentRefreshExpanded = async (): Promise<boolean> => {
                 const jobs: Promise<void>[] = [];
                 let changed = false;
+                const covered = new Set<string>();
                 for (const expandKey of Array.from(self._expanded!)) {
                     const job = loaderForExpandKey(expandKey);
                     if (!job || !self._cache!.has(job.cacheKey)) continue; // 尚未加载过的键,展开时自然取
+                    covered.add(job.cacheKey);
                     jobs.push(job.loader().then((list) => {
                         if (JSON.stringify(self._cache!.get(job.cacheKey)) !== JSON.stringify(list)) {
                             self._cache!.set(job.cacheKey, list);
                             changed = true;
                         }
                     }).catch(() => { }));
+                }
+                // 折叠但已缓存的真实目录:直接失效(下次展开新鲜读),不发请求。
+                // 若逐个重读,缓存目录多时每次 files-changed 都是一场请求风暴,
+                // 浏览器同域 6 连接上限会把用户展开请求排队,表现为「一直加载中」。
+                for (const key of Array.from(self._cache!.keys())) {
+                    if (!key.startsWith("f:") || covered.has(key)) continue;
+                    self._cache!.delete(key);
+                    changed = true;
                 }
                 await Promise.all(jobs);
                 return changed;
@@ -1359,8 +1405,31 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                     else if (item.kind === "notebook") emitDocs("sydoc://nb/" + item.targetId!, depth + 1, rows, item, (c, d) => walk(c, d));
                     else if (item.kind === "block") emitBlocks(item.targetId!, depth + 1, rows, item, (c, d) => walk(c, d));
                 };
+                const focus = focusTarget as {kind: "mount"; uid: string} | {kind: "dir"; path: string} | null;
+                if (focus) {
+                    if (focus.kind === "mount") {
+                        // 挂载行聚焦:完整 walk 保留嵌套挂载/文档挂载语义
+                        for (const r of getRoots()) {
+                            if (r.uid === focus.uid) { walk(r, 0); break; }
+                        }
+                        return rows;
+                    }
+                    // 普通子目录聚焦:虚拟根 = 该文件夹(展开),子树走 emitDir 常规机制
+                    rows.push({kind: "file", path: focus.path, name: basename(focus.path), isDir: true, depth: 0, expanded: true});
+                    emitDir(focus.path, 1, rows);
+                    return rows;
+                }
                 for (const r of getRoots()) walk(r, 0);
                 return rows;
+            };
+
+            // 聚焦条 HTML(聚焦模式下置于列表首行;退出按钮走 data-focus-exit 委托)
+            const focusBarHTML = (): string => {
+                const f = focusTarget as {kind: "mount"; uid: string} | {kind: "dir"; path: string} | null;
+                if (!f) return "";
+                const name = f.kind === "mount" ? (findMountItem(f.uid)?.name || basename(findMountItem(f.uid)?.path || "")) : basename(f.path);
+                const full = f.kind === "mount" ? (findMountItem(f.uid)?.path || "") : f.path;
+                return `<li class="syfe-mtree__focusbar"><span class="syfe-mtree__focusbar-label" title="${escapeHTML(full)}">聚焦: ${escapeHTML(name)}</span><button class="b3-button b3-button--small" data-focus-exit="1">退出聚焦</button></li>`;
             };
 
             // 在"当前目录"新建文件/文件夹(当前目录 = 最近点击的目录行)
@@ -1511,15 +1580,91 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
 
             // 面板宽度变化(拖 dock 分隔线、折叠侧栏等)时重算表格缩放:rAF 合帧防拖动时狂算。
             // 图片缩略图的跟随放大由 CSS 容器查询(cqw,见 index.scss)自动完成,无需 JS。
-            this._previewRO = new ResizeObserver(() => {
+            self._previewRO = new ResizeObserver(() => {
                 if (!self._listEl) return; // 已销毁
                 requestAnimationFrame(fitBlockPreviews);
             });
-            this._previewRO.observe(listEl);
+            self._previewRO.observe(listEl);
+
+            // ===== 按类型浏览(只读平铺视图;真实文件路径,点击/右键/反链全部复用)=====
+            const TYPE_CATEGORIES: {key: string; label: string; icon: string; match: (ext: string) => boolean}[] = [
+                {key: "markdown", label: "Markdown", icon: "iconMarkdown", match: (e) => e === ".md" || e === ".markdown"},
+                {key: "office", label: "文档", icon: "iconFile", match: (e) => [".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".odt", ".ods", ".odp"].includes(e)},
+                {key: "pdf", label: "PDF", icon: "iconFile", match: (e) => e === ".pdf"},
+                {key: "image", label: "图片", icon: "iconImage", match: (e) => IMAGE_EXTENSIONS.has(e)},
+                {key: "video", label: "视频", icon: "iconVideo", match: (e) => getMediaKind("x" + e) === "video"},
+                {key: "audio", label: "音频", icon: "iconRecord", match: (e) => getMediaKind("x" + e) === "audio"},
+                {key: "code", label: "代码", icon: "iconCode", match: (e) => [".js", ".ts", ".jsx", ".tsx", ".py", ".java", ".c", ".h", ".cpp", ".hpp", ".cs", ".go", ".rs", ".rb", ".php", ".swift", ".kt", ".sql", ".sh", ".bat", ".ps1", ".html", ".htm", ".css", ".scss", ".less", ".xml", ".json", ".json5", ".yaml", ".yml", ".toml", ".vue", ".svelte", ".gql", ".graphql"].includes(e)},
+                {key: "text", label: "文本", icon: "iconFile", match: (e) => [".txt", ".log", ".csv", ".tsv", ".ini", ".conf", ".cfg", ".env"].includes(e)},
+            ];
+
+            const collectTypeFiles = async (force = false): Promise<{path: string; name: string; size: number; updated: string}[]> => {
+                if (!force && typeFilesCache && Date.now() - typeFilesCache.ts < 60_000) return typeFilesCache.files;
+                const files: {path: string; name: string; size: number; updated: string}[] = [];
+                const roots = getRoots().filter((r) => r.kind === "file" && r.isDir && r.path);
+                for (const r of roots) {
+                    // 每根配额与双链扫描一致(超大挂载不至于把收集拖死)
+                    await walkFiles(r.path!, files, {maxFiles: 5000, maxDirs: 8000}, isDataRootPath(r.path!));
+                }
+                typeFilesCache = {ts: Date.now(), files};
+                return files;
+            };
+
+            const renderTypeView = async () => {
+                const LINK_BTN = linkBtnHTML();
+                if (!self._listEl || typeViewLoading) return;
+                typeViewLoading = true;
+                listEl.innerHTML = `<li class="syfe-mtree__row syfe-mtree__row--loading">收集文件中…</li>`;
+                try {
+                    const files = await collectTypeFiles();
+                    const groups = TYPE_CATEGORIES.map((cat) => ({cat, files: [] as {path: string; name: string; size: number; updated: string}[]}));
+                    const other = {key: "other", label: "其他", icon: "iconFile", files: [] as {path: string; name: string; size: number; updated: string}[]};
+                    for (const f of files) {
+                        if (!f.name) continue;
+                        const ext = extname(f.name);
+                        const g = groups.find((x) => x.cat.match(ext));
+                        (g ? g.files : other.files).push(f);
+                    }
+                    const visible = typeSel.size ? groups.filter((g) => typeSel.has(g.cat.key)) : groups;
+                    const showOther = typeSel.size === 0 || typeSel.has("other");
+                    const rows: Row[] = [];
+                    let html = `<li class="syfe-mtree__typebar"><span class="syfe-mtree__typebar-label">类型:</span>` +
+                        TYPE_CATEGORIES.map((c) => `<span class="syfe-mtree__typechip${typeSel.size === 0 || typeSel.has(c.key) ? " is-on" : ""}" data-type="${c.key}">${c.label}</span>`).join("") +
+                        `<span class="syfe-mtree__typechip${typeSel.has("other") ? " is-on" : ""}" data-type="other">其他</span></li>`;
+                    let idx = 0;
+                    const fileRow = (f: {path: string; name: string}) => {
+                        const i = idx++;
+                        rows.push({kind: "file", path: f.path, name: f.name, isDir: false, depth: 0, expanded: false});
+                        return `<li class="syfe-mtree__row" data-idx="${i}" style="padding-left:20px" title="${escapeHTML(f.path)}"><span class="syfe-mtree__icon">${fileIconHTML(f.name)}</span><span class="syfe-mtree__text"><span class="syfe-mtree__name">${escapeHTML(f.name)}</span></span>${LINK_BTN}</li>`;
+                    };
+                    for (const g of visible) {
+                        if (g.files.length === 0) continue;
+                        html += `<li class="syfe-mtree__typehead"><svg><use xlink:href="#${g.cat.icon}"></use></svg><span>${escapeHTML(g.cat.label)}</span><span class="syfe-mtree__typecount">${g.files.length}</span></li>`;
+                        html += g.files.map(fileRow).join("");
+                    }
+                    if (showOther && other.files.length > 0) {
+                        html += `<li class="syfe-mtree__typehead"><svg><use xlink:href="#iconFile"></use></svg><span>其他</span><span class="syfe-mtree__typecount">${other.files.length}</span></li>`;
+                        html += other.files.map(fileRow).join("");
+                    }
+                    self._rows = rows;
+                    listEl.innerHTML = html;
+                } catch (e) {
+                    const err = e as Error;
+                    console.error("[syfe-typeview] render failed:", err?.stack || err?.message || e);
+                    listEl.innerHTML = `<li class="syfe-mtree__row syfe-mtree__row--loading">类型收集失败: ${escapeHTML(String(err?.stack || err?.message || e))}</li>`;
+                } finally {
+                    typeViewLoading = false;
+                }
+            };
 
             const render = () => {
                 const LINK_BTN = linkBtnHTML();
                 if (!self._listEl) return; // 已销毁
+                const focusBar = focusBarHTML();
+                if (typeViewOn) {
+                    void renderTypeView();
+                    return;
+                }
                 const roots = getRoots();
                 if (roots.length === 0) {
                     self._rows = [];
@@ -1536,7 +1681,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 self._rows = shown;
                 renderChips();
                 const curFile = currentFilePath(); // 焦点页签打开的本地文件(file 行高亮用)
-                listEl.innerHTML = shown.map((r, i) => {
+                listEl.innerHTML = focusBar + shown.map((r, i) => {
                     const pad = 6 + r.depth * 14;
                     if (r.kind === "loading") {
                         return `<li class="syfe-mtree__row syfe-mtree__row--loading" style="padding-left:${pad + 14}px">加载中…</li>`;
@@ -1591,7 +1736,16 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                         // 未设置时用与思源相同的默认图标(子文档数>0 用"文件夹"形态,否则"文档"形态)
                         let icon: string;
                         if (it.kind === "file") {
-                            icon = it.isDir ? folderIconHTML(name, r.expanded) : fileIconHTML(name);
+                            const actSpec = isActionPath(it.path || "") ? actionSpecOf(it.path || "") : null;
+                            if (actSpec) {
+                                icon = actSpec.type === "shell"
+                                    ? `<svg><use xlink:href="#iconConsole"></use></svg>`
+                                    : `<svg><use xlink:href="#iconCode"></use></svg>`;
+                            } else if (isWeblinkPath(it.path || "") || isBmarksPath(it.path || "")) {
+                                icon = `<svg><use xlink:href="#iconLink"></use></svg>`;
+                            } else {
+                                icon = it.isDir ? folderIconHTML(name, r.expanded) : fileIconHTML(name);
+                            }
                         } else if (it.kind === "block") {
                             icon = `<svg><use xlink:href="#iconEdit"></use></svg>`;
                         } else if (it.kind === "notebook") {
@@ -1614,7 +1768,12 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                         </li>`;
                     }
                     if (r.kind === "file") {
-                        const icon = r.isDir ? folderIconHTML(r.name, r.expanded) : fileIconHTML(r.name);
+                        const actSpecR = isActionPath(r.path) ? actionSpecOf(r.path) : null;
+                        const icon = actSpecR
+                            ? (actSpecR.type === "shell" ? `<svg><use xlink:href="#iconConsole"></use></svg>` : `<svg><use xlink:href="#iconCode"></use></svg>`)
+                            : isWeblinkPath(r.path) || isBmarksPath(r.path)
+                            ? `<svg><use xlink:href="#iconLink"></use></svg>`
+                            : r.isDir ? folderIconHTML(r.name, r.expanded) : fileIconHTML(r.name);
                         // 定位闪烁 + 当前打开文件高亮(与 doc 行的 --flash/--current 同款)
                         const flashing = fileLocateFlashPath && sameFsPath(fileLocateFlashPath, r.path) ? " syfe-mtree__row--flash" : "";
                         const cur = curFile && sameFsPath(curFile, r.path) ? " syfe-mtree__row--current" : "";
@@ -1909,6 +2068,21 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
             };
 
             const clickHandler = (e: MouseEvent) => {
+                // 聚焦条「退出聚焦」
+                if ((e.target as HTMLElement).closest("[data-focus-exit]")) {
+                    focusTarget = null;
+                    render();
+                    return;
+                }
+                // 类型浏览的模式内 chip:切换显示的类型分组
+                const typeChip = (e.target as HTMLElement).closest(".syfe-mtree__typechip") as HTMLElement | null;
+                if (typeChip) {
+                    const key = typeChip.dataset.type || "";
+                    if (typeSel.has(key)) typeSel.delete(key);
+                    else typeSel.add(key);
+                    void renderTypeView();
+                    return;
+                }
                 // 行末「查看引用」链接图标:弹反链对话框,不触发行自身的打开行为
                 const linkBtn = (e.target as HTMLElement).closest("[data-linkbtn]") as HTMLElement | null;
                 if (linkBtn) {
@@ -1959,7 +2133,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                     return;
                 }
             };
-            this._clickHandler = clickHandler;
+            self._clickHandler = clickHandler;
             scrollEl.addEventListener("click", clickHandler);
             // 注:不注册 dblclick —— 名称区单击已是"打开",双击会重复触发 siyuan:// 跳转
 
@@ -2012,7 +2186,105 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                             });
                         },
                     },
-                    // Git 仓库(readDir 原生支持 github:// 与 gitee:// 路径,挂完可直接逐级列目录)
+                    // OneDrive(readDir 原生支持 onedrive:// 路径,挂完可直接逐级列目录)
+                    {
+                        icon: "iconCloud",
+                        label: `挂载 OneDrive${where}`,
+                        click: () => {
+                            openOneDriveDialog({
+                                title: where ? `挂载 OneDrive 到「${where}」` : "挂载 OneDrive 到虚拟文档树",
+                                onPicked: (vPath: string, label: string) => {
+                                    void uidOf().then(uid => mountPayload(plugin, {kind: "file", name: label, path: vPath, isDir: true}, uid));
+                                },
+                            });
+                        },
+                    },
+                    // Outlook 邮箱(readDir 原生支持 outlook:// 路径;只读源,邮件为 .md 只读文件)
+                    {
+                        icon: "iconMail",
+                        label: `挂载 Outlook 邮箱${where}`,
+                        click: () => {
+                            openOutlookMailDialog({
+                                title: where ? `挂载 Outlook 邮箱到「${where}」` : "挂载 Outlook 邮箱到虚拟文档树",
+                                onPicked: (vPath: string, label: string) => {
+                                    void uidOf().then(uid => mountPayload(plugin, {kind: "file", name: label, path: vPath, isDir: true}, uid));
+                                },
+                            });
+                        },
+                    },
+                    // 链接/网址(weblink:// 叶子:点击用思源浏览器插件打开,未装则系统浏览器)
+                    {
+                        icon: "iconLink",
+                        label: `挂载链接/网址${where}`,
+                        click: () => {
+                            const dlg = new Dialog({
+                                title: where ? `挂载链接到「${where}」` : "挂载链接/网址到虚拟文档树",
+                                content: `<div class="b3-dialog__content">
+                                    <label class="b3-form__label">名称</label>
+                                    <input id="syfe-lk-name" class="b3-text-field fn__block" placeholder="显示名称,如:思源社区" />
+                                    <label class="b3-form__label">链接(URL)</label>
+                                    <input id="syfe-lk-url" class="b3-text-field fn__block" placeholder="https://… / siyuan://blocks/… / 任意协议链接" />
+                                </div>`,
+                                width: "480px",
+                            });
+                            const commit = () => {
+                                const name = (dlg.element.querySelector("#syfe-lk-name") as HTMLInputElement).value.trim();
+                                const url = (dlg.element.querySelector("#syfe-lk-url") as HTMLInputElement).value.trim();
+                                if (!url) {
+                                    showMessage("请填写链接(URL)", 3000, "error");
+                                    return;
+                                }
+                                void uidOf().then(uid => {
+                                    mountPayload(plugin, {kind: "file", name: name || url, path: makeWeblinkVPath(url), isDir: false}, uid);
+                                    dlg.destroy();
+                                });
+                            };
+                            dlg.element.addEventListener("keydown", (ke: KeyboardEvent) => {
+                                if (ke.key === "Enter") commit();
+                            });
+                            // 确定按钮:content 下方补一个操作行
+                            const bar = document.createElement("div");
+                            bar.className = "b3-dialog__content";
+                            bar.innerHTML = `<div class="b3-dialog__actions" style="padding-top:4px;"><button class="b3-button b3-button--text" id="syfe-lk-ok">挂载</button></div>`;
+                            dlg.element.querySelector(".b3-dialog__content")!.insertAdjacentElement("afterend", bar);
+                            bar.querySelector("#syfe-lk-ok")!.addEventListener("click", commit);
+                        },
+                    },
+                    // 思源浏览器插件的收藏(只读虚拟目录:标签分组,书签点击即打开)
+                    {
+                        icon: "iconStar",
+                        label: `挂载浏览器收藏${where}`,
+                        click: () => {
+                            void uidOf().then(uid => mountPayload(plugin, {kind: "file", name: "浏览器收藏", path: BMARKS_PREFIX + "/", isDir: true}, uid));
+                        },
+                    },
+                                        // 脚本/命令/按钮(action:// 叶子:点击即执行,输出在结果对话框)
+                    {
+                        icon: "iconConsole",
+                        label: `挂载脚本/命令${where}`,
+                        click: () => {
+                            openActionMountDialog({
+                                title: where ? `挂载脚本/命令到「」` : "挂载脚本/命令到虚拟文档树",
+                                onPicked: (vPath: string, name: string) => {
+                                    void uidOf().then(uid => mountPayload(plugin, {kind: "file", name, path: vPath, isDir: false}, uid));
+                                },
+                            });
+                        },
+                    },
+                    // IMAP 邮箱(QQ/网易;桌面端专用,移动端点击提示)
+                    {
+                        icon: "iconMail",
+                        label: `挂载邮箱(QQ/网易)${where}`,
+                        click: () => {
+                            openImapMailDialog({
+                                title: where ? `挂载邮箱到「」` : "挂载邮箱(QQ/网易)到虚拟文档树",
+                                onPicked: (vPath: string, label: string) => {
+                                    void uidOf().then(uid => mountPayload(plugin, {kind: "file", name: label, path: vPath, isDir: true}, uid));
+                                },
+                            });
+                        },
+                    },
+// Git 仓库(readDir 原生支持 github:// 与 gitee:// 路径,挂完可直接逐级列目录)
                     {
                         icon: "iconCloud",
                         label: `挂载 GitHub 仓库${where}`,
@@ -2122,6 +2394,78 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                     menu.open({x: e.clientX, y: e.clientY});
                     return;
                 }
+                // 链接/动作挂载行(weblink:// 叶子 / bmarks:// 目录 / action:// 动作):专用菜单
+                // (不走文件树菜单 —— 这些行不是文件:重命名只改挂载项显示名,由
+                // renameMountItemName 落盘;动作的编辑经 updateMountItem 原地更新)
+                if (row.kind === "file" || (row.kind === "mount" && row.item.kind === "file")) {
+                    const lkPath = row.kind === "file" ? row.path : row.item.path!;
+                    const lkIsAction = isActionPath(lkPath);
+                    if (isWeblinkPath(lkPath) || isBmarksPath(lkPath) || lkIsAction) {
+                        const isMountRow = row.kind === "mount";
+                        const isLeaf = (isWeblinkPath(lkPath) || lkIsAction) && !(row.kind === "file" && row.isDir);
+                        const menu = new Menu();
+                        if (lkIsAction) {
+                            const actName = row.kind === "mount" ? row.item.name : row.name;
+                            menu.addItem({icon: "iconPlay", label: "执行", click: () => {
+                                void executeActionMount(plugin as any, lkPath, actName);
+                            }});
+                            menu.addItem({icon: "iconEdit", label: "编辑…", click: () => {
+                                const spec = actionSpecOf(lkPath);
+                                if (!spec) {
+                                    showMessage("动作配置无法解析,请取消挂载后重新添加", 4000, "error");
+                                    return;
+                                }
+                                openActionMountDialog({
+                                    title: "编辑动作挂载",
+                                    initial: {name: actName, spec},
+                                    onPicked: (vPath: string, name: string) => {
+                                        const mountUid = row.kind === "mount" ? row.uid : "";
+                                        void updateMountItem(mountUid, {name, path: vPath}).then(ok => {
+                                            if (ok) showMessage("已更新", 1500, "info");
+                                        });
+                                    },
+                                });
+                            }});
+                        } else if (isLeaf) {
+                            menu.addItem({icon: "iconLink", label: "打开链接", click: () => openExternalUrl(weblinkUrlOf(lkPath))});
+                            menu.addItem({icon: "iconCopy", label: "复制链接", click: () => {
+                                void copyText(weblinkUrlOf(lkPath)).then(ok => showMessage(ok ? "链接已复制" : "复制失败", 2000, ok ? "info" : "error"));
+                            }});
+                        }
+                        if (isMountRow) {
+                            const it = row.item;
+                            menu.addSeparator();
+                            menu.addItem({icon: "iconEdit", label: "重命名", click: () => {
+                                const dlg = new Dialog({
+                                    title: "重命名",
+                                    content: `<div class="b3-dialog__content"><input id="syfe-lk-rename" class="b3-text-field fn__block" value="${it.name.replace(/"/g, "&quot;")}" /></div>`,
+                                    width: "420px",
+                                });
+                                const input = dlg.element.querySelector("#syfe-lk-rename") as HTMLInputElement;
+                                input.focus();
+                                input.select();
+                                const commit = () => {
+                                    const name = input.value.trim();
+                                    if (name && name !== it.name) {
+                                        void renameMountItemName(it.uid, name).then(ok => {
+                                            if (ok) {
+                                                showMessage("已重命名", 1500, "info");
+                                                render();
+                                            }
+                                        });
+                                    }
+                                    dlg.destroy();
+                                };
+                                input.addEventListener("keydown", (ke: KeyboardEvent) => {
+                                    if (ke.key === "Enter") commit();
+                                });
+                            }});
+                            menu.addItem({icon: "iconTrashcan", label: "取消挂载", click: () => unmountMountRow(row as Extract<Row, {kind: "mount"}>)});
+                        }
+                        menu.open({x: e.clientX, y: e.clientY});
+                        return;
+                    }
+                }
                 // 文件/文件夹(挂载行或子项行)→ 复用文件树的完整右键菜单
                 if (row.kind === "file" || (row.kind === "mount" && row.item.kind === "file")) {
                     const fPath = row.kind === "file" ? row.path : row.item.path!;
@@ -2184,6 +2528,22 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                             click: () => unmountMountRow(row),
                         }]
                         : mountUnder;
+                    // 目录行:聚焦此文件夹(树只渲染该子树;定位事件自动退出聚焦)
+                    if (fIsDir) {
+                        fileExtra.push({
+                            icon: "iconFocus",
+                            label: "聚焦此文件夹",
+                            click: () => {
+                                focusTarget = row.kind === "mount" ? {kind: "mount", uid: row.uid} : {kind: "dir", path: fPath};
+                                // 聚焦即展开:根行/目录行预置展开键并预载子项(否则只有 loading 行)
+                                if (row.kind === "mount") self._expanded!.add(mountExpandKeyOf(row.item));
+                                self._expanded!.add("f:" + fPath);
+                                currentDir = fPath;
+                                render();
+                                void load("f:" + fPath, async () => await readDir(fPath));
+                            },
+                        });
+                    }
                     showFileTreeMenu(e, fPath, fIsDir, rootEl, rootEl?.dataset.path || "", {
                         ...fileTreeActions,
                         createSiyuanDoc: (p, isDir) => {
@@ -2357,7 +2717,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                     menu.open({x: e.clientX, y: e.clientY});
                 }
             };
-            this._contextHandler = contextHandler;
+            self._contextHandler = contextHandler;
             scrollEl.addEventListener("contextmenu", contextHandler);
 
             // 标签筛选:把"打过标签的目录"自动展开,便于直接看到它们的内容
@@ -2402,7 +2762,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
             // 工具栏:标签筛选 / 搜索 / 新建 / 挂载 / 回收站 / 更多 / 刷新 / 全部收起 / 引用关系
             // 菜单锚定:按注册表按钮的 data 属性找到工具栏上的对应图标,菜单弹在它下方
             const openMenuAtButton = (attr: "action" | "rel-action", value: string, menu: Menu) => {
-                const btn = this.element.querySelector(`[data-${attr}="${value}"]`) as HTMLElement | null;
+                const btn = self.element.querySelector(`[data-${attr}="${value}"]`) as HTMLElement | null;
                 const r = btn ? btn.getBoundingClientRect() : null;
                 menu.open({x: r ? r.left : innerWidth / 2, y: r ? r.bottom + 4 : 80});
             };
@@ -2422,7 +2782,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                     render();
                 } else if (action === "drag-mode") {
                     dragMode = !dragMode;
-                    const actionEl = this.element.querySelector('[data-action="drag-mode"]') as HTMLElement | null;
+                    const actionEl = self.element.querySelector('[data-action="drag-mode"]') as HTMLElement | null;
                     actionEl?.classList.toggle("syfe-mtree__icon--on", dragMode);
                     showMessage(dragMode ? "拖拽模式已开启:拖动挂载项/自动挂载项调整顺序(同层内),再点一次图标关闭" : "拖拽模式已关闭", 2500, "info");
                     render();
@@ -2436,6 +2796,11 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                         return;
                     }
                     (plugin as any).openSearch(target);
+                } else if (action === "type-view") {
+                    typeViewOn = !typeViewOn;
+                    renderToolbar();
+                    if (typeViewOn) void renderTypeView();
+                    else render();
                 } else if (action === "locate-mount") {
                     void locateActiveInMountTree();
                 } else if (action === "new-file") {
@@ -2471,12 +2836,19 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                     }
                     m.addSeparator();
                     m.addItem({
+                        icon: "iconLayout",
+                        label: "在标签页打开",
+                        click: () => openMountTreeTab(plugin as any),
+                    });
+                    m.addSeparator();
+                    m.addItem({
                         icon: "iconSettings",
                         label: "编辑工具栏…",
                         click: () => void openToolbarEditor(),
                     });
                     openMenuAtButton("action", "more", m);
                 } else if (action === "refresh") {
+                    typeFilesCache = null;
                     self._cache = new Map<string, DirEntry[] | BlockNode[]>();
                     self._prefetchFailed!.clear();
                     // Git 仓库整树有 5 分钟 TTL,不清就还是旧树(别处推了新提交时看不到)
@@ -2500,8 +2872,8 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 if (act === "more" || act === "mount-menu") e.stopPropagation();
                 runToolbarAction(act);
             };
-            this._actionHandler = actionHandler;
-            const toolbarEl = this.element.querySelector(".syfe-mtree__toolbar") as HTMLElement;
+            self._actionHandler = actionHandler;
+            const toolbarEl = self.element.querySelector(".syfe-mtree__toolbar") as HTMLElement;
             toolbarEl.addEventListener("click", actionHandler);
 
             // ===== 顶栏按钮渲染(配置驱动)=====
@@ -2521,7 +2893,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                         const edge = k === first ? " syfe-mtree__btn--edge-start" : (k === last ? " syfe-mtree__btn--edge-end" : "");
                         // 拖拽模式的开启态要跟着画(重绘配置后不丢);引用关系按钮始终显示,
                         // 开关关闭时点击给提示(见 runRelationAction)
-                        const on = k === "drag-mode" && dragMode ? " syfe-mtree__icon--on" : "";
+                        const on = (k === "drag-mode" && dragMode) || (k === "type-view" && typeViewOn) ? " syfe-mtree__icon--on" : "";
                         // block__icon--show:思源 3.8.8 起顶栏图标默认 opacity:0、悬停容器才浮现,
                         // 加官方常显修饰类让按钮始终可见
                         return `<span class="block__icon block__icon--show ariaLabel${edge}${on}" data-${b.attr}="${b.value}" aria-label="${b.label}" data-position="north"><svg><use xlink:href="#${b.icon}"></use></svg></span>`;
@@ -2695,7 +3067,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 e.stopPropagation();
                 runRelationAction(el.dataset.relAction || "");
             };
-            this._relActionHandler = relActionHandler;
+            self._relActionHandler = relActionHandler;
             toolbarEl.addEventListener("click", relActionHandler);
 
             // 顶栏改为横向滚动后,原「窄面板折叠进更多」逻辑已移除(不再按宽度藏按钮)
@@ -2707,7 +3079,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 render();
                 if (relationEnabled()) ensureRelationTree(true);
             };
-            this._changedHandler = changedHandler;
+            self._changedHandler = changedHandler;
             window.addEventListener(MOUNT_TREE_CHANGED_EVENT, changedHandler);
 
             // 文件系统/文档结构变动(来自 refreshFileTrees;switch-protyle 切文档防抖后也会派发)
@@ -2724,7 +3096,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                     if (changed || highlightMoved) render();
                 });
             };
-            this._filesChangedHandler = filesChangedHandler;
+            self._filesChangedHandler = filesChangedHandler;
             window.addEventListener("syfe:files-changed", filesChangedHandler);
 
             // 标签数据变化(新建/删除标签、文件加标签)→ 刷新 chip 行与筛选结果
@@ -2732,7 +3104,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 renderChips();
                 render();
             };
-            this._tagsChangedHandler = tagsChangedHandler;
+            self._tagsChangedHandler = tagsChangedHandler;
             window.addEventListener(TAGS_CHANGED_EVENT, tagsChangedHandler);
 
             // 引用关系树:开关切换(设置保存时派发)→ 重建或清空
@@ -2740,7 +3112,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 ensureRelationTree();
                 render();
             };
-            this._relationHandler = relationToggleHandler;
+            self._relationHandler = relationToggleHandler;
             window.addEventListener(SYFE_RELATION_TREE_CHANGED_EVENT, relationToggleHandler);
 
             // 引用关系树:内容变动后自动重建(防抖,避免连续操作时反复查 SQL)
@@ -2756,7 +3128,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                     ensureRelationTree(true);
                 }, 1500);
             };
-            this._relationRebuildHandler = relationRebuildHandler;
+            self._relationRebuildHandler = relationRebuildHandler;
             window.addEventListener("syfe:files-changed", relationRebuildHandler);
 
             // 首次渲染:开关开启时建关系树(懒加载,只查一次)
@@ -2884,7 +3256,7 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 });
             };
             // destroy() 里按同样的表反注册,避免重复粘监听(手动挂载行 + 自动挂载行)
-            this._mountDragHandlers = [
+            self._mountDragHandlers = [
                 ["dragstart", mountDragStart as (e: Event) => void],
                 ["dragover", mountDragOver as (e: Event) => void],
                 ["drop", mountDrop as (e: Event) => void],
@@ -2894,83 +3266,78 @@ export function createMountTreeDockConfig(plugin: IPluginForMountTree) {
                 ["drop", autoDrop as (e: Event) => void],
                 ["dragend", autoDragEnd as (e: Event) => void],
             ];
-            for (const [evt, fn] of this._mountDragHandlers) {
+            for (const [evt, fn] of self._mountDragHandlers) {
                 scrollEl.addEventListener(evt, fn);
             }
-        },
-        resize() {
-            // 无需特殊处理
-        },
-        destroy(this: MountTreeDockInstance) {
-            if (this._scrollEl && this._clickHandler) {
-                this._scrollEl.removeEventListener("click", this._clickHandler);
+}
+
+export function mountTreePanelDestroy(self: MountTreeDockInstance): void {
+          if (self._scrollEl && self._clickHandler) {
+                self._scrollEl.removeEventListener("click", self._clickHandler);
             }
-            if (this._scrollEl && this._contextHandler) {
-                this._scrollEl.removeEventListener("contextmenu", this._contextHandler);
+            if (self._scrollEl && self._contextHandler) {
+                self._scrollEl.removeEventListener("contextmenu", self._contextHandler);
             }
-            if (this._changedHandler) {
-                window.removeEventListener(MOUNT_TREE_CHANGED_EVENT, this._changedHandler);
+            if (self._changedHandler) {
+                window.removeEventListener(MOUNT_TREE_CHANGED_EVENT, self._changedHandler);
             }
-            if (this._filesChangedHandler) {
-                window.removeEventListener("syfe:files-changed", this._filesChangedHandler);
-                this._filesChangedHandler = undefined;
+            if (self._filesChangedHandler) {
+                window.removeEventListener("syfe:files-changed", self._filesChangedHandler);
+                self._filesChangedHandler = undefined;
             }
-            if (this._tagsChangedHandler) {
-                window.removeEventListener(TAGS_CHANGED_EVENT, this._tagsChangedHandler);
-                this._tagsChangedHandler = undefined;
+            if (self._tagsChangedHandler) {
+                window.removeEventListener(TAGS_CHANGED_EVENT, self._tagsChangedHandler);
+                self._tagsChangedHandler = undefined;
             }
-            if (this._relationHandler) {
-                window.removeEventListener(SYFE_RELATION_TREE_CHANGED_EVENT, this._relationHandler);
-                this._relationHandler = undefined;
+            if (self._relationHandler) {
+                window.removeEventListener(SYFE_RELATION_TREE_CHANGED_EVENT, self._relationHandler);
+                self._relationHandler = undefined;
             }
-            if (this._relationRebuildHandler) {
-                window.removeEventListener("syfe:files-changed", this._relationRebuildHandler);
-                this._relationRebuildHandler = undefined;
+            if (self._relationRebuildHandler) {
+                window.removeEventListener("syfe:files-changed", self._relationRebuildHandler);
+                self._relationRebuildHandler = undefined;
             }
-            if (this._folderLocateHandler) {
-                window.removeEventListener("syfe:mount-tree-locate-folder", this._folderLocateHandler);
-                this._folderLocateHandler = undefined;
+            if (self._folderLocateHandler) {
+                window.removeEventListener("syfe:mount-tree-locate-folder", self._folderLocateHandler);
+                self._folderLocateHandler = undefined;
             }
-            if (this._locateMountHandler) {
-                window.removeEventListener("syfe:mount-tree-locate", this._locateMountHandler);
-                this._locateMountHandler = undefined;
+            if (self._locateMountHandler) {
+                window.removeEventListener("syfe:mount-tree-locate", self._locateMountHandler);
+                self._locateMountHandler = undefined;
             }
-            if (this._docLocateHandler) {
-                window.removeEventListener("syfe:mount-tree-locate-doc", this._docLocateHandler);
-                this._docLocateHandler = undefined;
+            if (self._docLocateHandler) {
+                window.removeEventListener("syfe:mount-tree-locate-doc", self._docLocateHandler);
+                self._docLocateHandler = undefined;
             }
-            if (this._scrollEl && this._mountDragHandlers) {
-                for (const [evt, fn] of this._mountDragHandlers) {
-                    this._scrollEl.removeEventListener(evt, fn);
+            if (self._scrollEl && self._mountDragHandlers) {
+                for (const [evt, fn] of self._mountDragHandlers) {
+                    self._scrollEl.removeEventListener(evt, fn);
                 }
             }
-            this._mountDragHandlers = undefined;
-            if (this._previewRO) {
-                this._previewRO.disconnect();
-                this._previewRO = undefined;
+            self._mountDragHandlers = undefined;
+            if (self._previewRO) {
+                self._previewRO.disconnect();
+                self._previewRO = undefined;
             }
-            this._listEl = undefined;
-            this._scrollEl = undefined;
-            this._clickHandler = undefined;
-            this._contextHandler = undefined;
-            if (this._actionHandler) {
-                const tb = this.element.querySelector('.syfe-mtree__toolbar') as HTMLElement | null;
-                if (tb) tb.removeEventListener("click", this._actionHandler);
+            self._listEl = undefined;
+            self._scrollEl = undefined;
+            self._clickHandler = undefined;
+            self._contextHandler = undefined;
+            if (self._actionHandler) {
+                const tb = self.element.querySelector('.syfe-mtree__toolbar') as HTMLElement | null;
+                if (tb) tb.removeEventListener("click", self._actionHandler);
             }
-            if (this._relActionHandler) {
-                const tb = this.element.querySelector('.syfe-mtree__toolbar') as HTMLElement | null;
-                if (tb) tb.removeEventListener("click", this._relActionHandler);
+            if (self._relActionHandler) {
+                const tb = self.element.querySelector('.syfe-mtree__toolbar') as HTMLElement | null;
+                if (tb) tb.removeEventListener("click", self._relActionHandler);
             }
-            this._relActionHandler = undefined;
-            this._actionHandler = undefined;
-            this._changedHandler = undefined;
-            this._rows = undefined;
-            this._expanded = undefined;
-            this._cache = undefined;
-            this._loading = undefined;
-            this._prefetchFailed = undefined;
-            this._nbIcons = undefined;
-            this._blockMeta = undefined;
-        },
-    };
+            self._relActionHandler = undefined;
+            self._actionHandler = undefined;
+            self._changedHandler = undefined;
+            self._rows = undefined;
+            self._expanded = undefined;
+            self._cache = undefined;
+            self._loading = undefined;
+            self._prefetchFailed = undefined;
+            self._nbIcons = undefined;
 }

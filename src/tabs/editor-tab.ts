@@ -10,6 +10,8 @@ import {readDir} from "../api/file";
 import {BINARY_EXTENSIONS, isImageFile, isOfficeFile, isMediaFile, isNotebookFile} from "../constants";
 // 双链:插入双链(文件选择器 → [[wikilink]])
 import {buildWikilink} from "../utils/wikilink";
+import {isWeblinkPath, weblinkUrlOf, openExternalUrl} from "../utils/link-mount";
+import {isActionPath, executeActionMount} from "../utils/action-mount";
 import {openFilePicker} from "../components/file-picker";
 import {openMediaTab} from "./media-tab";
 import {openImageTab} from "./image-tab";
@@ -163,6 +165,16 @@ export function openFileTab(plugin: IPluginForTab, rawPath: string, opts?: OpenT
     // 两种 key 并存 —— Monaco URI 相同(Map key 不同)→ createModel 抛
     // "Cannot add model because it already exists",且页签复用检查也失效(实测)
     const path = (rawPath || "").replace(/\\/g, "/");
+    // 链接挂载叶子(weblink://):打开链接本身(思源浏览器插件优先),不进页签
+    if (isWeblinkPath(path)) {
+        openExternalUrl(weblinkUrlOf(path));
+        return;
+    }
+    // 动作挂载叶子(action://):点击即执行,输出在结果对话框
+    if (isActionPath(path)) {
+        void executeActionMount(plugin as any, path, "");
+        return;
+    }
     // 移动端没有页签系统(openTab 空实现),改走全屏 Dialog
     if (isMobileFrontend()) {
         openFileOnMobile(plugin, path, isDirectory(path));

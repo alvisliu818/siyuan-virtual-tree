@@ -12,6 +12,7 @@ import {
     emptyPluginTrash,
     revealPluginTrash,
     getTrashMode,
+    isNativeAvailable,
 } from "../utils/trash";
 
 function escapeHTML(s: string): string {
@@ -37,8 +38,8 @@ export function openTrashDialog(plugin: IPluginForTrash): void {
         }
     };
 
-    const renderBody = (bodyEl: HTMLElement, listEl: HTMLElement, emptyEl: HTMLElement, statsEl: HTMLElement): void => {
-        const items = listTrashItems();
+    const renderBody = async (bodyEl: HTMLElement, listEl: HTMLElement, emptyEl: HTMLElement, statsEl: HTMLElement): Promise<void> => {
+        const items = await listTrashItems();
         statsEl.textContent = items.length > 0 ? `共 ${items.length} 项(按原路径镜像存放)` : "";
         if (items.length === 0) {
             listEl.innerHTML = "";
@@ -82,7 +83,12 @@ export function openTrashDialog(plugin: IPluginForTrash): void {
     const emptyEl = dlg.element.querySelector("#syfe-trash-empty") as HTMLElement;
     const statsEl = dlg.element.querySelector("#syfe-trash-stats") as HTMLElement;
 
-    const rerender = () => renderBody(bodyEl, listEl, emptyEl, statsEl);
+    const rerender = () => void renderBody(bodyEl, listEl, emptyEl, statsEl);
+
+    // 移动端无原生 fs:隐藏「打开目录」(系统资源管理器不可用)
+    if (!isNativeAvailable()) {
+        (dlg.element.querySelector("#syfe-trash-reveal") as HTMLElement).style.display = "none";
+    }
 
     (dlg.element.querySelector("#syfe-trash-close") as HTMLElement).addEventListener("click", () => dlg.destroy());
 
@@ -99,13 +105,15 @@ export function openTrashDialog(plugin: IPluginForTrash): void {
             "清空回收站",
             "确定清空插件回收站吗?其中所有内容将从磁盘永久删除,无法再恢复。",
             () => {
-                try {
-                    emptyPluginTrash();
-                    rerender();
-                    showMessage("回收站已清空", 2500, "info");
-                } catch (e) {
-                    showMessage(`清空失败: ${(e as Error)?.message || e}`, 4000, "error");
-                }
+                void (async () => {
+                    try {
+                        await emptyPluginTrash();
+                        rerender();
+                        showMessage("回收站已清空", 2500, "info");
+                    } catch (e) {
+                        showMessage(`清空失败: ${(e as Error)?.message || e}`, 4000, "error");
+                    }
+                })();
             },
             () => {},
         );
@@ -116,14 +124,16 @@ export function openTrashDialog(plugin: IPluginForTrash): void {
         const restoreBtn = target.closest(".syfe-trash-restore") as HTMLElement | null;
         const purgeBtn = target.closest(".syfe-trash-purge") as HTMLElement | null;
         if (restoreBtn) {
-            try {
-                const r = restoreFromTrash(restoreBtn.dataset.id || "");
-                showMessage(`已恢复到 ${r.restoredAs}`, 4000, "info");
-                rerender();
-                refreshTrees();
-            } catch (e) {
-                showMessage(`恢复失败: ${(e as Error)?.message || e}`, 4000, "error");
-            }
+            void (async () => {
+                try {
+                    const r = await restoreFromTrash(restoreBtn.dataset.id || "");
+                    showMessage(`已恢复到 ${r.restoredAs}`, 4000, "info");
+                    rerender();
+                    refreshTrees();
+                } catch (e) {
+                    showMessage(`恢复失败: ${(e as Error)?.message || e}`, 4000, "error");
+                }
+            })();
             return;
         }
         if (purgeBtn) {
@@ -131,12 +141,14 @@ export function openTrashDialog(plugin: IPluginForTrash): void {
                 "彻底删除",
                 "确定从磁盘永久删除该条目吗?此操作不可恢复。",
                 () => {
-                    try {
-                        purgeTrashItem(purgeBtn.dataset.id || "");
-                        rerender();
-                    } catch (e) {
-                        showMessage(`删除失败: ${(e as Error)?.message || e}`, 4000, "error");
-                    }
+                    void (async () => {
+                        try {
+                            await purgeTrashItem(purgeBtn.dataset.id || "");
+                            rerender();
+                        } catch (e) {
+                            showMessage(`删除失败: ${(e as Error)?.message || e}`, 4000, "error");
+                        }
+                    })();
                 },
                 () => {},
             );

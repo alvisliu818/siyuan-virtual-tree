@@ -76,7 +76,6 @@ export interface MarkdownTabInstance {
     _themeObserver?: MutationObserver;
     _keydownHandler?: (e: KeyboardEvent) => void;
     _backlink?: BacklinkPanel;
-    _backlinkRefreshHandler?: (e: Event) => void;
     // 渲染态(Vditor)链接点击委托(双链;destroyVditor 时摘除)
     _vditorLinkClick?: (e: MouseEvent) => void;
     // ===== 文档内查找(渲染态)状态 =====
@@ -103,6 +102,8 @@ export interface MarkdownTabInstance {
     _insertMarkdown?: (md: string) => boolean;
     // 配置加载完成后按当前配置重进当前模式(布局恢复时序补偿;引擎没挂错是 no-op)
     _resyncEngineForConfig?: () => void;
+    // 设置保存后按「隐藏双链面板」开关挂载/卸载面板
+    _resyncBacklinkPanel?: () => void;
     // Monaco 主题切换订阅(cm6 阅读态重取色);卸载时 dispose
     _monacoThemeOff?: {dispose(): void};
 }
@@ -501,8 +502,10 @@ function pushBacklinkMarkers(tab: MarkdownTabInstance, path: string): void {
     handle.setBacklinkMarkers({lineLinks, anchorLinks});
 }
 
-// 加载反链(带缓存)并推到行号槽;数据晚于内容就绪也没关系,handle.set 会自己重画
+// 加载反链(带缓存)并推到行号槽;数据晚于内容就绪也没关系,handle.set 会自己重画。
+// 没点开面板就不扫描:面板收起/隐藏时直接跳过,展开后由 onInLinks 回调推标记。
 function applyBacklinkMarkers(tab: MarkdownTabInstance, path: string): void {
+    if (!tab._backlink?.isExpanded()) return;
     void (async () => {
         try {
             tab._backlinkItems = await findBacklinksCached(path);
@@ -511,6 +514,18 @@ function applyBacklinkMarkers(tab: MarkdownTabInstance, path: string): void {
         }
         pushBacklinkMarkers(tab, path);
     })();
+}
+
+// 挂双链面板(设置隐藏则不挂);入链扫描完成后同步推行号槽标记
+function attachBacklinkPanel(tab: MarkdownTabInstance, plugin: any, path: string): void {
+    if (plugin.config?.backlinkPanelHidden) return;
+    tab._backlink = createBacklinkPanel(plugin, path, {
+        onInLinks: (items) => {
+            tab._backlinkItems = items;
+            pushBacklinkMarkers(tab, path);
+        },
+    });
+    (tab.element.querySelector(".syfe-md__backlink") as HTMLElement).appendChild(tab._backlink.el);
 }
 
 // 把位置应用到已渲染的 Vditor 内容(标题锚点 / 行号)
@@ -923,9 +938,22 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                 showFileTreeMenu(e, path, false, rootEl, rootEl?.dataset.path || "", fileTreeActions);
             });
 
-            // 反向链接面板(默认收起,展开时懒扫描)
-            this._backlink = createBacklinkPanel(plugin as any, path);
-            (this.element.querySelector(".syfe-md__backlink") as HTMLElement).appendChild(this._backlink.el);
+            // 反向链接面板(默认收起,展开时懒扫描;设置可隐藏)
+            attachBacklinkPanel(this, plugin, path);
+            this._resyncBacklinkPanel = () => {
+                const host = self.element.querySelector(".syfe-md__backlink") as HTMLElement | null;
+                if (!host) return;
+                const hidden = plugin.config?.backlinkPanelHidden === true;
+                if (hidden && self._backlink) {
+                    self._backlink.dispose();
+                    self._backlink = undefined;
+                    host.innerHTML = "";
+                    self._backlinkItems = undefined;
+                    self._gutterHandle?.setBacklinkMarkers({lineLinks: new Map(), anchorLinks: new Map()});
+                } else if (!hidden && !self._backlink) {
+                    attachBacklinkPanel(self, plugin, path);
+                }
+            };
 
             // 图片本地化渲染:缓存 + DOM 观察器(捕获 Vditor 每次重渲染插入的 img)
             // 注意:观察器在 Vditor 初始渲染完成后才启动(enterWysiwyg 的 after 回调),
@@ -1010,8 +1038,10 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                     // 编辑态代码块的最新内容还在内嵌 Monaco 里,先同步回 cm6 文档
                     flushActiveBlock();
                     // live 模式先把编辑面内容同步回 model;source 模式 Monaco 直接改
-                    // model、reading 模式不可编辑,都无需同步
-                    if (self._mode === "live" && self._model) {
+                    // model、reading 模式不可编辑,都无需同步。
+                    // 仅脏时回写:未编辑时序列化(Vditor dom2md)的 normalization 差异
+                    // 不该落盘,远程仓库更不该因此产生无差异提交
+                    if (self._mode === "live" && self._model && isDirty(path)) {
                         if (self._cm6) {
                             self._model.setValue(self._cm6.getValue());
                         } else if (self._vditor) {
@@ -1559,21 +1589,9 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
             });
 
             // ===== 反链刷新联动 =====
-            // 斜杆命令插入指向本文件的链接后,面板会广播 syfe:backlink-refresh;
-            // 这里同步更新行号槽上的反链标记(强制绕缓存重扫)。
-            this._backlinkRefreshHandler = (e: Event) => {
-                const p = (e as CustomEvent)?.detail?.path;
-                if (p !== self._path) return;
-                void (async () => {
-                    try {
-                        self._backlinkItems = await findBacklinksCached(self._path!, {force: true});
-                    } catch {
-                        return;
-                    }
-                    pushBacklinkMarkers(self, self._path!);
-                })();
-            };
-            window.addEventListener("syfe:backlink-refresh", this._backlinkRefreshHandler);
+            // 斜杆命令插入指向本文件的链接后广播 syfe:backlink-refresh;
+            // 面板自己监听并按需重扫(收起不扫),入链结果经 onInLinks 推回行号槽,
+            // 页签无需再独立强制重扫。
 
             // ===== 剪贴板增强 =====
             // 阅读 / 实时预览态:Vditor 自带的 copy 只写 Markdown、text/html 置空,
@@ -1738,10 +1756,6 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
             this._themeObserver = undefined;
             this._backlink?.dispose();
             this._backlink = undefined;
-            if (this._backlinkRefreshHandler) {
-                window.removeEventListener("syfe:backlink-refresh", this._backlinkRefreshHandler);
-                this._backlinkRefreshHandler = undefined;
-            }
             // 图片本地化渲染清理:断开观察器并释放所有 blob URL
             if (this._imgDebounce) {
                 window.clearTimeout(this._imgDebounce);

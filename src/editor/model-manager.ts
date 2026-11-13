@@ -51,7 +51,12 @@ export function getModel(path: string): Promise<monaco.editor.ITextModel> {
     const p = (async () => {
         let content = "";
         try {
-            content = await readTextFile(path);
+            try {
+                content = await readTextFile(path);
+            } catch (e) {
+                console.error("[syfe-model] readTextFile failed:", (e as Error)?.stack || (e as Error)?.message || e);
+                throw e;
+            }
         } catch {
             // 读取失败(文件不存在等),使用空内容,允许新建后保存
             content = "";

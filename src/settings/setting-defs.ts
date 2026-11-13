@@ -30,6 +30,7 @@ export interface SettingDef {
     enumLabels?: Record<string, string>;
     min?: number;
     max?: number;
+    step?: number;
     placeholder?: string;
     /** 值 → 写入 Monaco 的值(用于 VS Code 与 Monaco 命名不一致的项) */
     toMonaco?: (v: any) => any;
@@ -834,6 +835,29 @@ export const PLUGIN_DEFS: SettingDef[] = [
         set: (c, v) => { c.searchMaxFileSize = Math.max(1, Number(v) || 1024) * 1024; },
     },
     {
+        key: "files.cm6GutterOpacity",
+        kind: "number",
+        group: G_FILES,
+        title: "CM6 行号不透明度",
+        description: "0-1,越小行号越浅(默认 0.4);行号用次级文本色且与正文加大间距,避免干扰阅读",
+        default: 0.4,
+        min: 0,
+        max: 1,
+        step: 0.05,
+        get: (c) => c.cm6GutterOpacity,
+        set: (c, v) => { c.cm6GutterOpacity = Math.min(1, Math.max(0, Number(v) || 0.4)); },
+    },
+    {
+        key: "files.cm6HighlightActiveLine",
+        kind: "boolean",
+        group: G_FILES,
+        title: "CM6 高亮当前行和行号",
+        description: "开启后当前行带背景色、当前行号用主题色;默认关闭(移动端编辑器同一开关)",
+        default: false,
+        get: (c) => c.cm6HighlightActiveLine,
+        set: (c, v) => { c.cm6HighlightActiveLine = v === true; },
+    },
+    {
         key: "files.versionKeepCount",
         kind: "number",
         group: G_FILES,
@@ -886,6 +910,36 @@ export const PLUGIN_DEFS: SettingDef[] = [
         default: DEFAULT_INDEX_WHITELIST,
         get: (c) => c.indexWhitelist,
         set: (c, v) => { c.indexWhitelist = String(v ?? ""); },
+    },
+    {
+        key: "files.backlinkPanelHidden",
+        kind: "boolean",
+        group: G_FILES,
+        title: "双链:隐藏编辑区入链/出链面板",
+        description: "隐藏 Markdown 编辑区上方的双链面板(与侧边 dock 的入链/出链重合,默认隐藏);隐藏后不做反链扫描。需要时打开本开关恢复内嵌面板;侧边双链 dock 不受影响",
+        default: true,
+        get: (c) => c.backlinkPanelHidden,
+        set: (c, v) => { c.backlinkPanelHidden = v === true; },
+    },
+    {
+        key: "files.backlinkScanBlacklist",
+        kind: "string",
+        group: G_FILES,
+        title: "双链扫描:黑名单规则",
+        description: "每行一条规则(语法同索引黑名单)。只作用于反链/出链扫描,不影响 [[ 补全索引;目录命中跳过整棵子树。默认与索引黑名单相同",
+        default: DEFAULT_INDEX_BLACKLIST,
+        get: (c) => c.backlinkScanBlacklist,
+        set: (c, v) => { c.backlinkScanBlacklist = String(v ?? ""); },
+    },
+    {
+        key: "files.backlinkScanWhitelist",
+        kind: "string",
+        group: G_FILES,
+        title: "双链扫描:白名单规则",
+        description: "每行一条规则(语法同黑名单)。留空 = 不限制;非空时只扫描命中的文件。白名单不挡目录,黑名单始终优先。只作用于反链/出链扫描",
+        default: DEFAULT_INDEX_WHITELIST,
+        get: (c) => c.backlinkScanWhitelist,
+        set: (c, v) => { c.backlinkScanWhitelist = String(v ?? ""); },
     },
     {
         key: "files.docWikilinkHint",

@@ -21,6 +21,7 @@ export interface BacklinkPanel {
     setTarget(path: string): void; // 切换被引用文件(图片 Tab 同目录切换时)
     refresh(): void;
     dispose(): void;
+    isExpanded(): boolean;
 }
 
 function escapeHTML(s: string): string {
@@ -67,7 +68,7 @@ export function navigateOutlink(plugin: IPluginForBacklink, item: BacklinkItem):
 }
 
 // 创建双链面板;targetPath 为当前文件路径(入链的被引用者 / 出链的发起者)
-export function createBacklinkPanel(plugin: IPluginForBacklink, targetPath: string, opts?: {expanded?: boolean}): BacklinkPanel {
+export function createBacklinkPanel(plugin: IPluginForBacklink, targetPath: string, opts?: {expanded?: boolean; onInLinks?: (items: BacklinkItem[]) => void}): BacklinkPanel {
     let target = targetPath;
     // opts.expanded=true 用于侧边 dock(常驻展开);页签内嵌面板默认收起
     let collapsed = opts?.expanded !== true;
@@ -219,6 +220,7 @@ export function createBacklinkPanel(plugin: IPluginForBacklink, targetPath: stri
         }
         dirty[loadMode] = false;
         modeData[loadMode] = items!;
+        if (loadMode === "in") opts?.onInLinks?.(items!);
         counts[loadMode] = items!.length > 0 ? String(items!.length) : "";
         if (mode !== loadMode) {
             // 扫描期间切走了:数据已入 modeData,当前模式若有干净数据立即展示,否则补载
@@ -278,14 +280,13 @@ export function createBacklinkPanel(plugin: IPluginForBacklink, targetPath: stri
         }
     });
 
-    // 外部请求刷新(如斜杆命令插入了指向本文件的链接 / 文件保存):目标匹配则全量失效重扫
+    // 外部请求刷新(如斜杆命令插入了指向本文件的链接 / 文件保存):目标匹配则全量失效;
+    // 收起状态不强制展开、不扫描(没点开就不扫描),展开后才重扫
     const onRefreshRequest = (e: Event) => {
         const p = (e as CustomEvent)?.detail?.path;
         if (!p || p !== target) return;
         invalidateAll();
-        collapsed = false;
-        el.classList.remove("syfe-backlink--collapsed");
-        void load(true);
+        if (!collapsed) void load(true);
     };
     window.addEventListener("syfe:backlink-refresh", onRefreshRequest);
 
@@ -314,6 +315,9 @@ export function createBacklinkPanel(plugin: IPluginForBacklink, targetPath: stri
         },
         dispose() {
             window.removeEventListener("syfe:backlink-refresh", onRefreshRequest);
+        },
+        isExpanded() {
+            return !collapsed;
         },
     };
 }

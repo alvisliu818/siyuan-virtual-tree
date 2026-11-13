@@ -54,6 +54,10 @@ export interface EditorConfig {
     // CM6 编辑面代码块是否用 Monaco 渲染/编辑(colorize 卡片 + 单例编辑器);
     // 关闭后代码块回落为 CM6 原生源码行(与点语言标签的围栏态一致)
     cm6CodeBlockMonaco: boolean;
+    // CM6 行号不透明度(0-1,越小越浅)
+    cm6GutterOpacity: number;
+    // CM6 高亮当前行与当前行号(默认关,避免干扰正文阅读)
+    cm6HighlightActiveLine: boolean;
     newTabReplacePlus: boolean;      // 接管思源顶部「+」:点击改为打开新标签页(而非新建文档)
     newTabShowPinned: boolean;       // 新标签页显示「固定」区
     newTabShowRecent: boolean;       // 新标签页显示「最近打开」区
@@ -101,6 +105,13 @@ export interface EditorConfig {
     // 白名单非空时只索引命中规则的文件;黑名单命中即排除(目录命中跳过整棵子树)
     indexWhitelist: string;
     indexBlacklist: string;
+    // 隐藏编辑区上方的入链/出链面板(隐藏后也不做反链扫描;默认隐藏,入链/出链用侧边 dock)
+    backlinkPanelHidden: boolean;
+    // 一次性迁移标记:老配置(面板曾默认显示)升级时强制隐藏一次,之后尊重用户设置
+    backlinkPanelHiddenMigrated: boolean;
+    // 双链扫描独立过滤规则(语法同索引规则;与文件名索引过滤互不干扰)
+    backlinkScanWhitelist: string;
+    backlinkScanBlacklist: string;
     // 音视频播放器自定义快捷键(规范串见 utils/hotkey.ts;空 = 禁用)
     mediaHotkeyMark: string;   // 在当前时间打点
     mediaHotkeyInsert: string; // 时间戳链接插入可见笔记页签的光标处
@@ -304,6 +315,8 @@ export const DEFAULT_CONFIG: EditorConfig = {
     markdownEditor: "vditor",    // Markdown 编辑器引擎:vditor(所见即所得)默认;cm6 备选
     markdownReadingEngine: "vditor", // 阅读态引擎:vditor(保持旧行为)/ cm6(CM6 只读富渲染)
     cm6CodeBlockMonaco: true,     // CM6 代码块 Monaco 渲染/编辑默认开
+    cm6GutterOpacity: 0.4,
+    cm6HighlightActiveLine: false,
     newTabReplacePlus: true,        // 默认接管顶部「+」
     newTabShowPinned: true,
     newTabShowRecent: true,
@@ -335,6 +348,10 @@ export const DEFAULT_CONFIG: EditorConfig = {
     // 索引规则:白名单默认空(不限制),黑名单默认忽略 node_modules 等噪声目录
     indexWhitelist: DEFAULT_INDEX_WHITELIST,
     indexBlacklist: DEFAULT_INDEX_BLACKLIST,
+    backlinkPanelHidden: true,
+    backlinkPanelHiddenMigrated: true,
+    backlinkScanWhitelist: DEFAULT_INDEX_WHITELIST,
+    backlinkScanBlacklist: DEFAULT_INDEX_BLACKLIST,
     // 音视频播放器快捷键默认值(K 打点;Shift+K 把时间戳链接插入可见笔记)
     mediaHotkeyMark: "K",
     mediaHotkeyInsert: "Shift+K",

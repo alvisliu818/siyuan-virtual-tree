@@ -87,6 +87,7 @@ const mobileTheme = EditorView.theme({
     ".cm-lineNumbers .cm-gutterElement": {
         padding: "0 2px 0 3px",
         minWidth: "18px",
+        opacity: "var(--syfe-cm-gutter-opacity, 0.4)",
     },
     ".cm-gutters": {
         backgroundColor: "var(--b3-theme-surface)",
@@ -94,9 +95,9 @@ const mobileTheme = EditorView.theme({
         border: "none",
         fontSize: "11px",
     },
-    // 当前行高亮贯通行号槽与内容,避免截图里"灰带断开、不满宽"的观感
-    ".cm-activeLine": {backgroundColor: "var(--b3-theme-hover-background, rgba(0,0,0,.05))"},
-    ".cm-activeLineGutter": {backgroundColor: "var(--b3-theme-hover-background, rgba(0,0,0,.05))"},
+    // 当前行高亮走设置变量(默认不高亮,与桌面 CM6 同一开关)
+    ".cm-activeLine": {backgroundColor: "var(--syfe-cm-active-line-bg, transparent)"},
+    ".cm-activeLineGutter": {backgroundColor: "var(--syfe-cm-active-line-bg, transparent)"},
     "&.cm-focused": {outline: "none"},
     ".cm-selectionBackground, .cm-content ::selection": {
         backgroundColor: "var(--b3-theme-primary-lightest, rgba(0,0,0,.12))",

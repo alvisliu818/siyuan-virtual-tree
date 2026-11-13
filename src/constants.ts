@@ -28,6 +28,7 @@ export const TAG_DOCK_TYPE = "siyuan-file-editor-tag-dock";
 // 侧边栏「虚拟文档树」面板(用户自建树,初始为空,可挂载文件/文件夹/思源文档/思源块)
 export const MOUNT_TREE_DOCK_TYPE = "siyuan-file-editor-mount-tree-dock";
 export const BACKLINK_DOCK_TYPE = "siyuan-file-editor-backlink-dock";
+export const MOUNT_TREE_TAB_TYPE = "siyuan-file-editor-mount-tree";
 // 侧边栏「文档属性」面板(思源文档块属性编辑,跟随当前活动文档)
 export const DOC_PROPERTIES_DOCK_TYPE = "siyuan-file-editor-doc-properties-dock";
 // 侧边栏「终端」面板(复用终端 Tab 的 xterm + 三后端实现,常驻侧栏底部)
@@ -52,6 +53,9 @@ export const STORAGE_CONFIG = "config.json";
 export const STORAGE_SY_MOUNTS = "sy-mounts.json";
 // 百度网盘配置(Cookie 凭据与同步空间目录,bdpan:// 虚拟条目依赖)
 export const STORAGE_BD_CONFIG = "baidu-pan.json";
+export const STORAGE_OD_CONFIG = "onedrive.json";
+export const STORAGE_MAIL_CONFIG = "outlook-mail.json";
+export const STORAGE_IMAP_CONFIG = "imap-mail.json";
 // Git 仓库配置(GitHub / Gitee 访问令牌,github:// 与 gitee:// 虚拟条目依赖)
 export const STORAGE_GIT_CONFIG = "git-repo.json";
 // 插件库注册表(库内链接条目 → 外部真实路径 + Git 远端绑定)

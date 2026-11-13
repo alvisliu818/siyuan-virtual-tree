@@ -3716,6 +3716,8 @@ button.syfe-editor__arrow--exp:hover {
 .syfe-mtree__scroll {
     overflow: auto;
     min-height: 0;
+    // 横向:深缩进/长名超出面板宽时出现横向滚动条(行宽由内容决定,见 __row)
+    overscroll-behavior-x: contain;
 }
 
 // 标签筛选 chip 行(与文件面板 .syfe-tree__chip 视觉一致)
@@ -3807,6 +3809,10 @@ button.syfe-editor__arrow--exp:hover {
     cursor: pointer;
     // 不要行间横线:与思源原生文档树一致,靠缩进表达层级,不靠分割线
     border-bottom: none;
+    // 横向滚动:行宽由内容决定(最深缩进 + 最长名),超出面板即出现横向滚动条
+    width: max-content;
+    min-width: 100%;
+    box-sizing: border-box;
 
     &:hover {
         background: var(--b3-list-hover);
@@ -3923,18 +3929,13 @@ button.syfe-editor__arrow--exp:hover {
 }
 
 .syfe-mtree__name {
-    flex: 1;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    // 不再省略号截断:配合横向滚动,长名向右展开(容器出横向滚动条)
     white-space: nowrap;
     color: var(--b3-theme-on-background);
 }
 
 // 挂载节点:两行(名称 + 父目录),子项仍单行
 .syfe-mtree__text {
-    flex: 1;
-    min-width: 0;
     display: flex;
     flex-direction: column;
     line-height: 1.3;
@@ -3944,8 +3945,6 @@ button.syfe-editor__arrow--exp:hover {
     font-size: 11px;
     color: var(--b3-theme-on-surface);
     font-family: var(--b3-font-family-code);
-    overflow: hidden;
-    text-overflow: ellipsis;
     white-space: nowrap;
 }
 
@@ -6786,4 +6785,110 @@ button.syfe-editor__arrow--exp:hover {
         max-width: 100%;
         width: 100%;
     }
+}
+
+// 虚拟文档树页签形态(与 dock 面板共用 mountTreePanelInit)
+.syfe-mtree-tab {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    background: var(--b3-theme-background);
+
+    .syfe-mtree-tab__host {
+        flex: 1;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+    }
+}
+
+// 按类型浏览:类型 chip 行 + 类型分组头
+.syfe-mtree__typebar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px;
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--b3-border-color);
+    font-size: 12px;
+    position: sticky;
+    top: 0;
+    background: var(--b3-theme-background);
+    z-index: 1;
+}
+
+.syfe-mtree__typebar-label {
+    color: var(--b3-theme-on-surface-light);
+    margin-right: 2px;
+}
+
+.syfe-mtree__typechip {
+    padding: 1px 8px;
+    border-radius: 10px;
+    border: 1px solid var(--b3-border-color);
+    color: var(--b3-theme-on-surface);
+    cursor: pointer;
+    user-select: none;
+
+    &:hover {
+        background: var(--b3-list-hover);
+    }
+
+    &.is-on {
+        background: var(--b3-theme-primary-lightest);
+        border-color: var(--b3-theme-primary-light);
+        color: var(--b3-theme-primary);
+    }
+}
+
+.syfe-mtree__typehead {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 8px 4px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--b3-theme-on-surface);
+    position: sticky;
+    top: 30px;
+    background: var(--b3-theme-background);
+    border-bottom: 1px dashed var(--b3-border-color);
+
+    svg {
+        width: 14px;
+        height: 14px;
+        color: var(--b3-theme-primary);
+    }
+}
+
+.syfe-mtree__typecount {
+    font-weight: normal;
+    font-size: 11px;
+    color: var(--b3-theme-on-surface-light);
+}
+
+// 虚拟文档树聚焦条(聚焦某文件夹时显示于列表首行)
+.syfe-mtree__focusbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 8px;
+    background: var(--b3-theme-primary-lightest);
+    border-bottom: 1px solid var(--b3-border-color);
+    font-size: 12px;
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    list-style: none;
+}
+
+.syfe-mtree__focusbar-label {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--b3-theme-primary);
+    font-weight: 600;
 }

@@ -258,6 +258,27 @@ export async function addMountItem(
 }
 
 // 取消挂载(连同其嵌套子树一起移除);返回是否确有记录被移除
+// 更新挂载项显示名(链接/收藏等虚拟挂载条目的重命名;真实文件改名走 renameFile)
+export async function renameMountItemName(uid: string, name: string): Promise<boolean> {
+    const it = findMountItem(uid);
+    if (!it) return false;
+    it.name = name;
+    await persist();
+    dispatchChanged();
+    return true;
+}
+
+// 更新挂载项的显示名与路径(动作挂载「编辑」:spec 编码在 path 里,原地改不挪位)
+export async function updateMountItem(uid: string, patch: {name?: string; path?: string}): Promise<boolean> {
+    const it = findMountItem(uid);
+    if (!it) return false;
+    if (patch.name !== undefined) it.name = patch.name;
+    if (patch.path !== undefined && it.kind === "file") it.path = patch.path;
+    await persist();
+    dispatchChanged();
+    return true;
+}
+
 export async function removeMountItem(plugin: Plugin, uid: string): Promise<boolean> {
     if (!loaded) await initMountTree(plugin);
     const strip = (list: MountItem[]): boolean => {

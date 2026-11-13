@@ -1,6 +1,6 @@
 import {Menu, Dialog, confirm, showMessage, IMenu} from "siyuan";
-import {readDir, renameFile, mkdir, writeFile, lsNotebooks, listDocsByPath, importStdMd, readBinaryFile, uploadAsset, insertBlockAtDocTop} from "../api/file";
-import {deleteToTrash, getTrashMode} from "../utils/trash";
+import {readDir, renameFile, mkdir, writeFile, lsNotebooks, listDocsByPath, importStdMd, readBinaryFile, uploadAsset, insertBlockAtDocTop, removeFile, moveEntry, copyEntry} from "../api/file";
+import {deleteToTrash, getTrashMode, isNativeAvailable} from "../utils/trash";
 import {isImportMdSourceAssetEnabled} from "../utils/config";
 import {joinPath, basename, dirname, pathDepth, extname, isSiyuanPath, isKernelPath, isRemotePath} from "../utils/path";
 import {toFileLink, toMarkdownFileLink, getWorkspacePath, toSystemPath} from "../utils/system-path";
@@ -9,6 +9,7 @@ import {openWithExternalApp, revealInSystemExplorer, openTreeFileWithExternalApp
 import {BINARY_EXTENSIONS, isImageFile, isOfficeFile, isMarkdownFile, isMediaFile, getMediaKind} from "../constants";
 import {isVirtualPath, getMountsUnder, getMountList, normDirKey} from "../utils/virtual-tree";
 import {isBaiduPath} from "../utils/baidu-path";
+import {isOneDrivePath} from "../utils/onedrive-path";
 import {isGitHubPath, isGitRepoPath, gitRepoWebUrl, parseGitRepoPath} from "../utils/git-repo-path";
 import {clearGitRepoCache} from "../api/git-repo";
 import {baiduCloudPath} from "../api/baidu-pan";
@@ -17,6 +18,7 @@ import {nativeCopyToTemp, nativeWriteTempFile, isNativeFsAvailable} from "../api
 import {isPinned, isFavorite, itemFromPath} from "../start-page";
 import {fileIconHTML, folderIconHTML} from "../utils/icons";
 import {addMountMenuItem} from "./mount-menu";
+import {pickDestDirDialog} from "./dest-picker";
 import {addToLibrary, unlinkLibrary} from "./library-menu";
 import {openLibrarySyncDialog} from "./library-sync-dialog";
 import {openGitHistoryDialog} from "./git-history-dialog";
@@ -669,6 +671,51 @@ export async function renameEntry(path: string, rootEl: HTMLElement | null, root
     }
 }
 
+// 移动/复制到…:目标目录选择器 + 覆盖确认 + 双后端操作 + 树刷新
+function moveCopyEntry(path: string, isDir: boolean, mode: "move" | "copy", rootEl: HTMLElement | null, rootPath: string): void {
+    const name = basename(path);
+    const verb = mode === "move" ? "移动" : "复制";
+    pickDestDirDialog({
+        title: `${verb}「${name}」到…`,
+        srcPath: path,
+        srcIsDir: isDir,
+        onPick: (destDir) => {
+            void (async () => {
+                const run = async () => {
+                    if (mode === "move") await moveEntry(path, destDir, isDir);
+                    else await copyEntry(path, destDir, isDir);
+                    showMessage(`${verb}完成`, 2000, "info");
+                    await refreshPath(rootEl, dirname(path), rootPath);
+                    await refreshPath(rootEl, destDir, rootPath);
+                    await syncDirToggleInParent(rootEl, dirname(path), rootPath);
+                    await syncDirToggleInParent(rootEl, destDir, rootPath);
+                    notifyFilesChanged();
+                };
+                try {
+                    const entries = await readDir(destDir);
+                    const exists = Array.isArray(entries) && entries.some(en => en.name === name);
+                    if (exists) {
+                        confirm("目标已存在", `目标目录中已存在「${name}」,覆盖吗?`, () => {
+                            void (async () => {
+                                try {
+                                    await removeFile(joinPath(destDir, name));
+                                    await run();
+                                } catch (e) {
+                                    showMessage(`${verb}失败: ${(e as Error)?.message || e}`, 5000, "error");
+                                }
+                            })();
+                        }, () => {});
+                    } else {
+                        await run();
+                    }
+                } catch (e) {
+                    showMessage(`${verb}失败: ${(e as Error)?.message || e}`, 5000, "error");
+                }
+            })();
+        },
+    });
+}
+
 // 删除:统一走回收站(插件回收站 / 系统回收站,设置里二选一,没有"直接删除"选项)。
 // 网盘条目走网盘删除接口,由网盘自己的回收站兜底;Git 仓库条目提交一次删除,历史可追溯;
 // 环境不支持回收站时 deleteToTrash 会抛错中止,文件保持原样 —— 确认框文案按实际模式变化。
@@ -676,17 +723,20 @@ export function deleteEntry(path: string, isDir: boolean, rootEl: HTMLElement | 
     const name = basename(path);
     const typeStr = isDir ? "文件夹" : "文件";
     const isBd = isBaiduPath(path);
+    const isOd = isOneDrivePath(path);
     const isGit = isGitRepoPath(path);
     const actionText = isBd
         ? "删除(可在百度网盘回收站找回)"
-        : isGit
-            ? "删除并提交到仓库(可在提交历史中找回)"
-            : getTrashMode() === "system"
-                ? "移入系统回收站"
-                : "移入插件回收站(可在回收站中恢复)";
+        : isOd
+            ? "删除(可在 OneDrive 回收站找回)"
+            : isGit
+                ? "删除并提交到仓库(可在提交历史中找回)"
+                : getTrashMode() === "system" && isNativeAvailable()
+                    ? "移入系统回收站"
+                    : "移入插件回收站(可在回收站中恢复)";
     confirm(
         `删除${typeStr}`,
-        `确定把${typeStr}「${name}」${!isBd && isDir ? "连同全部内容" : ""}${actionText}吗?`,
+        `确定把${typeStr}「${name}」${!isBd && !isOd && isDir ? "连同全部内容" : ""}${actionText}吗?`,
         async () => {
             try {
                 const r = await deleteToTrash(path, isDir);
@@ -1543,6 +1593,19 @@ openWith.push({
         label: "重命名",
         click: () => renameEntry(path, rootEl, rootPath),
     });
+    // 移动/复制:文件+文件夹,内核/原生双后端(虚拟路径与插件库条目根除外)
+    if (!isVirtualPath(path) && !isLibraryEntryRoot(path)) {
+        menu.addItem({
+            icon: "iconFolder",
+            label: "移动到…",
+            click: () => moveCopyEntry(path, isDir, "move", rootEl, rootPath),
+        });
+        menu.addItem({
+            icon: "iconCopy",
+            label: "复制到…",
+            click: () => moveCopyEntry(path, isDir, "copy", rootEl, rootPath),
+        });
+    }
     // 库条目根的「删除」就是取消同步:只摘链接。绝不能走回收站 —— 那会顺着链接搬走外部数据
     menu.addItem(isLibraryEntryRoot(path) ? {
         icon: "iconClose",

@@ -20,7 +20,7 @@ import {parseFileRef, stripFileRef, setPendingRef, FileRef} from "./file-ref";
 import {fileUrlToPath} from "./system-path";
 import {openFileTab} from "../tabs/editor-tab";
 import {getIndexFilter} from "./config";
-import {isPathIndexable} from "./index-filter";
+import {isPathIndexable, IndexFilter} from "./index-filter";
 
 // ===== 1. 引用提取正则(backlink 扫描与行内检测共用,唯一定义在这里)=====
 
@@ -70,6 +70,8 @@ export interface WalkOptions {
     maxFiles?: number;
     /** 单根目录访问上限(防超宽目录树) */
     maxDirs?: number;
+    /** 过滤规则覆盖(双链扫描用独立白/黑名单);省略 = 文件名索引过滤 */
+    filter?: IndexFilter;
 }
 
 // 递归收集目录下的文件(含全部扩展名)。过滤顺序:
@@ -80,7 +82,7 @@ export interface WalkOptions {
 // 目录已改由默认黑名单的 (^|/)data/(plugins|...) 规则接管)。
 export async function walkFiles(
     dir: string,
-    out: {path: string; size: number; updated: string}[],
+    out: {path: string; name: string; size: number; updated: string}[],
     opts: WalkOptions,
     _isDataRoot = false,
     depth = 0,
@@ -99,7 +101,7 @@ export async function walkFiles(
         return;
     }
     if (!Array.isArray(entries)) return;
-    const filter = getIndexFilter();
+    const filter = opts.filter ?? getIndexFilter();
     for (const entry of entries) {
         if (opts.maxFiles !== undefined && out.length >= opts.maxFiles) return;
         const full = joinPath(dir, entry.name);
@@ -109,11 +111,13 @@ export async function walkFiles(
             if (!isPathIndexable(full, true, filter)) continue;
             await walkFiles(full, out, opts, false, depth + 1, ctx);
         } else {
+            // 条目缺 name(个别远程 readDir 形态)直接跳过,避免下游 basename/按名分类炸掉
+            if (!entry.name) continue;
             if (extname(entry.name) === ".sy") continue;
             if (!isPathIndexable(full, false, filter)) continue;
             if (opts.exts && !opts.exts.has(extname(entry.name))) continue;
             if (opts.maxBytes && entry.size > opts.maxBytes) continue;
-            out.push({path: full, size: entry.size, updated: entry.updated || ""});
+            out.push({path: full, name: entry.name, size: entry.size, updated: entry.updated || ""});
         }
     }
 }
@@ -219,7 +223,7 @@ async function buildLinkIndex(): Promise<LinkIndex> {
             truncated = true;
             break;
         }
-        const files: {path: string; size: number; updated: string}[] = [];
+        const files: {path: string; name: string; size: number; updated: string}[] = [];
         // 每根配额:超大挂载(盘根/同步盘全库)不至于把索引构建拖死
         await walkFiles(root, files, {maxFiles: 5000, maxDirs: 8000}, isDataRootPath(root));
         for (const f of files) {

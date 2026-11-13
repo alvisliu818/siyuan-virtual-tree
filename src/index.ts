@@ -20,11 +20,13 @@ import {createEditorTabConfig, openFileTab} from "./tabs/editor-tab";
 import {createImageTabConfig, openImageTab} from "./tabs/image-tab";
 import {createOfficeTabConfig, openOfficeTab} from "./tabs/office-tab";
 import {createMarkdownTabConfig, openMarkdownTab, MarkdownMode, MarkdownTabInstance} from "./tabs/markdown-tab";
+import {syncCm6StyleVars} from "./editor/cm6-markdown";
 import {createMediaTabConfig, openMediaTab} from "./tabs/media-tab";
 import {createNotebookTabConfig} from "./tabs/notebook-tab";
 import {createDiffTabConfig} from "./tabs/diff-tab";
 import {createStartTabConfig, openStartTab, installNewTabHijack} from "./tabs/start-tab";
 import {createTerminalTabConfig, openTerminalTab, applyTerminalStatusBarVisibility} from "./tabs/terminal-tab";
+import {createMountTreeTabConfig, openMountTreeTab} from "./tabs/mount-tree-tab";
 import {initDocProperties, destroyDocProperties, notifyDocPropertiesConfigChanged, createDocPropertiesDockConfig} from "./doc-properties";
 import {registerBlockPlanner, destroyBlockPlanner} from "./block-planner";
 import {createRecentDockConfig} from "./dock/recent-dock";
@@ -65,6 +67,12 @@ import {loadStartPage, itemFromPath, itemFromDoc, toggleInGroup, START_PAGE_CHAN
 import {isVirtualPath, virtualId, initMountStore, getMountList, dropSyDocMounts} from "./utils/virtual-tree";
 import {initBaiduPanStore} from "./api/baidu-pan";
 import {openBaiduPanDialog} from "./components/baidu-pan-dialog";
+import {openOneDriveDialog} from "./components/onedrive-dialog";
+import {initOneDriveStore} from "./api/onedrive";
+import {initOutlookMailStore} from "./api/outlook-mail";
+import {initImapMailStore} from "./api/imap-mail";
+import {openImapMailDialog} from "./components/imap-mail-dialog";
+import {openOutlookMailDialog} from "./components/outlook-mail-dialog";
 import {initGitRepoStore} from "./api/git-repo";
 import {initLibraryStore} from "./api/library";
 import {openGitRepoDialog} from "./components/git-repo-dialog";
@@ -191,6 +199,8 @@ export default class FileEditorPlugin extends Plugin {
     private markdownEditorSelect?: HTMLSelectElement;
     private markdownReadingEngineSelect?: HTMLSelectElement;
     private cm6CodeBlockMonacoInput?: HTMLInputElement;
+    private cm6GutterOpacityInput?: HTMLInputElement;
+    private cm6HighlightActiveLineInput?: HTMLInputElement;
     private newTabReplacePlusInput?: HTMLInputElement;
     private newTabShowPinnedInput?: HTMLInputElement;
     private newTabShowRecentInput?: HTMLInputElement;
@@ -210,6 +220,10 @@ export default class FileEditorPlugin extends Plugin {
     // 双链文件名索引的白/黑名单(多行规则文本,支持正则)
     private indexWhitelistInput?: HTMLTextAreaElement;
     private indexBlacklistInput?: HTMLTextAreaElement;
+    // 双链:隐藏编辑区面板开关 + 扫描独立白/黑名单
+    private backlinkPanelHiddenInput?: HTMLInputElement;
+    private backlinkScanWhitelistInput?: HTMLTextAreaElement;
+    private backlinkScanBlacklistInput?: HTMLTextAreaElement;
     // 接管思源文档内文件打开:模式下拉 + 扩展名白名单
     private docOpenTakeoverSelect?: HTMLSelectElement;
     private docOpenTakeoverExtsInput?: HTMLInputElement;
@@ -336,6 +350,7 @@ export default class FileEditorPlugin extends Plugin {
         void initFileVersions(this);
         setVersionKeepCount(this.config.versionKeepCount ?? 10);
         setTrashMode(this.config.deleteMode || "plugin");
+        syncCm6StyleVars(this.config);
 
         this.addDockOnce(createRecentDockConfig(this as any));
         this.addDockOnce(createTagDockConfig(this as any));
@@ -376,7 +391,7 @@ export default class FileEditorPlugin extends Plugin {
         // startThemeSync 驱动的是 Monaco 主题,移动端没有 Monaco 编辑器,不启动
     }
 
-    onload(): void {
+    async onload(): Promise<void> {
         // 换届自愈(与入口 banner 双保险):摘掉上一轮 bundle 残留的全局资源。
         disposeAllGlobal();
         // 移动端走独立的注册链:桌面 onload 里的 addTab / Monaco / 终端 / Python LSP
@@ -448,7 +463,17 @@ export default class FileEditorPlugin extends Plugin {
             console.warn("[siyuan-file-editor] Python LSP 注册失败:", e);
         }
 
+        // 邮箱/网盘配置:必须在 onload 内 await 完成 —— 布局恢复的页签早于 onLayoutReady,
+        // 恢复页签的首次读取(如 IMAP 邮件)依赖这些配置(实测时序)
+        try {
+            await initOneDriveStore(this);
+            await initOutlookMailStore(this);
+            await initImapMailStore(this);
+        } catch (e) {
+            console.error("[siyuan-file-editor] 加载邮箱/网盘配置失败:", e);
+        }
         // 注册 Tab 类型
+        this.addTab(asSiyuanCustom(createMountTreeTabConfig(this as any)));
         this.addTab(asSiyuanCustom(createEditorTabConfig(this as any)));
         this.addTab(asSiyuanCustom(createImageTabConfig(this as any)));
         // 版本控制:接入独立存储(file-versions.json)并应用保留条数。
@@ -457,6 +482,7 @@ export default class FileEditorPlugin extends Plugin {
         setVersionKeepCount(this.config.versionKeepCount ?? 10);
         // 删除方式:onload 里是 DEFAULT_CONFIG 的默认值,onLayoutReady 会按磁盘配置补一次
         setTrashMode(this.config.deleteMode || "plugin");
+        syncCm6StyleVars(this.config);
         // 接管思源文档内打开文件(open-asset/open-link 事件,配置热读,卸载时注销)
         this._unregisterDocOpenTakeover = registerDocOpenTakeover(this as any, () => ({
             mode: this.config.docOpenTakeover || "off",
@@ -679,6 +705,7 @@ export default class FileEditorPlugin extends Plugin {
         for (const mdInst of mdTabs) {
             try {
                 mdInst._resyncEngineForConfig?.();
+                mdInst._resyncBacklinkPanel?.();
             } catch {
                 // 单页签重进失败不影响其余页签
             }
@@ -692,6 +719,7 @@ export default class FileEditorPlugin extends Plugin {
         setVersionKeepCount(this.config.versionKeepCount ?? 10);
         // 删除方式同理:以磁盘配置为准
         setTrashMode(this.config.deleteMode || "plugin");
+        syncCm6StyleVars(this.config);
         // 关闭未保存行为跟随磁盘配置生效
         setCloseUnsavedAction(this.config.closeUnsavedAction);
         // 文档面包屑与习惯目标都依赖桌面页签/Protyle 注入,移动端跳过
@@ -1272,6 +1300,22 @@ export default class FileEditorPlugin extends Plugin {
         this.cm6CodeBlockMonacoInput.className = "b3-switch";
         addRow("openFiles", "CM6 代码块 Monaco 渲染", "Markdown 编辑器 = cm6 时生效:代码块渲染为 Monaco 主题配色卡片(点击进 Monaco 编辑,与代码文件同一套主题和语义着色);关闭后代码块回落为编辑器原生源码行", this.cm6CodeBlockMonacoInput);
 
+        // CM6 行号不透明度(0-1,越小越浅)
+        this.cm6GutterOpacityInput = document.createElement("input");
+        this.cm6GutterOpacityInput.type = "number";
+        this.cm6GutterOpacityInput.min = "0";
+        this.cm6GutterOpacityInput.max = "1";
+        this.cm6GutterOpacityInput.step = "0.05";
+        this.cm6GutterOpacityInput.className = "b3-text-field";
+        this.cm6GutterOpacityInput.style.width = "80px";
+        addRow("openFiles", "CM6 行号不透明度", "0-1,越小行号越浅(默认 0.4);行号与正文间距已加大,颜色用次级文本色,避免干扰正文阅读", this.cm6GutterOpacityInput);
+
+        // CM6 当前行/行号高亮(默认关)
+        this.cm6HighlightActiveLineInput = document.createElement("input");
+        this.cm6HighlightActiveLineInput.type = "checkbox";
+        this.cm6HighlightActiveLineInput.className = "b3-switch";
+        addRow("openFiles", "CM6 高亮当前行和行号", "开启后当前行带背景色、当前行号用主题色;默认关闭,避免干扰正文阅读(移动端编辑器同一开关)", this.cm6HighlightActiveLineInput);
+
         // 导入 Markdown 到思源时,是否把源文件作为资源插入文档顶部的引述块
         this.importMdSourceAssetInput = document.createElement("input");
         this.importMdSourceAssetInput.type = "checkbox";
@@ -1283,6 +1327,12 @@ export default class FileEditorPlugin extends Plugin {
         this.backlinkScanAllTextInput.type = "checkbox";
         this.backlinkScanAllTextInput.className = "b3-switch";
         addRow("openFiles", "双链:扫描所有文本文件", "反向链接扫描把挂载根下所有文本文件(代码/配置等)里的文件路径与 [[链接]] 都算作引用;关闭后仅扫描 Markdown 文件(超大库可关以提升扫描速度)", this.backlinkScanAllTextInput);
+
+        // 双链:隐藏编辑区入链/出链面板(隐藏后不扫描)
+        this.backlinkPanelHiddenInput = document.createElement("input");
+        this.backlinkPanelHiddenInput.type = "checkbox";
+        this.backlinkPanelHiddenInput.className = "b3-switch";
+        addRow("openFiles", "双链:隐藏编辑区入链/出链面板", "内嵌双链面板与侧边 dock 的入链/出链重合,默认隐藏;隐藏后不做反链扫描,行号槽反链标记同样不扫描。打开本开关可恢复内嵌面板(默认收起、点开才扫描);侧边双链 dock 不受影响", this.backlinkPanelHiddenInput);
 
         // 思源文档 [[: 双链补全:[[ 仍归思源原生,插件用独立触发符 [[:
         this.docWikilinkHintInput = document.createElement("input");
@@ -1308,6 +1358,12 @@ export default class FileEditorPlugin extends Plugin {
         addRow("openFiles", "双链:索引黑名单", "每行一条规则,空行与 # 注释忽略;支持 /正则/flags、裸正则、普通子串(不区分大小写)。匹配完整路径 + 每一级目录名 + 文件名,目录命中会跳过整棵子树。默认忽略 node_modules、.git/.svn/.hg、.Trash、$RECYCLE.BIN、System Volume Information,以及思源 data 下的 plugins/widgets/themes/icons/snippets/remnants/history/temp/push/storage/conf;隐藏目录与 .sy 块文件始终跳过。删掉规则即可让它们重新进索引", this.indexBlacklistInput);
         this.indexWhitelistInput = makeRuleTextarea("留空 = 不限制;如 \\.md$ 只索引 Markdown");
         addRow("openFiles", "双链:索引白名单", "每行一条规则(语法同黑名单)。留空不限制;非空时只索引命中的文件,例如 \\.md$ 只索引 Markdown、^E:/notes/ 只索引某目录。白名单不挡目录(否则走不进目标目录),黑名单始终优先", this.indexWhitelistInput);
+
+        // 双链扫描独立白/黑名单(只作用于反链/出链扫描,与文件名索引过滤互不干扰)
+        this.backlinkScanBlacklistInput = makeRuleTextarea("每行一条规则,如 node_modules 或 /\\.tmp$/i");
+        addRow("openFiles", "双链:扫描黑名单", "每行一条规则,空行与 # 注释忽略;支持 /正则/flags、裸正则、普通子串(不区分大小写)。匹配完整路径 + 每一级目录名 + 文件名,目录命中跳过整棵子树。只作用于反链/出链扫描(不影响 [[ 补全索引);默认与索引黑名单相同,可单独放宽或收紧", this.backlinkScanBlacklistInput);
+        this.backlinkScanWhitelistInput = makeRuleTextarea("留空 = 不限制;如 \\.md$ 只扫描 Markdown");
+        addRow("openFiles", "双链:扫描白名单", "每行一条规则(语法同黑名单)。留空不限制;非空时只扫描命中的文件。白名单不挡目录,黑名单始终优先。只作用于反链/出链扫描", this.backlinkScanWhitelistInput);
 
         // 右键「新建思源文档」:目标位置(笔记本 + 子路径)与文件同名默认
         this.newDocNotebookSelect = document.createElement("select");
@@ -1555,6 +1611,27 @@ export default class FileEditorPlugin extends Plugin {
         bdPanBtn.textContent = "百度网盘账号…";
         bdPanBtn.addEventListener("click", () => openBaiduPanDialog());
         addRow("baiduPan", "百度网盘", "接入方式:官方 API(推荐,开放平台 AppKey/SecretKey + 设备码授权,未过审仅能访问 /apps/应用名/ 目录)或网页 Cookie(全盘 + 同步空间,非官方)。配置后点击文件树工具栏云图标挂载网盘目录,支持浏览、编辑并保存回网盘", bdPanBtn);
+
+        // ---------- OneDrive ----------
+        const odBtn = document.createElement("button");
+        odBtn.className = "b3-button b3-button--text";
+        odBtn.textContent = "OneDrive 账号…";
+        odBtn.addEventListener("click", () => openOneDriveDialog());
+        addRow("onedrive", "OneDrive", "微软 OneDrive 接入:在 Azure 门户注册一个应用(个人类型,公共客户端流开启,权限 Files.ReadWrite.All + User.Read + offline_access)拿 Client ID,设备码授权后即可在虚拟文档树挂载 OneDrive 目录,支持浏览、编辑并保存回网盘。Graph API 允许 CORS,移动端可用", odBtn);
+
+        // ---------- Outlook 邮箱 ----------
+        const omBtn = document.createElement("button");
+        omBtn.className = "b3-button b3-button--text";
+        omBtn.textContent = "Outlook 邮箱…";
+        omBtn.addEventListener("click", () => openOutlookMailDialog());
+        addRow("outlookMail", "Outlook 邮箱", "微软 Outlook/Office 邮箱挂载:与 OneDrive 共用同一个 Azure 应用(需额外添加 Mail.ReadWrite 委托权限),设备码授权后挂载到虚拟文档树。只读:邮件以 .md 呈现(附件在 .files/),不支持在插件里改邮件。QQ/网易/Gmail 走 IMAP/OAuth 体系暂未接入", omBtn);
+
+        // ---------- IMAP 邮箱(QQ/网易)----------
+        const imBtn = document.createElement("button");
+        imBtn.className = "b3-button b3-button--text";
+        imBtn.textContent = "IMAP 邮箱(QQ/网易)…";
+        imBtn.addEventListener("click", () => openImapMailDialog());
+        addRow("imapMail", "IMAP 邮箱(QQ/网易)", "QQ 邮箱/网易 163/126 的 IMAP 挂载(桌面端专用):开启服务的 IMAP/SMTP 后拿授权码登录,只读浏览邮件(邮件为 .md,附件在 .files/)。移动端 webview 无 TCP 能力不支持", imBtn);
 
         // ---------- Git 仓库 ----------
         const gitRepoBtn = document.createElement("button");
@@ -1820,6 +1897,9 @@ export default class FileEditorPlugin extends Plugin {
         addRowsPage("tags", "标签");
         addRowsPage("fileTree", "文件树");
         addRowsPage("baiduPan", "百度网盘");
+        addRowsPage("onedrive", "OneDrive");
+        addRowsPage("outlookMail", "Outlook 邮箱");
+        addRowsPage("imapMail", "IMAP 邮箱(QQ/网易)");
         addRowsPage("gitRepo", "Git 仓库");
         addRowsPage("library", "插件库");
         addRowsPage("terminal", "终端");
@@ -1837,6 +1917,9 @@ export default class FileEditorPlugin extends Plugin {
         if (this.docWikilinkHintInput) this.docWikilinkHintInput.checked = this.config.docWikilinkHint !== false;
         if (this.indexBlacklistInput) this.indexBlacklistInput.value = this.config.indexBlacklist ?? "";
         if (this.indexWhitelistInput) this.indexWhitelistInput.value = this.config.indexWhitelist ?? "";
+        if (this.backlinkPanelHiddenInput) this.backlinkPanelHiddenInput.checked = this.config.backlinkPanelHidden === true;
+        if (this.backlinkScanBlacklistInput) this.backlinkScanBlacklistInput.value = this.config.backlinkScanBlacklist ?? "";
+        if (this.backlinkScanWhitelistInput) this.backlinkScanWhitelistInput.value = this.config.backlinkScanWhitelist ?? "";
         if (this.searchMaxSizeInput) {
             this.searchMaxSizeInput.value = String(Math.round(this.config.searchMaxFileSize / 1024));
         }
@@ -1852,6 +1935,8 @@ export default class FileEditorPlugin extends Plugin {
         if (this.markdownEditorSelect) this.markdownEditorSelect.value = this.config.markdownEditor || "vditor";
         if (this.markdownReadingEngineSelect) this.markdownReadingEngineSelect.value = this.config.markdownReadingEngine || "vditor";
         if (this.cm6CodeBlockMonacoInput) this.cm6CodeBlockMonacoInput.checked = this.config.cm6CodeBlockMonaco !== false;
+        if (this.cm6GutterOpacityInput) this.cm6GutterOpacityInput.value = String(this.config.cm6GutterOpacity ?? 0.4);
+        if (this.cm6HighlightActiveLineInput) this.cm6HighlightActiveLineInput.checked = this.config.cm6HighlightActiveLine === true;
         if (this.globalReadingModeInput) this.globalReadingModeInput.checked = this.config.globalReadingMode !== false;
         if (this.versionKeepCountInput) this.versionKeepCountInput.value = String(this.config.versionKeepCount ?? 10);
         if (this.deleteModeSelect) this.deleteModeSelect.value = this.config.deleteMode || "plugin";
@@ -1952,6 +2037,8 @@ export default class FileEditorPlugin extends Plugin {
             markdownEditor: (this.markdownEditorSelect?.value as "vditor" | "cm6") || "vditor",
             markdownReadingEngine: (this.markdownReadingEngineSelect?.value as "vditor" | "cm6") || "vditor",
             cm6CodeBlockMonaco: this.cm6CodeBlockMonacoInput?.checked ?? true,
+            cm6GutterOpacity: Math.min(1, Math.max(0, parseFloat(this.cm6GutterOpacityInput?.value || "0.4") || 0.4)),
+            cm6HighlightActiveLine: this.cm6HighlightActiveLineInput?.checked ?? false,
             globalReadingMode: this.globalReadingModeInput?.checked ?? true,
             versionKeepCount: Math.max(0, parseInt(this.versionKeepCountInput?.value || "10", 10) || 0),
             deleteMode: ((this.deleteModeSelect?.value || "plugin") as "plugin" | "system"),
@@ -1959,6 +2046,10 @@ export default class FileEditorPlugin extends Plugin {
             docWikilinkHint: this.docWikilinkHintInput?.checked ?? true,
             indexBlacklist: this.indexBlacklistInput?.value ?? "",
             indexWhitelist: this.indexWhitelistInput?.value ?? "",
+            backlinkPanelHidden: this.backlinkPanelHiddenInput?.checked ?? false,
+            backlinkPanelHiddenMigrated: true,
+            backlinkScanBlacklist: this.backlinkScanBlacklistInput?.value ?? "",
+            backlinkScanWhitelist: this.backlinkScanWhitelistInput?.value ?? "",
             mediaHotkeyMark: normalizeHotkeyText(this.mediaHotkeyMarkInput?.value ?? ""),
             mediaHotkeyInsert: normalizeHotkeyText(this.mediaHotkeyInsertInput?.value ?? ""),
             newTabReplacePlus: this.newTabReplacePlusInput?.checked ?? true,
@@ -2023,6 +2114,7 @@ export default class FileEditorPlugin extends Plugin {
         setVersionKeepCount(this.config.versionKeepCount ?? 10);
         // 删除方式跟随设置生效
         setTrashMode(this.config.deleteMode || "plugin");
+        syncCm6StyleVars(this.config);
         // 双链:设置保存后全量失效反链/出链缓存(含文件名索引,扫描范围可能已变)
         clearBacklinkCache(true);
         // Markdown 引擎设置改完立即对已打开的页签生效(实时预览 / 阅读态各自
@@ -2031,6 +2123,7 @@ export default class FileEditorPlugin extends Plugin {
         for (const mdInst of mdTabs) {
             try {
                 mdInst._resyncEngineForConfig?.();
+                mdInst._resyncBacklinkPanel?.();
             } catch {
                 // 单页签重进失败不影响其余页签
             }
