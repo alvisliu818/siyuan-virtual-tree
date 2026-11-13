@@ -1024,6 +1024,28 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                 }
             };
 
+            // 结构化内核行号映射:叶子块(列表项/段落/公式)逐个对应一个行号,
+            // 行首下标按 raw 行数累加(空行计入偏移但不产生行号),与源码行对齐。
+            const structuredGutter = (): {doms: HTMLElement[]; starts: number[]} => {
+                const doms: HTMLElement[] = [];
+                const starts: number[] = [];
+                let acc = 0;
+                const v = self._structured?.view;
+                if (v) v.state.doc.descendants((n: any, pos: number) => {
+                    if (n.type.name === "leaf" || n.type.name === "math") {
+                        const raw = n.attrs.raw || "";
+                        const lines = Math.max((raw.match(/\n/g) || []).length, 1);
+                        if (n.attrs.kind !== "blank") {
+                            const d = v.nodeDOM(pos) as HTMLElement | null;
+                            if (d) { doms.push(d); starts.push(acc); }
+                        }
+                        acc += lines;
+                    }
+                    return true;
+                });
+                return {doms, starts};
+            };
+
             // 渲染态行号槽安装(Vditor 编辑/阅读与 CM6 模式的 Vditor.preview 阅读共用)
             const installGutter = (): void => {
                 try {
@@ -1040,12 +1062,10 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                             "行链接已复制,粘贴到思源文档点击可定位",
                         ),
                         openBacklinkItem: (item: BacklinkItem) => navigateBacklink(plugin as any, item),
-                        // 结构化内核:行号槽挂 contentEl,顶层渲染块与 mdBlockStarts 对齐(排除空行块)
+                        // 结构化内核:行号槽挂 contentEl,按叶子块逐行映射(每个列表项/段落一个行号)
                         gutterRoot: () => (self._structured ? self._contentEl ?? null : null),
-                        gutterBlocks: (root: HTMLElement) => self._structured
-                            ? Array.from(root.querySelector(".ProseMirror")?.children ?? [])
-                                .filter((n): n is HTMLElement => n.nodeType === 1 && !n.classList.contains("blk-blank"))
-                            : null,
+                        gutterBlocks: () => (self._structured ? structuredGutter().doms : null),
+                        blockStarts: () => (self._structured ? structuredGutter().starts : null),
                     });
                 } catch (e) {
                     console.warn("[syfe-ref] 行号槽安装失败:", e);

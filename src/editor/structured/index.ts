@@ -240,7 +240,6 @@ export function createStructuredEditor(contentEl: HTMLElement, opts: StructuredO
             view.updateState(next);
             if (tr.docChanged) opts.onInput?.();
             if (tr.selectionSet) opts.onCursor?.();
-            if (!readOnly) setTimeout(() => updateActiveLeaf(view), 0);
         },
     });
     return {

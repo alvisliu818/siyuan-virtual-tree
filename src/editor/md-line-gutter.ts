@@ -32,6 +32,8 @@ export interface MdLineGutterHost {
     gutterRoot?(): HTMLElement | null;
     /** 结构化内核:顶层渲染块序列(与 mdBlockStarts 顶层块对齐;返回 null 走 [data-block]) */
     gutterBlocks?(root: HTMLElement): HTMLElement[] | null;
+    /** 结构化内核:按叶子块逐行映射的行首下标(0-based);返回 null 走 mdBlockStarts */
+    blockStarts?(): number[] | null;
 }
 
 // 反链标记:按目标行分组的反向链接(行号链接 / 锚点链接分开上色)
@@ -295,7 +297,7 @@ export function installMdLineGutter(host: MdLineGutterHost): MdLineGutterHandle 
         // 不挂的话「首次 refresh 时块还没出来」就永远没人补渲染了
         startObserving(reset);
         const blocks = blocksOf(reset);
-        const starts = mdBlockStarts(host.source());
+        const starts = host.blockStarts?.() ?? mdBlockStarts(host.source());
         if (blocks.length === 0 || starts.length === 0) {
             // 块还没出来:槽位先不画,等观察器触发下一轮
             disposeGutter();
@@ -432,7 +434,7 @@ export function installMdLineGutter(host: MdLineGutterHost): MdLineGutterHandle 
             const reset = resetEl || findReset();
             if (!reset) return null;
             const blocks = blocksOf(reset);
-            const starts = mdBlockStarts(host.source());
+            const starts = host.blockStarts?.() ?? mdBlockStarts(host.source());
             if (blocks.length === 0 || starts.length === 0) return null;
             const target = line - 1;   // 0-based
             let hit = -1;
