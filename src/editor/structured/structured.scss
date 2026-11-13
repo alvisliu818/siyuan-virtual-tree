@@ -26,8 +26,12 @@
     content: "•"; position: absolute; left: -18px; top: 0; color: var(--s-muted);
     font-size: 15px; user-select: none;
   }
-  .lv-quote { border-left: 3px solid var(--s-line); padding: 1px 0 1px 12px; margin: 2px 0; }
+  .lv-quote { border-left: 3px solid var(--s-line); padding: 2px 0 2px 12px; margin: 2px 0;
+              background: var(--b3-protyle-code-background, rgba(127,127,127,0.05)); border-radius: 0 4px 4px 0; }
   .lv-quote-inner { min-height: 1.6em; }
+  // 列表内引述:圆点在左、竖线在右,正文与续行统一缩进在线右
+  .lv-items > .lv-quote { margin-left: 0; }
+  .lv-items > .lv-quote::before { top: 2px; }
 
   .math-block { position: relative; min-height: 1.7em; padding: 2px 0; overflow-x: auto; }
   .math-pending { color: var(--s-muted); font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
