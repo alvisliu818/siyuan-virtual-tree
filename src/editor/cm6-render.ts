@@ -1337,8 +1337,35 @@ export function cm6MarkdownRender(opts: Cm6RenderOptions): Extension {
         }
     });
 
+    // 列表引导线重算(参考 guideLayout.ts 的 watchGuideLayout):字体/缩放/折行/
+    // 窗口变化引起 contentDOM 尺寸变化时全量重建装饰。只观察一个容器节点,
+    // 覆盖所有渲染路径;装饰只改 background,不改变布局,不会自激循环。
+    const guideResize = ViewPlugin.fromClass(class {
+        private ro: ResizeObserver | null = null;
+        private lastW = 0;
+        private lastH = 0;
+        constructor(private readonly view: EditorView) {
+            if (typeof ResizeObserver === "undefined") return;
+            this.ro = new ResizeObserver((entries) => {
+                // 只认真实尺寸变化:装饰重建引起的同名回调不重复派发,避免自激
+                const r = entries[0]?.contentRect;
+                if (r && Math.abs(r.width - this.lastW) < 1 && Math.abs(r.height - this.lastH) < 1) return;
+                this.lastW = r?.width ?? 0;
+                this.lastH = r?.height ?? 0;
+                if (this.view.dom.isConnected) {
+                    this.view.dispatch({effects: forceRenderEffect.of(null)});
+                }
+            });
+            this.ro.observe(this.view.contentDOM);
+        }
+        update() {}
+        destroy() {
+            this.ro?.disconnect();
+        }
+    });
+
     ensureSettingsFanout();
-    return [renderField, clickHandler, themeSync, editMounter];
+    return [renderField, clickHandler, themeSync, editMounter, guideResize];
 }
 
 function buildDecorations(state: EditorState, opts: Cm6RenderOptions): DecorationSet {
@@ -1363,6 +1390,55 @@ function buildDecorations(state: EditorState, opts: Cm6RenderOptions): Decoratio
             //     一律保持源码态,便于编辑图片地址。
             const cursorInBlock = (from: number, to: number) => cursor >= from && cursor < to;
             const cursorOnLine = (from: number, to: number) => cursor >= from && cursor <= to;
+
+            // ===== 列表缩进引导线(参考 md-editor/src/blocks/guideLayout.ts) =====
+            // 每个「有子项的父列表项」在自身圆点正下方引出一条竖线,覆盖整个子树。
+            // 参考实现的三个要点在这里逐行落地:
+            //   ① 两端与圆点等距:GUIDE_DOT_RADIUS(3)+GUIDE_END_GAP(6)=9px,
+            //      首/末行用 background-size/position 裁掉这 9px;
+            //   ② 线的底端锚到「下一个兄弟块」而非自己最后一个后代 —— 逐行模型里
+            //      子树遇到缩进 <= 父项的下一行即止,末行留白天然对齐后续块;
+            //   ③ 重算:字体/缩放/折行引起的尺寸变化由 guideResize 的
+            //      ResizeObserver 派发 forceRenderEffect 全量重建(见文件末尾)。
+            // 与 DOM 块大纲不同,CM6 逐行渲染,行盒本身就是单位,所以不需要
+            // getBoundingClientRect 测真实几何;一条线拆成逐行 gradient 天然跨折行连续。
+            // x 与引述竖线同源公式(6px 行盒内边距 + tab16/空格4),圆点中心约 +2px。
+            const GUIDE_GAP = 9;
+            const GUIDE_WIDTH = 2;
+            // 比 --b3-border-color(#e0e0e0,实测近乎隐形)深一档:22% 太淡,
+            // 32% 在白底约 rgb(188),仍是参考 Logseq 那种「不抢眼的淡线」;
+            // 可用 --syfe-cm-guide-color 覆盖。
+            const GUIDE_COLOR = "var(--syfe-cm-guide-color, color-mix(in srgb, var(--b3-theme-on-background, #888) 32%, transparent))";
+            const guideStops = new Map<number, Array<{x: number; first: boolean; last: boolean}>>();
+            const quoteBarByLine = new Map<number, number>();
+            const quoteLines = new Set<number>();
+            const indentWidth = (text: string): number => {
+                const m = /^(\s*)/.exec(text);
+                if (!m) return 0;
+                return (m[1].match(/\t/g) || []).length * 16 + m[1].replace(/\t/g, "").length * 4;
+            };
+            const RE_LIST_ITEM = /^(\s*)(?:[-*+]|\d+[.)])\s/;
+            for (let ln = 1; ln <= doc.lines; ln++) {
+                if (!RE_LIST_ITEM.test(doc.line(ln).text)) continue;
+                const w = indentWidth(doc.line(ln).text);
+                let end = ln;
+                // 子树 = 后续缩进更深的行(子列表项 / 引述块 / 折行续行);空行算间隔
+                for (let j = ln + 1; j <= doc.lines; j++) {
+                    const t = doc.line(j).text;
+                    if (t.trim() === "" || indentWidth(t) > w) {
+                        end = j;
+                        continue;
+                    }
+                    break;
+                }
+                if (end <= ln) continue;
+                const x = 6 + w + 2;
+                for (let k = ln + 1; k <= end; k++) {
+                    const arr = guideStops.get(k) || [];
+                    arr.push({x, first: k === ln + 1, last: k === end});
+                    guideStops.set(k, arr);
+                }
+            }
 
             // 0) Obsidian 页面属性:只认文档开头且闭合的 YAML frontmatter(--- ... ---)。
             //    光标在块内时回源码态,与表格/公式块同一套编辑模型。
@@ -1486,13 +1562,63 @@ function buildDecorations(state: EditorState, opts: Cm6RenderOptions): Decoratio
                 const spaces = indent.replace(/\t/g, "").length;
                 // 6px 行盒内边距 + tab(16px)/空格(4px) + 圆点及其后空白(8px)
                 const bar = 6 + tabs * 16 + spaces * 4 + 8;
+                // 只记录,统一在下面的 lineStyleFor 出口生成行装饰 —— 引述竖线要与
+                // 列表引导线合并进同一个 style,否则两个 line deco 的 style 互相覆盖
                 for (let k = ln; k <= end; k++) {
-                    lineDecos.push(Decoration.line({
-                        class: "syfe-cm-quote-line",
-                        attributes: {style: `--syfe-quote-bar:${bar}px`},
-                    }).range(doc.line(k).from));
+                    quoteLines.add(k);
+                    quoteBarByLine.set(k, bar);
                 }
                 ln = end;
+            }
+
+            // ===== 行级样式的唯一出口 =====
+            // CM6 对同一行多个 line decoration 依次 setAttribute("style"),后者覆盖
+            // 前者;所以引述竖线 + 列表引导线必须合并成一条 style。引述 gradient
+            // 在 inline 里复刻 theme 规则(不新增/修改任何 CSS 文件),引导线叠加其后。
+            const QUOTE_GRADIENT =
+                "linear-gradient(to right, transparent var(--syfe-quote-bar), " +
+                "var(--b3-border-color, rgba(128,128,128,.45)) var(--syfe-quote-bar), " +
+                "var(--b3-border-color, rgba(128,128,128,.45)) calc(var(--syfe-quote-bar) + 3px), " +
+                "transparent calc(var(--syfe-quote-bar) + 3px))";
+            const lineStyleFor = (k: number): string => {
+                const decls: string[] = [];
+                const images: string[] = [];
+                const sizes: string[] = [];
+                const positions: string[] = [];
+                const bar = quoteBarByLine.get(k);
+                if (bar !== undefined) {
+                    decls.push(`--syfe-quote-bar:${bar}px`);
+                    images.push(QUOTE_GRADIENT);
+                    sizes.push("100% 100%");
+                    positions.push("0 0");
+                }
+                for (const g of guideStops.get(k) || []) {
+                    const top = g.first ? GUIDE_GAP : 0;
+                    const bottom = g.last ? GUIDE_GAP : 0;
+                    images.push(`linear-gradient(${GUIDE_COLOR}, ${GUIDE_COLOR})`);
+                    sizes.push(`${GUIDE_WIDTH}px calc(100% - ${top + bottom}px)`);
+                    positions.push(`${g.x}px ${top}px`);
+                }
+                if (images.length > 0) {
+                    decls.push(`background-image:${images.join(",")}`);
+                    decls.push(`background-size:${sizes.join(",")}`);
+                    decls.push(`background-position:${positions.join(",")}`);
+                    decls.push("background-repeat:no-repeat");
+                }
+                return decls.join(";");
+            };
+            for (const k of quoteLines) {
+                lineDecos.push(Decoration.line({
+                    class: "syfe-cm-quote-line",
+                    attributes: {style: lineStyleFor(k)},
+                }).range(doc.line(k).from));
+            }
+            for (const k of guideStops.keys()) {
+                if (quoteLines.has(k)) continue;
+                lineDecos.push(Decoration.line({
+                    class: "syfe-cm-listguide",
+                    attributes: {style: lineStyleFor(k)},
+                }).range(doc.line(k).from));
             }
 
             // 3) GFM 表格(≥2 行:表头 + 分隔行;光标在块内时只加底色)
