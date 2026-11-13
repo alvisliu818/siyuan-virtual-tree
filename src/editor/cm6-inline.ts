@@ -596,6 +596,10 @@ function buildInlineDecorations(state: EditorState, opts: Cm6InlineOptions): Inl
                             class: `syfe-cm-callout ${coClass}`,
                         }).range(doc.line(ln).from));
                     } else {
+                        // 容器块化:整段引述加容器盒行类(底色 + 首末行圆角),
+                        // 视觉上成为一个包裹内容的容器,而非松散的逐行竖线
+                        const boxCls = `syfe-cm-quote-box${ln === fromLine ? " is-first" : ""}${ln === toLine ? " is-last" : ""}`;
+                        deco.push(Decoration.line({class: boxCls}).range(doc.line(ln).from));
                         deco.push(mdQuoteLineDeco.range(doc.line(ln).from));
                     }
                 }
@@ -625,6 +629,30 @@ function buildInlineDecorations(state: EditorState, opts: Cm6InlineOptions): Inl
                 iterSubNodes(node.node, "QuoteMark", (m) => {
                     if (!selectionTouches(state, m.from, m.to)) hideRange(m.from, m.to);
                 });
+                return;
+            }
+
+            // --- 列表容器块化:最外层列表整段加容器盒(底色 + 首末行圆角) ---
+            // 与引述盒同模型。嵌套列表在外层盒范围内,不再叠加自己的盒:
+            // 同色只会互相覆盖,嵌套首末行圆角还会打断外层盒的连续边缘。
+            // 列表行上若叠有引述/标注/表格源等盒色,靠 CSS 顺序让后定义的
+            // 更具体盒色胜出(list-box 在主题里定义在最前)。
+            if (name === "BulletList" || name === "OrderedList") {
+                let isTop = true;
+                for (let p = node.node.parent; p; p = p.parent) {
+                    if (p.name === "BulletList" || p.name === "OrderedList") {
+                        isTop = false;
+                        break;
+                    }
+                }
+                if (isTop) {
+                    const fromLine = doc.lineAt(node.from).number;
+                    const toLine = doc.lineAt(node.to).number;
+                    for (let ln = fromLine; ln <= toLine; ln++) {
+                        const boxCls = `syfe-cm-list-box${ln === fromLine ? " is-first" : ""}${ln === toLine ? " is-last" : ""}`;
+                        deco.push(Decoration.line({class: boxCls}).range(doc.line(ln).from));
+                    }
+                }
                 return;
             }
 

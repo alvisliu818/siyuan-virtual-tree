@@ -1253,6 +1253,13 @@ export function cm6MarkdownRender(opts: Cm6RenderOptions): Extension {
             this.off = onMonacoThemeChanged(() => {
                 view.dispatch({effects: forceRenderEffect.of(null)});
             });
+            // 挂载后布局就绪再重建一次,让引述竖线用最终坐标测量(coordsAtPos 在首帧
+            // 布局未稳时会返回估算值,导致竖线比正文偏左几十像素)
+            if (typeof requestAnimationFrame !== "undefined") {
+                requestAnimationFrame(() => {
+                    if (view.dom.isConnected) view.dispatch({effects: forceRenderEffect.of(null)});
+                });
+            }
         }
         destroy() {
             activeRenderViews.delete(this.view);
@@ -1546,6 +1553,14 @@ function buildDecorations(state: EditorState, opts: Cm6RenderOptions): Decoratio
             //     竖线按缩进层级定位,画在列表圆点**右侧**(= 列表包引用)。
             //     ⚠ 不占 usedRanges、不加 atomicRanges:step 4/5 的行内图片/公式
             //     照常渲染,光标也能自由进出该行。
+            // 竖线 x 用 build 期的安全估算给出(= 6px 行盒内边距 + 缩进宽度:
+            // 纯引述的 > 原位 / 列表引述的子弹点左侧)。关键:bar 必须 ≤ 正文起点,
+            // 实际由下方 lineStyleFor 的 padding-left:calc(var(--syfe-quote-bar) + 6px)
+            // 把整行(含折行续行)约束在竖线右侧 —— 这正是用户要的「内容不越过左边界」。
+            // ⚠ 不靠渲染后 ViewPlugin 精确测量:实测 build 期 coordsAtPos/domAtPos 只能读到
+            // 「装饰未生效」的旧布局(子弹点 widget、隐藏 > 未应用),偏左几十像素;而渲染后
+            // 测量会与 padding-left 形成反馈环(正文随 bar 同移,间隙恒为 6+inlineOffset,
+            // 无法收紧),故只保留安全估算 + padding 这一组合。
             for (let ln = 1; ln <= doc.lines; ln++) {
                 const line = doc.line(ln);
                 if (overlapsUsed(line.from, line.to)) continue;
@@ -1560,8 +1575,8 @@ function buildDecorations(state: EditorState, opts: Cm6RenderOptions): Decoratio
                 }
                 const tabs = (indent.match(/\t/g) || []).length;
                 const spaces = indent.replace(/\t/g, "").length;
-                // 6px 行盒内边距 + tab(16px)/空格(4px) + 圆点及其后空白(8px)
-                const bar = 6 + tabs * 16 + spaces * 4 + 8;
+                // 安全估算:正文必在竖线右侧,绝不越过左边界(精确值由 quoteBarMeasure 覆写)
+                const bar = 6 + tabs * 16 + spaces * 4;
                 // 只记录,统一在下面的 lineStyleFor 出口生成行装饰 —— 引述竖线要与
                 // 列表引导线合并进同一个 style,否则两个 line deco 的 style 互相覆盖
                 for (let k = ln; k <= end; k++) {
@@ -1588,6 +1603,8 @@ function buildDecorations(state: EditorState, opts: Cm6RenderOptions): Decoratio
                 const bar = quoteBarByLine.get(k);
                 if (bar !== undefined) {
                     decls.push(`--syfe-quote-bar:${bar}px`);
+                    // 引述行内容约束在竖线右侧:折行续行不再越出左边界(用户反馈)
+                    decls.push(`padding-left:calc(var(--syfe-quote-bar) + 6px)`);
                     images.push(QUOTE_GRADIENT);
                     sizes.push("100% 100%");
                     positions.push("0 0");

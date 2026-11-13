@@ -255,6 +255,22 @@ const syfeCmTheme = EditorView.theme({
         minHeight: "21px",
     },
     ".syfe-cm-codeblock-editorhost": {display: "none"},
+    // 容器块化:最外层列表整段加底色,首末行圆角(与引述盒同模型)。
+    // 用 color-mix 取背景与表面的中间色:列表盒比引述盒淡,行上叠有
+    // 引述/标注/表格源等更具体的盒色时仍可分辨。⚠ 本规则必须排在
+    // tablesrc/quotesrc/callout 等盒色之前 —— 同特异性靠源顺序决胜,
+    // 后定义者覆盖列表盒。
+    ".syfe-cm-list-box": {
+        backgroundColor: "color-mix(in srgb, var(--b3-theme-surface) 45%, var(--b3-theme-background))",
+    },
+    ".syfe-cm-list-box.is-first": {
+        "border-top-left-radius": "8px",
+        "border-top-right-radius": "8px",
+    },
+    ".syfe-cm-list-box.is-last": {
+        "border-bottom-left-radius": "8px",
+        "border-bottom-right-radius": "8px",
+    },
     ".syfe-cm-tablesrc-line": {backgroundColor: "var(--b3-theme-surface)"},
     ".syfe-cm-mathsrc-line": {backgroundColor: "var(--b3-theme-surface)"},
     ".syfe-cm-propsrc-line": {backgroundColor: "var(--b3-theme-surface)"},
@@ -263,13 +279,31 @@ const syfeCmTheme = EditorView.theme({
     // 竖线用 background-image 画在列表圆点右侧(--syfe-quote-bar 按缩进层级算出),
     // 层级 = 「列表包引用」;不用行盒左缘的 inset 竖线(那会变成「引述块包裹列表」)。
     ".syfe-cm-quote-line": {
-        // ⚠ 不要给行加 padding-left/text-indent 去缩进折行续行:行内容区一变窄,
-        // 行内公式 widget 就会判溢出并出现横条,KaTeX 内容被裁(实测 0.48/(0.857 丢失)。
+        // ⚠ 不要用 text-indent 缩进折行续行:行内容区一变窄,行内公式 widget 就会
+        // 判溢出并出现横条,KaTeX 内容被裁(实测 0.48/(0.857 丢失)。
+        // padding-left(内容约束在竖线右侧,用户要求)+ .syfe-cm-math 负 margin 补偿:
+        // 公式块拉回全宽,attachOverflowSync 不再误判溢出。
+        "padding-left": "calc(var(--syfe-quote-bar, 30px) + 6px)",
         backgroundImage:
             "linear-gradient(to right, transparent var(--syfe-quote-bar, 30px), " +
             "var(--b3-border-color, rgba(128,128,128,.45)) var(--syfe-quote-bar, 30px), " +
             "var(--b3-border-color, rgba(128,128,128,.45)) calc(var(--syfe-quote-bar, 30px) + 3px), " +
             "transparent calc(var(--syfe-quote-bar, 30px) + 3px))",
+    },
+    ".syfe-cm-quote-line .syfe-cm-math": {
+        "margin-left": "calc(-1 * (var(--syfe-quote-bar, 30px) + 6px))",
+    },
+    // 容器块化:引述段整体加底色,首末行圆角(与 mdQuoteLineDeco 的竖线叠加)
+    ".syfe-cm-quote-box": {
+        backgroundColor: "var(--b3-theme-surface)",
+    },
+    ".syfe-cm-quote-box.is-first": {
+        "border-top-left-radius": "8px",
+        "border-top-right-radius": "8px",
+    },
+    ".syfe-cm-quote-box.is-last": {
+        "border-bottom-left-radius": "8px",
+        "border-bottom-right-radius": "8px",
     },
     // cm6-inline 自带的行级竖线画在行盒左缘 + opacity .88,统一渲染下关掉
     ".syfe-cm-quote-line.syfe-cm-md-quote-line": {boxShadow: "none", opacity: "1"},
