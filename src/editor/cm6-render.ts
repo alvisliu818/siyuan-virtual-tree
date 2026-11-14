@@ -1417,6 +1417,20 @@ export function cm6MarkdownRender(opts: Cm6RenderOptions): Extension {
                     ".syfe-cm-img, .syfe-cm-properties, .syfe-cm-quote",
                 ) as HTMLElement | null;
                 if (!wrap) return false;
+                if (wrap.classList.contains("syfe-cm-codeblock")) {
+                    // 代码块:声明进入编辑态,由 editMounter 在重建后的真实视图 DOM 上
+                    // 安置单例(不能在此处直接挂载 —— 本 wrap 可能即将被重建/克隆替换)
+                    const key = wrap.dataset.blockKey ?? null;
+                    if (key !== null && getEditingKey() !== key) {
+                        const info = fencedCodeInfos(view.state).find(i => i.from === parseInt(key, 10));
+                        if (info) {
+                            activeSync = {key, viewValue: info.codeView};
+                            setEditingKey(key);
+                            view.dispatch({effects: forceRenderEffect.of(null)});
+                        }
+                    }
+                    return true;   // 已挂载:事件交给 Monaco 自行处理
+                }
                 const pos = view.posAtDOM(wrap);
                 // 点击处在屏幕上的位置:渲染物被源码替换后块高会变(属性面板
                 // ↔ 4 行 YAML、公式 widget ↔ 源码文本),必须把该点锚住才不跳页
@@ -1427,18 +1441,7 @@ export function cm6MarkdownRender(opts: Cm6RenderOptions): Extension {
                 const inline = wrap.classList.contains("syfe-cm-inline-math") ||
                     wrap.classList.contains("syfe-cm-img");
                 let anchor: number;
-                if (wrap.classList.contains("syfe-cm-codeblock")) {
-                    // 代码块:**不再挂 Monaco 编辑**(用户 2026-11-14「代码块编辑
-                    // 不要用 monaco 了」)—— 光标落进块内进源码态,原始围栏行可
-                    // 编辑;光标出块自动回卡片(与点语言标签的 toggleFenceReveal
-                    // 同款交互)。锚到开栅栏行尾(紧贴语言名,可直接改语言)
-                    const key = wrap.dataset.blockKey ?? null;
-                    const info = key !== null
-                        ? fencedCodeInfos(view.state).find(i => i.from === parseInt(key, 10))
-                        : null;
-                    const openLine = info ? view.state.doc.lineAt(info.from) : line;
-                    anchor = Math.min(openLine.to, view.state.doc.length);
-                } else if (wrap.classList.contains("syfe-cm-quote")) {
+                if (wrap.classList.contains("syfe-cm-quote")) {
                     // 引述块:光标直接落到正文起点(跳过缩进 + 列表标记 + `>`)。
                     // 若落在行首,cm6-inline 的 ListMark/QuoteMark 会把 "- >"
                     // 还原成可见源码(真实焦点下),编辑态与渲染态就不一致了。
