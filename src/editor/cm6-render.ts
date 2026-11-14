@@ -1177,39 +1177,58 @@ interface FencedCodeInfo {
 function fencedCodeInfos(state: EditorState): FencedCodeInfo[] {
     const doc = state.doc;
     const out: FencedCodeInfo[] = [];
-    syntaxTree(state).iterate({
-        enter: (node) => {
-            if (node.name !== "FencedCode") return;
-            const infoNode = node.node.getChild("CodeInfo");
-            const lang = infoNode ? doc.sliceString(infoNode.from, infoNode.to).trim() : "";
-            const first = doc.lineAt(node.from);
-            const last = doc.lineAt(Math.max(node.from, node.to - 1));
-            // 最后一行是闭合围栏(``` / ~~~)时,代码内容 = 首尾围栏行之间
-            const lastIsFence = last.number > first.number && /^\s*(`{3,}|~{3,})\s*$/.test(last.text);
-            const contentFrom = first.to + 1;
-            const contentTo = lastIsFence ? doc.line(last.number - 1).to : last.to;
-            const code = contentTo >= contentFrom ? doc.sliceString(contentFrom, contentTo) : "";
-            // 视图文本:每行剥到围栏标记列(栅栏起点在本行的字符偏移)为止,
-            // 多出的缩进是代码内容,保留;空行照旧
-            const fenceIndent = node.from - first.from;
-            const codeView = code.split("\n").map(l => {
-                let n = 0;
-                while (n < fenceIndent && n < l.length && (l[n] === " " || l[n] === "\t")) n++;
-                return l.slice(n);
-            }).join("\n");
-            out.push({from: node.from, to: node.to, lang, code, codeView});
-        },
-    });
+    // 文本扫描(替代 lezer FencedCode):围栏是**一个块** —— 闭```与开```
+    // **对齐缩进**(同列)即配对, 内容行缩进任意变化不断块(用户 2026-11-14
+    // 「下```也要和上```对齐缩进, 代码块是块」)。lezer 按列表内容列断块:
+    // 内容行删缩进会把块打碎成「未闭围栏」, 卡片吞到文档尾(「编辑出错」)。
+    // 开栅栏行 = 空白(+可选列表标记)+ 栅栏串(+语言); 闭栅栏 = 同字符、
+    // 长度不短于开、栅栏列与开栅栏相同、行尾无其他文本。
+    for (let ln = 1; ln <= doc.lines; ln++) {
+        const line = doc.line(ln);
+        const open = /^(\s*(?:[-*+]\s+|\d+[.)]\s+)?)(`{3,}|~{3,})(.*)$/.exec(line.text);
+        if (!open) continue;
+        const run = open[2];
+        const fenceCol = open[1].length;
+        const hasMarker = /(?:[-*+]|\d+[.)])\s+$/.test(open[1]);
+        const lang = open[3].trim();
+        // 找闭栅栏:同字符、长度 ≥ 开栅栏、栅栏列相同
+        let closeLine = -1;
+        for (let j = ln + 1; j <= doc.lines; j++) {
+            const t = doc.line(j).text;
+            const cm = /^(\s*)(`{3,}|~{3,})\s*$/.exec(t);
+            if (cm && cm[2][0] === run[0] && cm[2].length >= run.length && cm[1].length === fenceCol) {
+                closeLine = j;
+                break;
+            }
+        }
+        const first = doc.line(ln);
+        const last = closeLine > 0 ? doc.line(closeLine) : doc.line(doc.lines);
+        const contentFrom = first.to + 1;
+        const contentTo = closeLine > 0 ? doc.line(closeLine - 1).to : last.to;
+        const code = contentTo >= contentFrom ? doc.sliceString(contentFrom, contentTo) : "";
+        // 视图文本:每行剥到栅栏列为止 —— 与```对齐的空白不显示, 多出的
+        // 缩进是代码内容, 保留(「与前代码围栏对齐就不要空格, 有空格距离
+        // 就显示空格」)
+        const codeView = code.split("\n").map(l => {
+            let n = 0;
+            while (n < fenceCol && n < l.length && (l[n] === " " || l[n] === "\t")) n++;
+            return l.slice(n);
+        }).join("\n");
+        out.push({from: line.from + fenceCol, to: last.to, lang, code, codeView});
+        ln = closeLine > 0 ? closeLine : doc.lines;
+    }
     return out;
 }
 
 /**
- * 列表内块级 widget(代码卡片/表格)的左缩进(px):对齐所属列表项的正文列。
+ * 列表内块级 widget(代码卡片/表格)的左缩进(px)= **上```的开头位置**
+ * (用户 2026-11-14「代码块左边界就是上\`\`\`的开头位置」—— 与源码态一致)。
  * 块 widget 是 .cm-line 的兄弟节点,行盒的 padding-left 管不到它 —— 列表里的
  * 卡片/表格会顶到内容区最左(用户 2026-11-14 反馈),缩进必须写进 widget 自身
- * margin。
- * 归属判定:widget 首行自带列表标记("- ```fence")→ 用本行的悬挂 pad;否则
- * 向上找最近的、缩进更浅的列表项(它就是所属容器)取其 pad;找不到(顶层块)
+ * padding。
+ * 取值:widget 首行自带列表标记("- ```fence")→ ``` 渲染在标记之后的正文列,
+ * 用本行的悬挂 pad;纯缩进围栏("  \`\`\`python")→ ``` 渲染在自己的缩进列,
+ * 用本行行首空白宽(4px/空格、16px/tab,与源码行渲染同源);顶层块(无前缀)
  * → 0 不缩进。
  */
 function listBlockIndent(
@@ -1220,17 +1239,7 @@ function listBlockIndent(
     indentWidthFn: (t: string) => number,
 ): number {
     if (ownIsMarkerLine) return hangPadOf(lineNum);
-    const w = indentWidthFn(doc.line(lineNum).text);
-    if (w <= 0) return 0;
-    for (let j = lineNum - 1; j >= 1; j--) {
-        const t = doc.line(j).text;
-        if (!t.trim()) continue;
-        if (/^(\s*)(?:[-*+]|\d+[.)])\s/.test(t)) {
-            if (indentWidthFn(t) < w) return hangPadOf(j);
-            continue; // 同级或更深的项:继续向上找所属容器
-        }
-    }
-    return 0;
+    return indentWidthFn(doc.line(lineNum).text);
 }
 
 /**
