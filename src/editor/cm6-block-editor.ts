@@ -10,8 +10,10 @@
 import {EditorView, keymap, lineNumbers, drawSelection, highlightActiveLine, highlightActiveLineGutter} from "@codemirror/view";
 import {EditorState, Compartment} from "@codemirror/state";
 import {defaultKeymap, history, historyKeymap} from "@codemirror/commands";
-import {LanguageDescription, syntaxHighlighting, defaultHighlightStyle} from "@codemirror/language";
+import {LanguageDescription, syntaxHighlighting, defaultHighlightStyle, HighlightStyle} from "@codemirror/language";
+import {tags as highlightTags, Tag} from "@lezer/highlight";
 import {languages} from "@codemirror/language-data";
+import {getActiveCodeTheme, TmTokenRule} from "../extensions/theme-loader";
 
 interface MountOptions {
     container: HTMLElement;
@@ -40,6 +42,70 @@ const S: {
     onContentChange: null,
 };
 
+/** TextMate 顶层 scope → CM6 tag(常见子集; 主题规则按最长前缀探测取色) */
+const SCOPE_TAGS: [string, Tag][] = [
+    ["comment", highlightTags.comment],
+    ["string", highlightTags.string],
+    ["keyword", highlightTags.keyword],
+    ["number", highlightTags.number],
+    ["constant", highlightTags.standard(highlightTags.constant)],
+    ["operator", highlightTags.operatorKeyword],
+    ["punctuation", highlightTags.punctuation],
+    ["variable", highlightTags.variableName],
+    ["entity", highlightTags.function(highlightTags.variableName)],
+    ["support", highlightTags.function(highlightTags.variableName)],
+    ["storage", highlightTags.typeName],
+    ["type", highlightTags.typeName],
+    ["class", highlightTags.className],
+];
+
+/** 主题规则 → CM6 HighlightStyle(与块内 colorize 的 Monaco 主题取色同源) */
+function buildTokenHighlight(): HighlightStyle | null {
+    const theme = getActiveCodeTheme();
+    if (!theme || !theme.rules.length) return null;
+    const probe = (scope: string[]): TmTokenRule | null => {
+        let best: TmTokenRule | null = null;
+        let bestLen = 0;
+        for (const r of theme.rules) {
+            if (r.segments.length > scope.length) continue;
+            if (r.segments.length <= bestLen) continue;
+            let ok = true;
+            for (let i = 0; i < r.segments.length; i++) {
+                if (r.segments[i] !== scope[i]) { ok = false; break; }
+            }
+            if (ok) { best = r; bestLen = r.segments.length; }
+        }
+        return best;
+    };
+    const entries: {tag: Tag; color: string; fontStyle?: string; fontWeight?: string; textDecoration?: string}[] = [];
+    for (const [scope, tag] of SCOPE_TAGS) {
+        const rule = probe([scope]);
+        if (!rule) continue;
+        const style: {tag: Tag; color: string; fontStyle?: string; fontWeight?: string; textDecoration?: string} = {tag, color: rule.foreground};
+        if (rule.fontStyle === "italic") style.fontStyle = "italic";
+        if (rule.fontStyle === "bold") style.fontWeight = "bold";
+        if (rule.fontStyle === "underline") style.textDecoration = "underline";
+        entries.push(style);
+    }
+    return entries.length ? HighlightStyle.define(entries) : null;
+}
+
+// 行号列样式(复刻 colorize 的 .syfe-cm-cl-n: on-surface 0.45、右对齐)
+const gutterTheme = EditorView.theme({
+    ".cm-gutters": {
+        backgroundColor: "transparent",
+        border: "none",
+        color: "var(--b3-theme-on-surface)",
+        opacity: "0.45",
+    },
+    ".cm-lineNumbers .cm-gutterElement": {
+        padding: "0 0.9em",
+        color: "var(--b3-theme-on-surface)",
+        opacity: "0.45",
+    },
+    ".cm-activeLineGutter": {backgroundColor: "transparent"},
+});
+
 export function mountBlockEditor(o: MountBlockOptions): void {
     unmountBlockEditor();
     const langSlot = new Compartment();
@@ -56,7 +122,8 @@ export function mountBlockEditor(o: MountBlockOptions): void {
                 drawSelection(),
                 highlightActiveLineGutter(),
                 highlightActiveLine(),
-                syntaxHighlighting(defaultHighlightStyle, {fallback: true}),
+                syntaxHighlighting(buildTokenHighlight() ?? defaultHighlightStyle, {fallback: true}),
+                gutterTheme,
                 keymap.of([
                     // Esc 退出编辑回 colorize
                     {key: "Escape", run: () => {
@@ -71,7 +138,6 @@ export function mountBlockEditor(o: MountBlockOptions): void {
                     "&": {
                         fontSize: "13px",
                         backgroundColor: "var(--b3-theme-surface)",
-                        height: "100%",
                     },
                     ".cm-content": {padding: "0", caretColor: "var(--b3-theme-on-surface)"},
                     ".cm-line": {
@@ -82,11 +148,6 @@ export function mountBlockEditor(o: MountBlockOptions): void {
                     ".cm-scroller": {
                         fontFamily: 'Consolas, "Courier New", monospace',
                         lineHeight: "21px",
-                    },
-                    ".cm-gutters": {
-                        backgroundColor: "transparent",
-                        border: "none",
-                        color: "var(--b3-theme-on-surface-light)",
                     },
                     "&.cm-focused": {outline: "none"},
                     ".cm-selectionBackground, .cm-content ::selection": {
