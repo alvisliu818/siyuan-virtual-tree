@@ -1206,11 +1206,16 @@ function fencedCodeInfos(state: EditorState): FencedCodeInfo[] {
         const contentFrom = first.to + 1;
         const contentTo = closeLine > 0 ? doc.line(closeLine - 1).to : last.to;
         const code = contentTo >= contentFrom ? doc.sliceString(contentFrom, contentTo) : "";
-        // 视图文本:每行剥掉全部行首空白 —— 列表内围栏的内容缩进是 markdown
-        // 结构, 用户不希望它出现在卡片里(用户 2026-11-14「前面的空格渲染
-        // 出来」; 之前的「多余缩进保留」规则作废)。编辑态(Monaco)与文档
-        // 原文不受影响, 只影响卡片渲染与复制
-        const codeView = code.split("\n").map(l => l.replace(/^\s+/, "")).join("\n");
+        // 视图文本:每行剥到栅栏列为止 —— 与```对齐的空白(markdown 结构)
+        // 不显示, 多出的缩进是代码自身的内容, 保留(用户 2026-11-14 最终确认
+        // 「渲染态要有空白」: echo 比 robocopy 深 4 格, 卡片里也要深 4 格;
+        // 全剥规则作废)。编辑态(Monaco)与文档原文不受影响, 只影响卡片
+        // 渲染与复制
+        const codeView = code.split("\n").map(l => {
+            let n = 0;
+            while (n < fenceCol && n < l.length && (l[n] === " " || l[n] === "\t")) n++;
+            return l.slice(n);
+        }).join("\n");
         out.push({from: line.from + fenceCol, to: last.to, lang, code, codeView});
         ln = closeLine > 0 ? closeLine : doc.lines;
     }
