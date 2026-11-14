@@ -1498,6 +1498,31 @@ function buildDecorations(state: EditorState, opts: Cm6RenderOptions): Decoratio
                 return (m[1].match(/\t/g) || []).length * 16 + m[1].replace(/\t/g, "").length * 4;
             };
             const RE_LIST_ITEM = /^(\s*)(?:[-*+]|\d+[.)])\s/;
+            // 引导线只画在列表结构行上(用户 2026-11-14「只有列表显示竖线」):
+            // 自绘盒内容的行不画 —— 卡片/表格有自己的左缘视觉,引述行有自己的
+            // 竖线;源码态下竖线贴着裸代码/表格文本更是纯噪音。围栏按**整块 span**
+            // 跳过(内容行任意文本,前缀匹配不住);公式按 $$ 对整段跳过。
+            const RE_GUIDE_SKIP_ROW = /^\s*(?:\||\$|>)/;
+            const guideSkipLines = new Set<number>();
+            for (const info of fencedCodeInfos(state)) {
+                const f = doc.lineAt(info.from).number;
+                const t = doc.lineAt(Math.max(info.from, info.to - 1)).number;
+                for (let k = f; k <= t; k++) guideSkipLines.add(k);
+            }
+            {
+                let k = 1;
+                while (k <= doc.lines) {
+                    if (!/^\s*\$\$\s*$/.test(doc.line(k).text)) { k++; continue; }
+                    let j = k + 1;
+                    while (j <= doc.lines && !/^\s*\$\$\s*$/.test(doc.line(j).text)) j++;
+                    if (j <= doc.lines) {
+                        for (let m = k; m <= j; m++) guideSkipLines.add(m);
+                        k = j + 1;
+                        continue;
+                    }
+                    k++;
+                }
+            }
             for (let ln = 1; ln <= doc.lines; ln++) {
                 if (!RE_LIST_ITEM.test(doc.line(ln).text)) continue;
                 const w = indentWidth(doc.line(ln).text);
@@ -1540,6 +1565,7 @@ function buildDecorations(state: EditorState, opts: Cm6RenderOptions): Decoratio
                 let lastDrawn = -1;
                 for (let k = ln + 1; k <= end; k++) {
                     if (doc.line(k).text.trim() === "") continue;
+                    if (guideSkipLines.has(k) || RE_GUIDE_SKIP_ROW.test(doc.line(k).text)) continue;
                     if (firstDrawn < 0) firstDrawn = k;
                     lastDrawn = k;
                 }
@@ -1548,6 +1574,7 @@ function buildDecorations(state: EditorState, opts: Cm6RenderOptions): Decoratio
                 if (firstDrawn < 0 || firstDrawn === lastDrawn) continue;
                 for (let k = ln + 1; k <= end; k++) {
                     if (doc.line(k).text.trim() === "") continue;
+                    if (guideSkipLines.has(k) || RE_GUIDE_SKIP_ROW.test(doc.line(k).text)) continue;
                     const arr = guideStops.get(k) || [];
                     arr.push({x, first: k === firstDrawn, last: k === lastDrawn});
                     guideStops.set(k, arr);
