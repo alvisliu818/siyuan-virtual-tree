@@ -659,7 +659,11 @@ function buildInlineDecorations(state: EditorState, opts: Cm6InlineOptions): Inl
                 }
                 if (isTop) {
                     const fromLine = doc.lineAt(node.from).number;
-                    const toLine = doc.lineAt(node.to).number;
+                    // toLine 取**末字符所在行**:列表以换行结尾时 node.to 指向下一
+                    // 行行首,lineAt(node.to) 会多算一行,盒带涂到列表外的空行上
+                    //(用户 2026-11-14「列表背景渲染这么多」;与 cm6-render 的
+                    // topListBoxSpan 保持同一判定)
+                    const toLine = doc.lineAt(Math.max(node.from, node.to - 1)).number;
                     for (let ln = fromLine; ln <= toLine; ln++) {
                         const boxCls = `syfe-cm-list-box${ln === fromLine ? " is-first" : ""}${ln === toLine ? " is-last" : ""}`;
                         deco.push(Decoration.line({class: boxCls}).range(doc.line(ln).from));

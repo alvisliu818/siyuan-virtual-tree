@@ -1173,7 +1173,10 @@ function topListBoxSpan(state: EditorState, pos: number): {fromLine: number; toL
     for (let p = outerList.parent; p; p = p.parent) {
         if (p.name === "BulletList" || p.name === "OrderedList") return null;
     }
-    return {fromLine: doc.lineAt(outerList.from).number, toLine: doc.lineAt(outerList.to).number};
+    // toLine 取**末字符所在行**:列表以换行结尾时 node.to 指向下一行行首,
+    // lineAt(node.to) 会多算一行,盒带涂到列表外的空行上(用户 2026-11-14
+    // 「列表背景渲染这么多」)
+    return {fromLine: doc.lineAt(outerList.from).number, toLine: doc.lineAt(Math.max(outerList.from, outerList.to - 1)).number};
 }
 
 // 语言标签点击:亮/收围栏(Obsidian 同款「点语言进源码」)。
@@ -1727,27 +1730,29 @@ function buildDecorations(state: EditorState, opts: Cm6RenderOptions): Decoratio
                 if (!isCodeBlockMonacoEnabled()) continue;
                 const editing = !view.state.readOnly && getEditingKey() === String(info.from);
                 if (!editing && cursorInBlock(info.from, info.to)) continue;
-                // 列表内的开栅栏行是列表项行("- ```powershell")时:整行替换,
-                // 圆点由卡片顶部自画并与卡片顶对齐 —— 不渲染独立空行,卡片从
-                // 列表项块顶部开始(用户 2026-11-14 反馈;此前曾保留标记行,
-                // 卡片被空行顶下去)。纯缩进围栏无标记,行为不变。卡片缩进到
-                // 所属项正文列 —— 块 widget 不在行盒里,缩进/盒色都写进
-                // widget 自身(padding-left + listBox 类)。
+                // 列表内的开栅栏行,若栅栏前只有空白或「缩进+列表标记」,整行替换
+                // (用户 2026-11-14:纯缩进围栏 "  \`\`\`python" 的前导空格曾渲染
+                // 成空行,卡片被顶下一行「渲染下移」)。带标记时圆点由卡片顶部
+                // 自画并与卡片顶对齐;纯空白前缀无标记,不画。卡片缩进到所属项
+                // 正文列 —— 缩进/盒色都写进 widget 自身(padding-left + listBox)。
                 const fenceLine = doc.lineAt(info.from);
-                const ownIsMarkerLine = /^\s*(?:[-*+]|\d+[.)])\s*$/.test(fenceLine.text.slice(0, info.from - fenceLine.from));
-                const indent = listBlockIndent(doc, fenceLine.number, ownIsMarkerLine, (ln) => hangByLine.get(ln)?.pad ?? 0, indentWidth);
+                const prefix = fenceLine.text.slice(0, info.from - fenceLine.from);
+                const hasMarker = /^\s*(?:[-*+]|\d+[.)])\s*$/.test(prefix);
+                const swallowLine = /^\s*(?:[-*+]|\d+[.)])?\s*$/.test(prefix);
+                const indent = listBlockIndent(doc, fenceLine.number, hasMarker, (ln) => hangByLine.get(ln)?.pad ?? 0, indentWidth);
                 const span = topListBoxSpan(state, info.from);
                 let listBoxCls = "";
                 if (span) {
+                    const f1 = fenceLine.number;
                     const f2 = doc.lineAt(Math.max(info.from, info.to - 1)).number;
-                    if (fenceLine.number <= span.toLine && f2 >= span.fromLine) {
+                    if (f1 <= span.toLine && f2 >= span.fromLine) {
                         listBoxCls = "syfe-cm-list-box-extend";
-                        if (fenceLine.number <= span.fromLine) listBoxCls += " is-box-first";
+                        if (f1 <= span.fromLine) listBoxCls += " is-box-first";
                         if (f2 >= span.toLine) listBoxCls += " is-box-last";
                     }
                 }
-                const from = ownIsMarkerLine ? fenceLine.from : info.from;
-                const markerLeft = ownIsMarkerLine ? indent - 9.3 : -1;
+                const from = swallowLine ? fenceLine.from : info.from;
+                const markerLeft = hasMarker ? indent - 9.3 : -1;
                 usedRanges.push({from, to: info.to});
                 const widget = new CodeBlockWidget(info.lang, info.codeView, String(info.from), indent, listBoxCls, markerLeft);
                 const replace = Decoration.replace({widget, block: true});
