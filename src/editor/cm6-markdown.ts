@@ -23,7 +23,7 @@ import {markdown, markdownLanguage} from "@codemirror/lang-markdown";
 import {languages} from "@codemirror/language-data";
 import {tags} from "@lezer/highlight";
 import {Menu} from "siyuan";
-import {cm6MarkdownRender, preloadCm6Katex} from "./cm6-render";
+import {cm6MarkdownRender, preloadCm6Katex, registerCopyLineHandler} from "./cm6-render";
 import {cm6InlineWysiwyg, mdParserExtensions} from "./cm6-inline";
 import {cm6BlockPreview} from "./cm6-block-preview";
 import {BLOCK_FONT_FAMILY, BLOCK_FONT_SIZE, BLOCK_LINE_HEIGHT} from "./monaco-block";
@@ -330,6 +330,8 @@ const syfeCmTheme = EditorView.theme({
         display: "flex",
         alignItems: "center",
         justifyContent: "flex-end",
+        // 列 pointer-events none,行自己开:每个数字可右键弹「复制第 N 行链接」
+        pointerEvents: "auto",
     },
     // 标题容器块化:标题行加底色(ATX 单行四角圆角;Setext 两行首末圆角)。
     // 取列表盒与引述盒的中间色:标题略重于列表、轻于引述。⚠ 排在 tablesrc/
@@ -811,9 +813,14 @@ export function createCm6MarkdownEditor(
                         // lineBlockAtHeight(元素中心) 反查在编辑器刚创建、heightmap
                         // 与 DOM 短暂失步时会解析到错误的行(实测弹出"第 1 行"),
                         // 只作文本取不到时的兜底。
+                        // ⚠ 目标必须是纯数字的单个 gutterElement:右键卡片旁的槽列
+                        //   背景时 target 是整列容器,textContent = 全部数字拼接,
+                        //   parseInt 出天文数字(实测「第 9.9e+26 行」菜单,用户
+                        //   2026-11-14 反馈)。不合法一律回退块首行。
                         const el = me.target as HTMLElement | null;
-                        const shown = el ? parseInt(el.textContent || "", 10) : NaN;
-                        const num = isFinite(shown) && shown > 0
+                        const text = el?.classList.contains("cm-gutterElement") ? (el.textContent || "") : "";
+                        const shown = /^\d+$/.test(text) ? parseInt(text, 10) : NaN;
+                        const num = isFinite(shown) && shown >= 1 && shown <= view.state.doc.lines
                             ? shown
                             : view.state.doc.lineAt(line.from).number;
                         me.preventDefault();
@@ -896,6 +903,16 @@ export function createCm6MarkdownEditor(
     });
 
     const view = new EditorView({state, parent: container});
+    // 行号补画列(被吞行的行号,cm6-render)的右键菜单走同一套复制行链接
+    registerCopyLineHandler(view.dom, opts.onCopyLine ? (n, x, y) => {
+        const menu = new Menu();
+        menu.addItem({
+            icon: "iconLink",
+            label: `复制第 ${n} 行链接`,
+            click: () => opts.onCopyLine?.(n),
+        });
+        menu.open({x, y});
+    } : null);
 
     // CM6 的初始 measure 走 rAF;窗口失焦/页签在后台时可能迟迟不跑,行号槽会
     // 一直按 defaultLineHeight(=font-size 14px) 排布而不是真实行高 25px。

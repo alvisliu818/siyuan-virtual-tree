@@ -347,6 +347,15 @@ class CodeBlockWidget extends WidgetType {
                     const el = document.createElement("div");
                     el.className = "cm-gutterElement";
                     el.textContent = String(n);
+                    // 右键单行号 → 「复制第 N 行链接」菜单(回调按编辑器实例登记)
+                    const fn = copyLineByEditor.get(view.dom);
+                    if (fn) {
+                        el.oncontextmenu = (e: MouseEvent) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            fn(n, e.clientX, e.clientY);
+                        };
+                    }
                     col.appendChild(el);
                 }
                 wrap.prepend(col);
@@ -929,6 +938,15 @@ class TableWidget extends WidgetType {
                     const el = document.createElement("div");
                     el.className = "cm-gutterElement";
                     el.textContent = String(n);
+                    // 右键单行号 → 「复制第 N 行链接」菜单(回调按编辑器实例登记)
+                    const fn = copyLineByEditor.get(view.dom);
+                    if (fn) {
+                        el.oncontextmenu = (e: MouseEvent) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            fn(n, e.clientX, e.clientY);
+                        };
+                    }
                     col.appendChild(el);
                 }
                 wrap.prepend(col);
@@ -1236,6 +1254,17 @@ function topListBoxSpan(state: EditorState, pos: number): {fromLine: number; toL
     // lineAt(node.to) 会多算一行,盒带涂到列表外的空行上(用户 2026-11-14
     // 「列表背景渲染这么多」)
     return {fromLine: doc.lineAt(outerList.from).number, toLine: doc.lineAt(Math.max(outerList.from, outerList.to - 1)).number};
+}
+
+// ===== 被吞行行号的右键菜单 =====
+// 编辑器实例 → 「复制第 N 行链接」菜单回调(cm6-markdown 创建编辑器时登记,
+// 菜单构建在登记侧以复用其 Menu 与 onCopyLine)。行号补画列的每个数字右键用
+// 它弹出菜单;按编辑器 DOM 分键,多页签互不串扰。
+const copyLineByEditor = new WeakMap<HTMLElement, (n: number, x: number, y: number) => void>();
+
+export function registerCopyLineHandler(editorDom: HTMLElement, fn: ((n: number, x: number, y: number) => void) | null): void {
+    if (fn) copyLineByEditor.set(editorDom, fn);
+    else copyLineByEditor.delete(editorDom);
 }
 
 // 语言标签点击:亮/收围栏(Obsidian 同款「点语言进源码」)。
