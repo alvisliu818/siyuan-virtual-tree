@@ -35,23 +35,24 @@ import {
     WidgetType,
 } from "@codemirror/view";
 import {syntaxTree} from "@codemirror/language";
-import {resolveFenceLanguageId} from "../extensions/grammar-loader";
 import {getBoolSetting, registerSettingsChangedHandler} from "../settings/user-settings";
 import {
     colorizeCached,
-    flushActiveBlock,
-    getActiveBlockValue,
     getEditingKey,
     getMonacoThemeName,
+    onMonacoThemeChanged,
+    setEditingKey,
+} from "./monaco-block";
+import {
+    flushActiveBlock,
+    getActiveBlockValue,
     getMountedBlockKey,
     getMountedContainer,
     getMountedLanguage,
     mountBlockEditor,
-    onMonacoThemeChanged,
     remountBlockEditor,
-    setEditingKey,
     unmountBlockEditor,
-} from "./monaco-block";
+} from "./cm6-block-editor";
 import {isDiagramLang, renderDiagram} from "./cm6-diagram";
 
 export interface Cm6RenderOptions {
@@ -1428,17 +1429,23 @@ export function cm6MarkdownRender(opts: Cm6RenderOptions): Extension {
                     wrap.classList.contains("syfe-cm-img");
                 let anchor: number;
                 if (wrap.classList.contains("syfe-cm-codeblock")) {
-                    // 代码块:**不再挂 Monaco 编辑**(用户 2026-11-14「代码块编辑
-                    // 不要用 monaco 了」)—— 光标落进块内进源码态,原始围栏行可
-                    // 编辑;光标出块自动回卡片(与点语言标签的 toggleFenceReveal
-                    // 同款交互)。锚到开栅栏行尾(紧贴语言名,可直接改语言)
+                    // 代码块:声明进入编辑态 —— 挂载层为**卡片内嵌 CM6 编辑器**
+                    //(用户 2026-11-14 定稿: 不用 Monaco, 宿主 CM6 也不变源码,
+                    // 卡片壳/行号/盒带保留, 正文区换内嵌 CM6, 语法渲染走
+                    // language-data 语言包)。由 editMounter 在重建后的真实视图
+                    // DOM 上安置(不能在此处直接挂载 —— 本 wrap 可能即将被重建)。
                     const key = wrap.dataset.blockKey ?? null;
-                    const info = key !== null
-                        ? fencedCodeInfos(view.state).find(i => i.from === parseInt(key, 10))
-                        : null;
-                    const openLine = info ? view.state.doc.lineAt(info.from) : line;
-                    anchor = Math.min(openLine.to, view.state.doc.length);
-                } else if (wrap.classList.contains("syfe-cm-quote")) {
+                    if (key !== null && getEditingKey() !== key) {
+                        const info = fencedCodeInfos(view.state).find(i => i.from === parseInt(key, 10));
+                        if (info) {
+                            activeSync = {key, viewValue: info.codeView};
+                            setEditingKey(key);
+                            view.dispatch({effects: forceRenderEffect.of(null)});
+                        }
+                    }
+                    return true;   // 已挂载:事件交给内嵌 CM6 自行处理
+                }
+                if (wrap.classList.contains("syfe-cm-quote")) {
                     // 引述块:光标直接落到正文起点(跳过缩进 + 列表标记 + `>`)。
                     // 若落在行首,cm6-inline 的 ListMark/QuoteMark 会把 "- >"
                     // 还原成可见源码(真实焦点下),编辑态与渲染态就不一致了。
@@ -1551,7 +1558,7 @@ export function cm6MarkdownRender(opts: Cm6RenderOptions): Extension {
                     remountBlockEditor({
                         container: host,
                         key,
-                        language: getMountedLanguage(),
+                        lang: getMountedLanguage(),
                         value: activeSync?.viewValue ?? "",
                         onContentChange: syncFromMonaco(this.view),
                         onExit: exitEditing(this.view),
@@ -1564,7 +1571,7 @@ export function cm6MarkdownRender(opts: Cm6RenderOptions): Extension {
             mountBlockEditor({
                 container: host,
                 key,
-                language: resolveFenceLanguageId(langLabel),
+                lang: langLabel,
                 value: activeSync?.viewValue ?? "",
                 onContentChange: syncFromMonaco(this.view),
                 onExit: exitEditing(this.view),
