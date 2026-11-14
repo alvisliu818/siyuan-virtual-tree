@@ -326,6 +326,18 @@ function bindBlockListeners(o: MountBlockOptions, ed: monaco.editor.IStandaloneC
     S.contentListener = ed.onDidChangeModelContent(() => o.onContentChange(ed.getValue()));
     S.keyListener = ed.onKeyDown((e) => {
         if (e.keyCode === monaco.KeyCode.Escape) o.onExit();
+        // Enter:Monaco 原生按键处理在嵌入场景被 CM6 keymap 抢先 preventDefault
+        // (焦点在 Monaco textarea, keydown 冒泡到 cm-content 的 keymap —— 用户
+        // 2026-11-14「monaco 代码块里换行不成功」, CDP 传播链插桩实证: target
+        // 阶段未 prevent, cm-content 冒泡阶段已 prevent 且模型/文档均无变化)。
+        // 显式插入 + 阻断冒泡, CM6 keymap 不再接手; executeEdits 是已验证可靠
+        // 的插入路径(与模型 API 复现同款)。
+        if (e.keyCode === monaco.KeyCode.Enter) {
+            e.browserEvent.preventDefault();
+            e.browserEvent.stopPropagation();
+            const sel = ed.getSelection();
+            ed.executeEdits("enter", [{range: sel, text: "\n"}]);
+        }
     });
     setActiveBlock({
         key: o.key,
