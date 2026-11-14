@@ -224,7 +224,7 @@ class CodeBlockWidget extends WidgetType {
     // 构建时本卡片是否处于编辑态(参与 eq:进入/退出编辑态都要重建换正文)
     private readonly editingFlag = getEditingKey() === this.key;
 
-    constructor(readonly lang: string, readonly code: string, readonly key: string) {
+    constructor(readonly lang: string, readonly code: string, readonly key: string, readonly indent = 0) {
         super();
     }
 
@@ -234,7 +234,7 @@ class CodeBlockWidget extends WidgetType {
         //   若只比 key/lang,eq 会误判相等 → 卡片滞留旧内容(实测:整卡变成
         //   已被替换的旧代码)。编辑态跳过 code 比较,避免每次击键重建卡片
         //   打断 Monaco 挂载。
-        if (other.key !== this.key || other.lang !== this.lang || other.editingFlag !== this.editingFlag) return false;
+        if (other.key !== this.key || other.lang !== this.lang || other.editingFlag !== this.editingFlag || other.indent !== this.indent) return false;
         if (!this.editingFlag && other.code !== this.code) return false;
         return this.editingFlag || other.themeSig === this.themeSig;
     }
@@ -293,6 +293,9 @@ class CodeBlockWidget extends WidgetType {
     toDOM(view: EditorView): HTMLElement {
         const wrap = document.createElement("div");
         wrap.className = "syfe-cm-codeblock";
+        // 列表内的卡片:块 widget 是 .cm-line 的兄弟节点,行 padding 管不到它,
+        // 缩进写进自身 margin(对齐所属列表项正文列;0 = 顶层块不缩进)
+        if (this.indent > 0) wrap.style.marginLeft = `${this.indent.toFixed(1)}px`;
         // colorize / Monaco 挂载会改变卡片高度 → 通知 CM6 重新测量行号槽
         observeWidgetResize(wrap, view);
         wrap.dataset.blockKey = this.key;
@@ -833,18 +836,20 @@ class TableWidget extends WidgetType {
     /** KaTeX 是否已就绪 —— 参与 eq,保证首屏之后加载完成时表格 DOM 真的重建 */
     readonly katexReady: boolean;
 
-    constructor(readonly lines: string[]) {
+    constructor(readonly lines: string[], readonly indent = 0) {
         super();
         this.katexReady = !!(window as any).__syfeKatex;
     }
 
     eq(other: TableWidget): boolean {
-        return other.lines.join("\n") === this.lines.join("\n") && other.katexReady === this.katexReady;
+        return other.lines.join("\n") === this.lines.join("\n") && other.katexReady === this.katexReady && other.indent === this.indent;
     }
 
     toDOM(view: EditorView): HTMLElement {
         const wrap = document.createElement("div");
         wrap.className = "syfe-cm-table";
+        // 列表内的表格:同代码卡片,缩进写进自身 margin(块 widget 不在行盒里)
+        if (this.indent > 0) wrap.style.marginLeft = `${this.indent.toFixed(1)}px`;
         guardScrollbarDrag(wrap);
         // 表格内公式重绘/字体加载会改变块高 → 通知 CM6 重新测量行号槽
         observeWidgetResize(wrap, view);
@@ -1080,6 +1085,36 @@ function fencedCodeInfos(state: EditorState): FencedCodeInfo[] {
         },
     });
     return out;
+}
+
+/**
+ * 列表内块级 widget(代码卡片/表格)的左缩进(px):对齐所属列表项的正文列。
+ * 块 widget 是 .cm-line 的兄弟节点,行盒的 padding-left 管不到它 —— 列表里的
+ * 卡片/表格会顶到内容区最左(用户 2026-11-14 反馈),缩进必须写进 widget 自身
+ * margin。
+ * 归属判定:widget 首行自带列表标记("- ```fence")→ 用本行的悬挂 pad;否则
+ * 向上找最近的、缩进更浅的列表项(它就是所属容器)取其 pad;找不到(顶层块)
+ * → 0 不缩进。
+ */
+function listBlockIndent(
+    doc: {line(n: number): {text: string}},
+    lineNum: number,
+    ownIsMarkerLine: boolean,
+    hangPadOf: (ln: number) => number,
+    indentWidthFn: (t: string) => number,
+): number {
+    if (ownIsMarkerLine) return hangPadOf(lineNum);
+    const w = indentWidthFn(doc.line(lineNum).text);
+    if (w <= 0) return 0;
+    for (let j = lineNum - 1; j >= 1; j--) {
+        const t = doc.line(j).text;
+        if (!t.trim()) continue;
+        if (/^(\s*)(?:[-*+]|\d+[.)])\s/.test(t)) {
+            if (indentWidthFn(t) < w) return hangPadOf(j);
+            continue; // 同级或更深的项:继续向上找所属容器
+        }
+    }
+    return 0;
 }
 
 // 语言标签点击:亮/收围栏(Obsidian 同款「点语言进源码」)。
@@ -1606,11 +1641,19 @@ function buildDecorations(state: EditorState, opts: Cm6RenderOptions): Decoratio
                 if (!isCodeBlockMonacoEnabled()) continue;
                 const editing = !view.state.readOnly && getEditingKey() === String(info.from);
                 if (!editing && cursorInBlock(info.from, info.to)) continue;
-                usedRanges.push({from: info.from, to: info.to});
-                const widget = new CodeBlockWidget(info.lang, info.code, String(info.from));
+                // 列表内的开栅栏行是列表项行("- ```powershell")时,栅栏前还有
+                // 列表标记:整行替换,否则标记残留成空圆点(用户 2026-11-14 反馈)。
+                // 卡片缩进到所属项正文列 —— 块 widget 不在行盒里,行 padding 管
+                // 不到,缩进写进 widget 自身 margin(listBlockIndent)。
+                const fenceLine = doc.lineAt(info.from);
+                const markerFence = /^\s*(?:[-*+]|\d+[.)])\s*$/.test(fenceLine.text.slice(0, info.from - fenceLine.from));
+                const from = markerFence ? fenceLine.from : info.from;
+                const indent = listBlockIndent(doc, fenceLine.number, markerFence, (ln) => hangByLine.get(ln)?.pad ?? 0, indentWidth);
+                usedRanges.push({from, to: info.to});
+                const widget = new CodeBlockWidget(info.lang, info.code, String(info.from), indent);
                 const replace = Decoration.replace({widget, block: true});
-                ranges.push(replace.range(info.from, info.to));
-                atomicRanges.push(replace.range(info.from, info.to));
+                ranges.push(replace.range(from, info.to));
+                atomicRanges.push(replace.range(from, info.to));
             }
 
             // 2) 数学块 $$...$$(光标在块内时只加底色,便于编辑)
@@ -1887,7 +1930,9 @@ function buildDecorations(state: EditorState, opts: Cm6RenderOptions): Decoratio
                         lineDecos.push(tableSrcLineDeco.range(doc.line(k).from));
                     }
                 } else {
-                    const decoReplace = Decoration.replace({widget: new TableWidget(tableLines), block: true});
+                    // 列表内的表格:卡片同款,缩进到所属项正文列(块 widget 不在行盒里)
+                    const indent = listBlockIndent(doc, ln, false, (l) => hangByLine.get(l)?.pad ?? 0, indentWidth);
+                    const decoReplace = Decoration.replace({widget: new TableWidget(tableLines, indent), block: true});
                     ranges.push(decoReplace.range(from, to));
                     atomicRanges.push(decoReplace.range(from, to));
                 }
