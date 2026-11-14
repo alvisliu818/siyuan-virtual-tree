@@ -1518,6 +1518,28 @@ function buildDecorations(state: EditorState, opts: Cm6RenderOptions): Decoratio
                 hangByLine.set(ln, {pad: 6 + depth * HANG_STEP + prefix, indent: -prefix});
             }
 
+            // 列表项(有序/无序都一样)是**容器块**:项内续行必须与首行正文列
+            // 对齐,留在容器左边界(引导线)右侧。此前 hangByLine 只收带 marker
+            // 的首行,续行/长文本折行从行盒 0 起排,会越过引导线跑到容器外
+            //(用户 2026-11-14 反馈)。续行只用 pad、不挂负 text-indent。
+            {
+                let owner: {pad: number; base: number} | null = null;
+                for (let ln = 1; ln <= doc.lines; ln++) {
+                    const t = doc.line(ln).text;
+                    if (/^(\s*)(?:[-*+]|\d+[.)])\s/.test(t)) {
+                        const h = hangByLine.get(ln);
+                        if (h) owner = {pad: h.pad, base: indentWidth(t)};
+                        continue;   // 子列表项用自己的(更深)容器几何
+                    }
+                    if (!owner || t.trim() === "") continue;
+                    const w = indentWidth(t);
+                    if (w <= owner.base) { owner = null; continue; }  // 退回同级 = 离开容器
+                    // 自绘盒的行(引述/表格/围栏/公式)由各自几何接管,不覆盖
+                    if (/^\s*(?:>|\||```|~~~|\$\$)/.test(t)) continue;
+                    hangByLine.set(ln, {pad: owner.pad, indent: 0});
+                }
+            }
+
             // 0) Obsidian 页面属性:只认文档开头且闭合的 YAML frontmatter(--- ... ---)。
             //    光标在块内时回源码态,与表格/公式块同一套编辑模型。
             {
