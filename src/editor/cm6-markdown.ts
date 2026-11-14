@@ -308,6 +308,25 @@ const syfeCmTheme = EditorView.theme({
         "border-bottom-left-radius": "8px",
         "border-bottom-right-radius": "8px",
     },
+    // 被吞行的行号列(widget 自画,覆盖在槽列上):原生行号槽对 widget 块
+    // 不画号,卡片把被吞行的源码行号竖排补回(用户 2026-11-14「行号在代码
+    // 块位置没了」)。透明度/内边距对齐原生 gutterElement;pointer-events
+    // 关掉,右键行为与旧行为一致(该区域本无行号可点)
+    ".syfe-cm-codeblock-gutternums, .syfe-cm-table-gutternums": {
+        position: "absolute",
+        top: "0",
+        height: "100%",
+        display: "flex",
+        flexDirection: "column",
+        justifyContent: "space-around",
+        alignItems: "flex-end",
+        padding: "0 3px 0 2px",
+        minWidth: "18px",
+        boxSizing: "border-box",
+        opacity: "var(--syfe-cm-gutter-opacity, 0.4)",
+        pointerEvents: "none",
+        fontSize: "0.8em",
+    },
     // 标题容器块化:标题行加底色(ATX 单行四角圆角;Setext 两行首末圆角)。
     // 取列表盒与引述盒的中间色:标题略重于列表、轻于引述。⚠ 排在 tablesrc/
     // quotesrc/callout 等盒色之前(同特异性靠源顺序决胜,后定义者覆盖)

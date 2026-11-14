@@ -233,6 +233,11 @@ class CodeBlockWidget extends WidgetType {
          *  行首圆点由卡片自己画出并与卡片顶对齐(用户 2026-11-14:
          *  「代码块渲染应该在列表块顶部开始」) */
         readonly markerLeft = -1,
+        /** 被块级替换吞掉的源码行号序列(如 [5,6,7,8])。原生行号槽对 widget
+         *  块不画号(gutter 更新循环 Array.isArray(block.type) 只认行块),
+         *  卡片自己在槽列上补画这些数字(用户 2026-11-14「行号在代码块
+         *  位置没了」) */
+        readonly gutterNums: readonly number[] = [],
     ) {
         super();
     }
@@ -244,7 +249,8 @@ class CodeBlockWidget extends WidgetType {
         //   已被替换的旧代码)。编辑态跳过 code 比较,避免每次击键重建卡片
         //   打断 Monaco 挂载。
         if (other.key !== this.key || other.lang !== this.lang || other.editingFlag !== this.editingFlag
-            || other.indent !== this.indent || other.listBox !== this.listBox || other.markerLeft !== this.markerLeft) return false;
+            || other.indent !== this.indent || other.listBox !== this.listBox || other.markerLeft !== this.markerLeft
+            || other.gutterNums.join(",") !== this.gutterNums.join(",")) return false;
         if (!this.editingFlag && other.code !== this.code) return false;
         return this.editingFlag || other.themeSig === this.themeSig;
     }
@@ -318,6 +324,32 @@ class CodeBlockWidget extends WidgetType {
             dot.style.left = `${this.markerLeft.toFixed(1)}px`;
             dot.style.top = "7.5px";
             wrap.prepend(dot);
+        }
+        // 被吞行的行号:原生行号槽对 widget 块不画号,卡片把数字列绝对定位
+        // 覆盖到槽列上(负偏移 = 卡片左缘到槽列左缘),高度随卡片内部行分布
+        if (this.gutterNums.length) {
+            const gutters = view.dom.querySelector(".cm-gutters");
+            const contentEl = view.dom.querySelector(".cm-content");
+            if (gutters && contentEl) {
+                const gRect = gutters.getBoundingClientRect();
+                // 偏移用 content/gutters 的稳定几何算(toDOM 时 wrap 尚未入 DOM,
+                // 自己的 rect 是零)。wrap 与 content 同宽同左缘
+                const offset = contentEl.getBoundingClientRect().left - gRect.left;
+                wrap.style.position = "relative";
+                const col = document.createElement("div");
+                col.className = "syfe-cm-codeblock-gutternums";
+                // z-index 高过 .cm-gutters(sticky, z=200):槽列有不透明背景,
+                // 不抬层数字被盖住不可见
+                col.style.zIndex = "300";
+                col.style.left = `${(-Math.max(0, offset)).toFixed(1)}px`;
+                col.style.width = `${gRect.width.toFixed(1)}px`;
+                for (const n of this.gutterNums) {
+                    const el = document.createElement("div");
+                    el.textContent = String(n);
+                    col.appendChild(el);
+                }
+                wrap.prepend(col);
+            }
         }
         // colorize / Monaco 挂载会改变卡片高度 → 通知 CM6 重新测量行号槽
         observeWidgetResize(wrap, view);
@@ -859,14 +891,14 @@ class TableWidget extends WidgetType {
     /** KaTeX 是否已就绪 —— 参与 eq,保证首屏之后加载完成时表格 DOM 真的重建 */
     readonly katexReady: boolean;
 
-    constructor(readonly lines: string[], readonly indent = 0, readonly listBox = "") {
+    constructor(readonly lines: string[], readonly indent = 0, readonly listBox = "", readonly gutterNums: readonly number[] = []) {
         super();
         this.katexReady = !!(window as any).__syfeKatex;
     }
 
     eq(other: TableWidget): boolean {
         return other.lines.join("\n") === this.lines.join("\n") && other.katexReady === this.katexReady
-            && other.indent === this.indent && other.listBox === this.listBox;
+            && other.indent === this.indent && other.listBox === this.listBox && other.gutterNums.join(",") === this.gutterNums.join(",");
     }
 
     toDOM(view: EditorView): HTMLElement {
@@ -875,6 +907,31 @@ class TableWidget extends WidgetType {
         // 列表内的表格:同代码卡片,缩进用自身 padding-left + 盒带背景接管
         if (this.indent > 0) wrap.style.paddingLeft = `${this.indent.toFixed(1)}px`;
         if (this.listBox) wrap.classList.add(...this.listBox.split(" "));
+        // 被吞行的行号:同代码卡片
+        if (this.gutterNums.length) {
+            const gutters = view.dom.querySelector(".cm-gutters");
+            const contentEl = view.dom.querySelector(".cm-content");
+            if (gutters && contentEl) {
+                const gRect = gutters.getBoundingClientRect();
+                // 偏移用 content/gutters 的稳定几何算(toDOM 时 wrap 尚未入 DOM,
+                // 自己的 rect 是零)。wrap 与 content 同宽同左缘
+                const offset = contentEl.getBoundingClientRect().left - gRect.left;
+                wrap.style.position = "relative";
+                const col = document.createElement("div");
+                col.className = "syfe-cm-table-gutternums";
+                // z-index 高过 .cm-gutters(sticky, z=200):槽列有不透明背景,
+                // 不抬层数字被盖住不可见
+                col.style.zIndex = "300";
+                col.style.left = `${(-Math.max(0, offset)).toFixed(1)}px`;
+                col.style.width = `${gRect.width.toFixed(1)}px`;
+                for (const n of this.gutterNums) {
+                    const el = document.createElement("div");
+                    el.textContent = String(n);
+                    col.appendChild(el);
+                }
+                wrap.prepend(col);
+            }
+        }
         guardScrollbarDrag(wrap);
         // 表格内公式重绘/字体加载会改变块高 → 通知 CM6 重新测量行号槽
         observeWidgetResize(wrap, view);
@@ -1753,8 +1810,13 @@ function buildDecorations(state: EditorState, opts: Cm6RenderOptions): Decoratio
                 }
                 const from = swallowLine ? fenceLine.from : info.from;
                 const markerLeft = hasMarker ? indent - 9.3 : -1;
+                const gutterNums: number[] = [];
+                if (swallowLine) {
+                    const f2 = doc.lineAt(Math.max(info.from, info.to - 1)).number;
+                    for (let k = fenceLine.number; k <= f2; k++) gutterNums.push(k);
+                }
                 usedRanges.push({from, to: info.to});
-                const widget = new CodeBlockWidget(info.lang, info.codeView, String(info.from), indent, listBoxCls, markerLeft);
+                const widget = new CodeBlockWidget(info.lang, info.codeView, String(info.from), indent, listBoxCls, markerLeft, gutterNums);
                 const replace = Decoration.replace({widget, block: true});
                 ranges.push(replace.range(from, info.to));
                 atomicRanges.push(replace.range(from, info.to));
@@ -2044,7 +2106,9 @@ function buildDecorations(state: EditorState, opts: Cm6RenderOptions): Decoratio
                         if (ln <= span.fromLine) listBoxCls += " is-box-first";
                         if (endLn >= span.toLine) listBoxCls += " is-box-last";
                     }
-                    const decoReplace = Decoration.replace({widget: new TableWidget(tableLines, indent, listBoxCls), block: true});
+                    const gutterNums: number[] = [];
+                    for (let k = ln; k <= end; k++) gutterNums.push(k);
+                    const decoReplace = Decoration.replace({widget: new TableWidget(tableLines, indent, listBoxCls, gutterNums), block: true});
                     ranges.push(decoReplace.range(from, to));
                     atomicRanges.push(decoReplace.range(from, to));
                 }
