@@ -1668,19 +1668,20 @@ function buildDecorations(state: EditorState, opts: Cm6RenderOptions): Decoratio
                 if (!isCodeBlockMonacoEnabled()) continue;
                 const editing = !view.state.readOnly && getEditingKey() === String(info.from);
                 if (!editing && cursorInBlock(info.from, info.to)) continue;
-                // 列表内的开栅栏行是列表项行("- ```powershell")时,栅栏前还有
-                // 列表标记:整行替换,否则标记残留成空圆点(用户 2026-11-14 反馈)。
-                // 卡片缩进到所属项正文列 —— 块 widget 不在行盒里,行 padding 管
-                // 不到,缩进写进 widget 自身 margin(listBlockIndent)。
+                // 列表内的开栅栏行是列表项行("- ```powershell")时:替换只从栅栏
+                // 起,行首的列表标记(cm6-inline 的圆点)**保留** —— 圆点是列表项
+                // 标记,吃掉它列表结构就断了(用户 2026-11-14 反馈「圆点没了」;
+                // 此前曾整行替换吃标记,是误判)。栅栏行渲染成 圆点行 + 卡片,
+                // 与 Obsidian 一致。卡片缩进到所属项正文列 —— 块 widget 不在
+                // 行盒里,行 padding 管不到,缩进写进 widget 自身 margin。
                 const fenceLine = doc.lineAt(info.from);
-                const markerFence = /^\s*(?:[-*+]|\d+[.)])\s*$/.test(fenceLine.text.slice(0, info.from - fenceLine.from));
-                const from = markerFence ? fenceLine.from : info.from;
-                const indent = listBlockIndent(doc, fenceLine.number, markerFence, (ln) => hangByLine.get(ln)?.pad ?? 0, indentWidth);
-                usedRanges.push({from, to: info.to});
+                const ownIsMarkerLine = /^\s*(?:[-*+]|\d+[.)])\s*$/.test(fenceLine.text.slice(0, info.from - fenceLine.from));
+                const indent = listBlockIndent(doc, fenceLine.number, ownIsMarkerLine, (ln) => hangByLine.get(ln)?.pad ?? 0, indentWidth);
+                usedRanges.push({from: info.from, to: info.to});
                 const widget = new CodeBlockWidget(info.lang, info.code, String(info.from), indent);
                 const replace = Decoration.replace({widget, block: true});
-                ranges.push(replace.range(from, info.to));
-                atomicRanges.push(replace.range(from, info.to));
+                ranges.push(replace.range(info.from, info.to));
+                atomicRanges.push(replace.range(info.from, info.to));
             }
 
             // 2) 数学块 $$...$$(光标在块内时只加底色,便于编辑)
