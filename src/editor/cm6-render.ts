@@ -1164,8 +1164,7 @@ interface FencedCodeInfo {
     to: number;
     /** CodeInfo 节点文本(``` 后的语言名) */
     lang: string;
-    /** 围栏之间的代码内容原文(编辑同步契约:activeSync.lastValue 与之
-     *  等长定位写回,绝不能变形) */
+    /** 围栏之间的代码内容原文(编辑写回跨度按其长度定位,绝不能变形) */
     code: string;
     /** 渲染/复制用视图:内容行剥到围栏标记列为止 —— 与开栅栏对齐的空白
      *  不显示,多出的缩进保留(用户 2026-11-14:与前围栏对齐就不要空格,
@@ -1315,7 +1314,7 @@ function toggleFenceReveal(view: EditorView, key: string): void {
 // 需要派发,而 widget 实例拿不到闭包内的 effect。
 const forceRenderEffect = StateEffect.define<null>();
 // 编辑态同步状态:块 key + 最近一次同步进文档的内容(monaco ↔ cm6 回写定位用)
-let activeSync: {key: string; lastValue: string} | null = null;
+let activeSync: {key: string; viewValue: string} | null = null;
 
 // 开关:CM6 代码块 Monaco 渲染(markdown.cm6CodeBlockMonaco,默认开)。
 // 关闭后围栏代码块回落编辑器原生源码行(不渲染卡片、不可 Monaco 编辑),
@@ -1425,7 +1424,7 @@ export function cm6MarkdownRender(opts: Cm6RenderOptions): Extension {
                     if (key !== null && getEditingKey() !== key) {
                         const info = fencedCodeInfos(view.state).find(i => i.from === parseInt(key, 10));
                         if (info) {
-                            activeSync = {key, lastValue: info.code};
+                            activeSync = {key, viewValue: info.codeView};
                             setEditingKey(key);
                             view.dispatch({effects: forceRenderEffect.of(null)});
                         }
@@ -1492,17 +1491,24 @@ export function cm6MarkdownRender(opts: Cm6RenderOptions): Extension {
         }
     });
 
-    // Monaco 内容变更 → 单事务写回 cm6 文档(定位:块首围栏行尾 + 上次同步长度)
+    // Monaco 内容变更 → 单事务写回 cm6 文档(定位:块首围栏行尾 + 当前原文跨度)
+    // Monaco 是**去结构缩进的视图**(codeView):写回时按开栅栏行前缀重新缩进,
+    // 文件里的结构缩进保持不变(用户 2026-11-14「代码块编辑态有空格」—— 编辑态
+    // 与渲染态看同一份去缩进视图)。空行不加前缀。
     const syncFromMonaco = (view: EditorView) => (v: string) => {
         if (!activeSync) return;
         const nv = v.replace(/\r\n/g, "\n");
         const from = parseInt(activeSync.key, 10);
         if (Number.isNaN(from) || from >= view.state.doc.length) return;
+        const info = fencedCodeInfos(view.state).find(i => i.from === from);
+        if (!info) return;
         const firstLine = view.state.doc.lineAt(from);
         const innerFrom = firstLine.to + 1;
-        const innerTo = Math.min(innerFrom + activeSync.lastValue.length, view.state.doc.length);
-        activeSync.lastValue = nv;
-        view.dispatch({changes: {from: innerFrom, to: innerTo, insert: nv}});
+        const innerTo = Math.min(innerFrom + info.code.length, view.state.doc.length);
+        const reindent = view.state.doc.sliceString(firstLine.from, from).replace(/\S/g, " ");
+        const raw = nv.split("\n").map(l => (l.trim() ? reindent + l : l)).join("\n");
+        activeSync.viewValue = nv;
+        view.dispatch({changes: {from: innerFrom, to: innerTo, insert: raw}});
     };
     // 退出编辑态:flush 最终内容 → 卸载单例 → 重建回渲染卡片
     const exitEditing = (view: EditorView) => () => {
@@ -1549,7 +1555,7 @@ export function cm6MarkdownRender(opts: Cm6RenderOptions): Extension {
                         container: host,
                         key,
                         language: getMountedLanguage(),
-                        value: activeSync?.lastValue ?? "",
+                        value: activeSync?.viewValue ?? "",
                         onContentChange: syncFromMonaco(this.view),
                         onExit: exitEditing(this.view),
                     });
@@ -1562,7 +1568,7 @@ export function cm6MarkdownRender(opts: Cm6RenderOptions): Extension {
                 container: host,
                 key,
                 language: resolveFenceLanguageId(langLabel),
-                value: activeSync?.lastValue ?? "",
+                value: activeSync?.viewValue ?? "",
                 onContentChange: syncFromMonaco(this.view),
                 onExit: exitEditing(this.view),
             });
