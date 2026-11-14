@@ -224,7 +224,16 @@ class CodeBlockWidget extends WidgetType {
     // 构建时本卡片是否处于编辑态(参与 eq:进入/退出编辑态都要重建换正文)
     private readonly editingFlag = getEditingKey() === this.key;
 
-    constructor(readonly lang: string, readonly code: string, readonly key: string, readonly indent = 0) {
+    constructor(
+        readonly lang: string, readonly code: string, readonly key: string,
+        readonly indent = 0,
+        /** 顶级列表容器盒的附加类(盒带背景 + 首末圆角接管);空串 = 不在盒内 */
+        readonly listBox = "",
+        /** 列表标记(圆点)的 x 坐标;<0 = 不画。marker-fence 行整行替换后,
+         *  行首圆点由卡片自己画出并与卡片顶对齐(用户 2026-11-14:
+         *  「代码块渲染应该在列表块顶部开始」) */
+        readonly markerLeft = -1,
+    ) {
         super();
     }
 
@@ -234,7 +243,8 @@ class CodeBlockWidget extends WidgetType {
         //   若只比 key/lang,eq 会误判相等 → 卡片滞留旧内容(实测:整卡变成
         //   已被替换的旧代码)。编辑态跳过 code 比较,避免每次击键重建卡片
         //   打断 Monaco 挂载。
-        if (other.key !== this.key || other.lang !== this.lang || other.editingFlag !== this.editingFlag || other.indent !== this.indent) return false;
+        if (other.key !== this.key || other.lang !== this.lang || other.editingFlag !== this.editingFlag
+            || other.indent !== this.indent || other.listBox !== this.listBox || other.markerLeft !== this.markerLeft) return false;
         if (!this.editingFlag && other.code !== this.code) return false;
         return this.editingFlag || other.themeSig === this.themeSig;
     }
@@ -293,9 +303,22 @@ class CodeBlockWidget extends WidgetType {
     toDOM(view: EditorView): HTMLElement {
         const wrap = document.createElement("div");
         wrap.className = "syfe-cm-codeblock";
-        // 列表内的卡片:块 widget 是 .cm-line 的兄弟节点,行 padding 管不到它,
-        // 缩进写进自身 margin(对齐所属列表项正文列;0 = 顶层块不缩进)
-        if (this.indent > 0) wrap.style.marginLeft = `${this.indent.toFixed(1)}px`;
+        // 列表内的卡片:块 widget 是 .cm-line 的兄弟节点,行 padding 管不到它。
+        // 缩进用自身 padding-left(不用 margin:padding 让盒带背景盖住卡片左侧
+        // 条带,margin 会留白洞);0 = 顶层块不缩进
+        if (this.indent > 0) wrap.style.paddingLeft = `${this.indent.toFixed(1)}px`;
+        // 顶级列表容器盒的盒带背景/圆角接管(见 topListBoxSpan)
+        if (this.listBox) wrap.classList.add(...this.listBox.split(" "));
+        // marker-fence 行的圆点:卡片顶部自画,与卡片顶对齐
+        if (this.markerLeft >= 0) {
+            wrap.style.position = "relative";
+            const dot = document.createElement("span");
+            dot.className = "syfe-cm-md-listmark-bullet";
+            dot.style.position = "absolute";
+            dot.style.left = `${this.markerLeft.toFixed(1)}px`;
+            dot.style.top = "7.5px";
+            wrap.prepend(dot);
+        }
         // colorize / Monaco 挂载会改变卡片高度 → 通知 CM6 重新测量行号槽
         observeWidgetResize(wrap, view);
         wrap.dataset.blockKey = this.key;
@@ -836,20 +859,22 @@ class TableWidget extends WidgetType {
     /** KaTeX 是否已就绪 —— 参与 eq,保证首屏之后加载完成时表格 DOM 真的重建 */
     readonly katexReady: boolean;
 
-    constructor(readonly lines: string[], readonly indent = 0) {
+    constructor(readonly lines: string[], readonly indent = 0, readonly listBox = "") {
         super();
         this.katexReady = !!(window as any).__syfeKatex;
     }
 
     eq(other: TableWidget): boolean {
-        return other.lines.join("\n") === this.lines.join("\n") && other.katexReady === this.katexReady && other.indent === this.indent;
+        return other.lines.join("\n") === this.lines.join("\n") && other.katexReady === this.katexReady
+            && other.indent === this.indent && other.listBox === this.listBox;
     }
 
     toDOM(view: EditorView): HTMLElement {
         const wrap = document.createElement("div");
         wrap.className = "syfe-cm-table";
-        // 列表内的表格:同代码卡片,缩进写进自身 margin(块 widget 不在行盒里)
-        if (this.indent > 0) wrap.style.marginLeft = `${this.indent.toFixed(1)}px`;
+        // 列表内的表格:同代码卡片,缩进用自身 padding-left + 盒带背景接管
+        if (this.indent > 0) wrap.style.paddingLeft = `${this.indent.toFixed(1)}px`;
+        if (this.listBox) wrap.classList.add(...this.listBox.split(" "));
         guardScrollbarDrag(wrap);
         // 表格内公式重绘/字体加载会改变块高 → 通知 CM6 重新测量行号槽
         observeWidgetResize(wrap, view);
@@ -1062,8 +1087,14 @@ interface FencedCodeInfo {
     to: number;
     /** CodeInfo 节点文本(``` 后的语言名) */
     lang: string;
-    /** 围栏之间的代码内容(复制按钮用) */
+    /** 围栏之间的代码内容原文(编辑同步契约:activeSync.lastValue 与之
+     *  等长定位写回,绝不能变形) */
     code: string;
+    /** 渲染/复制用视图:内容行剥到围栏标记列为止 —— 与开栅栏对齐的空白
+     *  不显示,多出的缩进保留(用户 2026-11-14:与前围栏对齐就不要空格,
+     *  有空格距离就显示空格;CommonMark 内容缩进规则)。**与 code 不等长**,
+     *  禁止用于编辑同步。 */
+    codeView: string;
 }
 
 function fencedCodeInfos(state: EditorState): FencedCodeInfo[] {
@@ -1081,7 +1112,15 @@ function fencedCodeInfos(state: EditorState): FencedCodeInfo[] {
             const contentFrom = first.to + 1;
             const contentTo = lastIsFence ? doc.line(last.number - 1).to : last.to;
             const code = contentTo >= contentFrom ? doc.sliceString(contentFrom, contentTo) : "";
-            out.push({from: node.from, to: node.to, lang, code});
+            // 视图文本:每行剥到围栏标记列(栅栏起点在本行的字符偏移)为止,
+            // 多出的缩进是代码内容,保留;空行照旧
+            const fenceIndent = node.from - first.from;
+            const codeView = code.split("\n").map(l => {
+                let n = 0;
+                while (n < fenceIndent && n < l.length && (l[n] === " " || l[n] === "\t")) n++;
+                return l.slice(n);
+            }).join("\n");
+            out.push({from: node.from, to: node.to, lang, code, codeView});
         },
     });
     return out;
@@ -1115,6 +1154,26 @@ function listBlockIndent(
         }
     }
     return 0;
+}
+
+/**
+ * pos 所在的顶级列表容器盒的行号跨度(与 cm6-inline 的 BulletList/OrderedList
+ * 盒同一判定:最外层列表祖先,自身不再嵌套在别的列表里)。列表内的块级 widget
+ * (代码卡片/表格)要用它接盒色/圆角 —— 盒色是逐行行盒画的,widget 是 .cm-line
+ * 的兄弟节点,天然拿不到,盒带会在 widget 处断出白洞(用户 2026-11-14 反馈
+ * 「列表块背景显示不对」)。不在任何列表里返回 null。
+ */
+function topListBoxSpan(state: EditorState, pos: number): {fromLine: number; toLine: number} | null {
+    const doc = state.doc;
+    let outerList: any = null;
+    for (let p: any = syntaxTree(state).resolveInner(pos, -1); p; p = p.parent) {
+        if (p.name === "BulletList" || p.name === "OrderedList") outerList = p;
+    }
+    if (!outerList) return null;
+    for (let p = outerList.parent; p; p = p.parent) {
+        if (p.name === "BulletList" || p.name === "OrderedList") return null;
+    }
+    return {fromLine: doc.lineAt(outerList.from).number, toLine: doc.lineAt(outerList.to).number};
 }
 
 // 语言标签点击:亮/收围栏(Obsidian 同款「点语言进源码」)。
@@ -1668,20 +1727,32 @@ function buildDecorations(state: EditorState, opts: Cm6RenderOptions): Decoratio
                 if (!isCodeBlockMonacoEnabled()) continue;
                 const editing = !view.state.readOnly && getEditingKey() === String(info.from);
                 if (!editing && cursorInBlock(info.from, info.to)) continue;
-                // 列表内的开栅栏行是列表项行("- ```powershell")时:替换只从栅栏
-                // 起,行首的列表标记(cm6-inline 的圆点)**保留** —— 圆点是列表项
-                // 标记,吃掉它列表结构就断了(用户 2026-11-14 反馈「圆点没了」;
-                // 此前曾整行替换吃标记,是误判)。栅栏行渲染成 圆点行 + 卡片,
-                // 与 Obsidian 一致。卡片缩进到所属项正文列 —— 块 widget 不在
-                // 行盒里,行 padding 管不到,缩进写进 widget 自身 margin。
+                // 列表内的开栅栏行是列表项行("- ```powershell")时:整行替换,
+                // 圆点由卡片顶部自画并与卡片顶对齐 —— 不渲染独立空行,卡片从
+                // 列表项块顶部开始(用户 2026-11-14 反馈;此前曾保留标记行,
+                // 卡片被空行顶下去)。纯缩进围栏无标记,行为不变。卡片缩进到
+                // 所属项正文列 —— 块 widget 不在行盒里,缩进/盒色都写进
+                // widget 自身(padding-left + listBox 类)。
                 const fenceLine = doc.lineAt(info.from);
                 const ownIsMarkerLine = /^\s*(?:[-*+]|\d+[.)])\s*$/.test(fenceLine.text.slice(0, info.from - fenceLine.from));
                 const indent = listBlockIndent(doc, fenceLine.number, ownIsMarkerLine, (ln) => hangByLine.get(ln)?.pad ?? 0, indentWidth);
-                usedRanges.push({from: info.from, to: info.to});
-                const widget = new CodeBlockWidget(info.lang, info.code, String(info.from), indent);
+                const span = topListBoxSpan(state, info.from);
+                let listBoxCls = "";
+                if (span) {
+                    const f2 = doc.lineAt(Math.max(info.from, info.to - 1)).number;
+                    if (fenceLine.number <= span.toLine && f2 >= span.fromLine) {
+                        listBoxCls = "syfe-cm-list-box-extend";
+                        if (fenceLine.number <= span.fromLine) listBoxCls += " is-box-first";
+                        if (f2 >= span.toLine) listBoxCls += " is-box-last";
+                    }
+                }
+                const from = ownIsMarkerLine ? fenceLine.from : info.from;
+                const markerLeft = ownIsMarkerLine ? indent - 9.3 : -1;
+                usedRanges.push({from, to: info.to});
+                const widget = new CodeBlockWidget(info.lang, info.codeView, String(info.from), indent, listBoxCls, markerLeft);
                 const replace = Decoration.replace({widget, block: true});
-                ranges.push(replace.range(info.from, info.to));
-                atomicRanges.push(replace.range(info.from, info.to));
+                ranges.push(replace.range(from, info.to));
+                atomicRanges.push(replace.range(from, info.to));
             }
 
             // 2) 数学块 $$...$$(光标在块内时只加底色,便于编辑)
@@ -1958,9 +2029,17 @@ function buildDecorations(state: EditorState, opts: Cm6RenderOptions): Decoratio
                         lineDecos.push(tableSrcLineDeco.range(doc.line(k).from));
                     }
                 } else {
-                    // 列表内的表格:卡片同款,缩进到所属项正文列(块 widget 不在行盒里)
+                    // 列表内的表格:卡片同款,缩进到所属项正文列 + 盒带背景接管
                     const indent = listBlockIndent(doc, ln, false, (l) => hangByLine.get(l)?.pad ?? 0, indentWidth);
-                    const decoReplace = Decoration.replace({widget: new TableWidget(tableLines, indent), block: true});
+                    const span = topListBoxSpan(state, doc.line(ln).from);
+                    const endLn = doc.line(end).number;
+                    let listBoxCls = "";
+                    if (span && ln <= span.toLine && endLn >= span.fromLine) {
+                        listBoxCls = "syfe-cm-list-box-extend";
+                        if (ln <= span.fromLine) listBoxCls += " is-box-first";
+                        if (endLn >= span.toLine) listBoxCls += " is-box-last";
+                    }
+                    const decoReplace = Decoration.replace({widget: new TableWidget(tableLines, indent, listBoxCls), block: true});
                     ranges.push(decoReplace.range(from, to));
                     atomicRanges.push(decoReplace.range(from, to));
                 }

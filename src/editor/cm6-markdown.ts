@@ -281,6 +281,33 @@ const syfeCmTheme = EditorView.theme({
         "border-bottom-left-radius": "8px",
         "border-bottom-right-radius": "8px",
     },
+    // 列表盒内的块级 widget(代码卡片/表格):盒色是逐行行盒画的,widget 是
+    // .cm-line 的兄弟节点拿不到 —— 盒带在 widget 处断出白洞(用户 2026-11-14
+    // 反馈「列表块背景显示不对」)。widget 落在盒内时补同色背景;盒的首/末
+    // 元素是 widget 时圆角由它接管(对应行的 is-first/is-last 落在被 widget
+    // 吞掉、不渲染的行上)。
+    ".syfe-cm-codeblock.syfe-cm-list-box-extend": {
+        backgroundColor: "color-mix(in srgb, var(--b3-theme-surface) 45%, var(--b3-theme-background))",
+    },
+    ".syfe-cm-table.syfe-cm-list-box-extend": {
+        backgroundColor: "color-mix(in srgb, var(--b3-theme-surface) 45%, var(--b3-theme-background))",
+    },
+    ".syfe-cm-codeblock.syfe-cm-list-box-extend.is-box-first": {
+        "border-top-left-radius": "8px",
+        "border-top-right-radius": "8px",
+    },
+    ".syfe-cm-codeblock.syfe-cm-list-box-extend.is-box-last": {
+        "border-bottom-left-radius": "8px",
+        "border-bottom-right-radius": "8px",
+    },
+    ".syfe-cm-table.syfe-cm-list-box-extend.is-box-first": {
+        "border-top-left-radius": "8px",
+        "border-top-right-radius": "8px",
+    },
+    ".syfe-cm-table.syfe-cm-list-box-extend.is-box-last": {
+        "border-bottom-left-radius": "8px",
+        "border-bottom-right-radius": "8px",
+    },
     // 标题容器块化:标题行加底色(ATX 单行四角圆角;Setext 两行首末圆角)。
     // 取列表盒与引述盒的中间色:标题略重于列表、轻于引述。⚠ 排在 tablesrc/
     // quotesrc/callout 等盒色之前(同特异性靠源顺序决胜,后定义者覆盖)
