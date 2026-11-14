@@ -337,7 +337,7 @@ class CodeBlockWidget extends WidgetType {
                 const offset = contentEl.getBoundingClientRect().left - gRect.left;
                 wrap.style.position = "relative";
                 const col = document.createElement("div");
-                col.className = "syfe-cm-codeblock-gutternums";
+                col.className = "cm-lineNumbers syfe-cm-codeblock-gutternums";
                 // z-index 高过 .cm-gutters(sticky, z=200):槽列有不透明背景,
                 // 不抬层数字被盖住不可见
                 col.style.zIndex = "300";
@@ -345,6 +345,7 @@ class CodeBlockWidget extends WidgetType {
                 col.style.width = `${gRect.width.toFixed(1)}px`;
                 for (const n of this.gutterNums) {
                     const el = document.createElement("div");
+                    el.className = "cm-gutterElement";
                     el.textContent = String(n);
                     col.appendChild(el);
                 }
@@ -918,7 +919,7 @@ class TableWidget extends WidgetType {
                 const offset = contentEl.getBoundingClientRect().left - gRect.left;
                 wrap.style.position = "relative";
                 const col = document.createElement("div");
-                col.className = "syfe-cm-table-gutternums";
+                col.className = "cm-lineNumbers syfe-cm-table-gutternums";
                 // z-index 高过 .cm-gutters(sticky, z=200):槽列有不透明背景,
                 // 不抬层数字被盖住不可见
                 col.style.zIndex = "300";
@@ -926,6 +927,7 @@ class TableWidget extends WidgetType {
                 col.style.width = `${gRect.width.toFixed(1)}px`;
                 for (const n of this.gutterNums) {
                     const el = document.createElement("div");
+                    el.className = "cm-gutterElement";
                     el.textContent = String(n);
                     col.appendChild(el);
                 }
