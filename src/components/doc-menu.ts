@@ -18,6 +18,7 @@ import {
     moveDocsByID,
 } from "../api/file";
 import {getDocInfo, clearDocInfoCache} from "../utils/virtual-tree";
+import {openMarkdownTab} from "../tabs/markdown-tab";
 import {openSiyuanDoc, openSiyuanNotebook} from "./entry-menu";
 import {promptDialog, copyText} from "./file-tree";
 import {showOpenDialog} from "../utils/open-dialog";
@@ -356,6 +357,14 @@ export function showDocMenu(opts: {
         label: lang("openDocument", "打开文档"),
         click: () => openSiyuanDoc(docId, plugin.app),
     });
+    // 在插件页签里以只读视图打开(内核 blockDOM,完整保留思源块样式,不写回 .sy)
+    if ((plugin as any).config?.siyuanBlockPreview !== false) {
+        menu.addItem({
+            icon: "iconFile",
+            label: lang("openReadOnly", "在插件中只读打开"),
+            click: () => openMarkdownTab(plugin as any, `sydoc://${docId}`, "reading"),
+        });
+    }
     menu.addSeparator();
     menu.addItem({
         icon: "iconAddDoc",

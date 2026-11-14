@@ -2,7 +2,8 @@ import * as monaco from "monaco-editor";
 import {readTextFile, writeFile} from "../api/file";
 import {nativeStat} from "../api/native-fs";
 import {getLanguageByPath} from "./monaco";
-import {isKernelPath} from "../utils/path";
+import {isKernelPath, isSydocPath, docIdOfSydoc} from "../utils/path";
+import {exportDocMarkdown} from "../api/block-io";
 import {recordVersion} from "../version-control/file-versions";
 
 // path → Monaco 文本模型(同一文件多 Tab 共享)
@@ -52,7 +53,13 @@ export function getModel(path: string): Promise<monaco.editor.ITextModel> {
         let content = "";
         try {
             try {
-                content = await readTextFile(path);
+                // sydoc://<docId> 没有磁盘实体:只读导出 Markdown 占位(真正的
+                // 文档视图在 md-tab 里走内核 blockDOM,不进三引擎、不落盘)
+                if (isSydocPath(path)) {
+                    content = (await exportDocMarkdown(docIdOfSydoc(path))).content;
+                } else {
+                    content = await readTextFile(path);
+                }
             } catch (e) {
                 console.error("[syfe-model] readTextFile failed:", (e as Error)?.stack || (e as Error)?.message || e);
                 throw e;
@@ -115,6 +122,11 @@ export function markDirty(path: string, dirty: boolean): void {
 
 // 保存模型内容到文件(内容与上次落盘相同则跳过,避免无谓触发思源同步)
 export async function saveModel(path: string): Promise<void> {
+    // sydoc:// 是只读视图:内容只是内核块树的投影,写回文件既无意义也会损坏文档
+    if (isSydocPath(path)) {
+        markDirty(path, false);
+        return;
+    }
     const model = models.get(path);
     if (!model) return;
     const value = model.getValue();

@@ -3,7 +3,8 @@ import {isMobileFrontend} from "../utils/platform";
 import {openFileOnMobile} from "./mobile-open";
 import Vditor from "vditor";
 import {MARKDOWN_TAB_TYPE, getImageMime} from "../constants";
-import {basename, dirname, sepFor, isSiyuanPath, isRemotePath} from "../utils/path";
+import {basename, dirname, sepFor, isSiyuanPath, isRemotePath, isSydocPath, docIdOfSydoc} from "../utils/path";
+import {getDocBlockDOM, sanitizeProtyleDOM} from "../api/block-io";
 import {EditorConfig} from "../types";
 import {createEditor, getCurrentMode} from "../editor/monaco";
 import {getModel, saveModel, markDirty, isDirty, consumePendingReveal} from "../editor/model-manager";
@@ -1419,6 +1420,11 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                 syncModeButtons();
                 const cm = createCm6MarkdownEditor(self._contentEl!, {
                     value: self._model?.getValue() ?? "",
+                    // 思源块只读预览:设置开关 + app 实例(卡片「在思源中打开」用)
+                    siyuanBlockPreview: plugin.config.siyuanBlockPreview !== false,
+                    previewMaxHeight: plugin.config.siyuanBlockPreviewMaxHeight,
+                    blockRefFormat: plugin.config.siyuanBlockRefFormat,
+                    app: plugin.app,
                     // cm6 富渲染:图片地址 → blob URL(与 vditor 预览同一条解析链)
                     resolveImageSrc: resolveCmImageSrc,
                     onSave: save,
@@ -1497,7 +1503,11 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                 self._contentEl!.innerHTML = "";
                 const cm = createCm6MarkdownEditor(self._contentEl!, {
                     value: self._model?.getValue() ?? "",
-                    readOnly: true,
+                    readOnly: true,                     // 阅读态 3 facet 禁止进入编辑
+                    siyuanBlockPreview: plugin.config.siyuanBlockPreview !== false,
+                    previewMaxHeight: plugin.config.siyuanBlockPreviewMaxHeight,
+                    blockRefFormat: plugin.config.siyuanBlockRefFormat,
+                    app: plugin.app,
                     resolveImageSrc: resolveCmImageSrc,
                     onSave: () => undefined,    // 只读态不落盘
                     onInput: () => undefined,   // 只读态 docChanged 已被事务过滤器丢弃
@@ -1778,10 +1788,23 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
                     self._contentEl!.innerHTML = `<div class="syfe-editor__error">加载失败: ${escapeHTML(String(e))}</div>`;
                     return;
                 }
+                // 思源文档只读视图:sydoc://<docId> 直接用内核渲染好的 protyle
+                // blockDOM,不进三引擎、不可编辑、不落盘 —— 完整保留思源块样式。
+                if (isSydocPath(path) && plugin.config.siyuanBlockPreview !== false) {
+                    try {
+                        const dom = await getDocBlockDOM(docIdOfSydoc(path));
+                        self._contentEl!.innerHTML =
+                            `<div class="syfe-sydoc protyle"><div class="syfe-sydoc__body protyle-wysiwyg">${sanitizeProtyleDOM(dom)}</div></div>`;
+                    } catch (e) {
+                        self._contentEl!.innerHTML = `<div class="syfe-editor__error">思源文档加载失败: ${escapeHTML(String(e))}</div>`;
+                    }
+                    updateDirtyUI(false);
+                    return;
+                }
                 // 本地路径且文件不存在:getModel 会静默用空内容(便于新建),这里补一条
                 // 明确提示 —— 否则"打开一个空白页签"让人以为内容丢了(实测踩过:路径抄错)。
                 // 注意插在页签容器(bar 之下)而不是 contentEl:后续 enterXxx 会清空 contentEl
-                if (!self._model.getValue() && isSiyuanPath(path) === false && !isRemotePath(path)) {
+                if (!self._model.getValue() && isSiyuanPath(path) === false && !isRemotePath(path) && !isSydocPath(path)) {
                     const stat = nativeStat(path);
                     if (!stat && !self.element.querySelector(".syfe-md__missing")) {
                         self.element.querySelector(".syfe-md__bar")!.insertAdjacentHTML("afterend",

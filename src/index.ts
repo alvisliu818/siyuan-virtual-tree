@@ -217,6 +217,12 @@ export default class FileEditorPlugin extends Plugin {
     private backlinkScanAllTextInput?: HTMLInputElement;
     // 思源文档 [[: 双链补全(关=只有思源原生 [[ 文档/块引用)
     private docWikilinkHintInput?: HTMLInputElement;
+    // 思源块只读预览([[ 混合候选 + siyuan://blocks 链接卡片)
+    private siyuanBlockPreviewInput?: HTMLInputElement;
+    // 思源块预览卡片最大高度(0 = 不限制)
+    private siyuanBlockPreviewMaxHeightInput?: HTMLInputElement;
+    // 思源块引用插入格式(markdown 链接 / 双链)
+    private siyuanBlockRefFormatSelect?: HTMLSelectElement;
     // 双链文件名索引的白/黑名单(多行规则文本,支持正则)
     private indexWhitelistInput?: HTMLTextAreaElement;
     private indexBlacklistInput?: HTMLTextAreaElement;
@@ -1342,6 +1348,27 @@ export default class FileEditorPlugin extends Plugin {
         this.docWikilinkHintInput.className = "b3-switch";
         addRow("openFiles", "双链:思源文档 [[: 补全", "输入 [[ 仍弹思源原生文档/块引用;输入 [[: 后弹本插件补全,可继续输入筛选全部挂载根下的任意文件,选中后落地为 [名称](file:///路径) 的 Markdown 链接(可被反链扫描识别);支持 名:行号 定位到行、名#标题 定位到标题、文字搜索思源块。补全浮层上按 Esc 可让行给思源原生 [[;关闭本开关则完全只有原生 [[", this.docWikilinkHintInput);
 
+        // 思源块只读预览:[[ 混合块检索 + siyuan://blocks 链接卡片
+        this.siyuanBlockPreviewInput = document.createElement("input");
+        this.siyuanBlockPreviewInput.type = "checkbox";
+        this.siyuanBlockPreviewInput.className = "b3-switch";
+        addRow("openFiles", "思源块:只读预览卡片", "开启时,文档里的思源块链接下方渲染该块的只读内容卡片(可一键在思源中打开、可单张收起);关闭后只保留链接文本形式、不渲染卡片 —— [[ 块检索与补全始终可用。全程只读,不修改思源文档", this.siyuanBlockPreviewInput);
+
+        // 思源块预览卡片最大高度(0 = 不限制)
+        this.siyuanBlockPreviewMaxHeightInput = document.createElement("input");
+        this.siyuanBlockPreviewMaxHeightInput.type = "number";
+        this.siyuanBlockPreviewMaxHeightInput.min = "0";
+        this.siyuanBlockPreviewMaxHeightInput.max = "2000";
+        this.siyuanBlockPreviewMaxHeightInput.step = "20";
+        this.siyuanBlockPreviewMaxHeightInput.className = "b3-text-field fn__size200";
+        addRow("openFiles", "思源块:预览卡片最大高度", "只读块预览卡片内容区的最大高度(像素),超出后卡片内部滚动,避免长块或大表格把编辑器撑开;设为 0 表示不限制,按块内容完整展开", this.siyuanBlockPreviewMaxHeightInput);
+
+        // 思源块引用插入格式(Markdown 链接 / 双链 [[]])
+        this.siyuanBlockRefFormatSelect = document.createElement("select");
+        this.siyuanBlockRefFormatSelect.className = "b3-select fn__size200";
+        this.siyuanBlockRefFormatSelect.innerHTML = `<option value="markdown">Markdown 链接</option><option value="wikilink">双链 [[]]</option>`;
+        addRow("openFiles", "思源块:引用插入格式", "[[ 与 (( 补全选中思源块时插入的链接形式;两种都能点击跳转、都能触发预览卡片,已有文档不受影响。关闭预览卡片后依然只显示所选形式的链接文本", this.siyuanBlockRefFormatSelect);
+
         // 索引白/黑名单:每行一条规则,支持正则;保存后自动失效重建索引
         const makeRuleTextarea = (placeholder: string): HTMLTextAreaElement => {
             const ta = document.createElement("textarea");
@@ -1917,6 +1944,9 @@ export default class FileEditorPlugin extends Plugin {
         if (this.treeBacklinkIconInput) this.treeBacklinkIconInput.checked = this.config.treeBacklinkIcon !== false;
         if (this.backlinkScanAllTextInput) this.backlinkScanAllTextInput.checked = this.config.filesBacklinkScanAllText !== false;
         if (this.docWikilinkHintInput) this.docWikilinkHintInput.checked = this.config.docWikilinkHint !== false;
+        if (this.siyuanBlockPreviewInput) this.siyuanBlockPreviewInput.checked = this.config.siyuanBlockPreview !== false;
+        if (this.siyuanBlockPreviewMaxHeightInput) this.siyuanBlockPreviewMaxHeightInput.value = String(this.config.siyuanBlockPreviewMaxHeight ?? 320);
+        if (this.siyuanBlockRefFormatSelect) this.siyuanBlockRefFormatSelect.value = this.config.siyuanBlockRefFormat === "wikilink" ? "wikilink" : "markdown";
         if (this.indexBlacklistInput) this.indexBlacklistInput.value = this.config.indexBlacklist ?? "";
         if (this.indexWhitelistInput) this.indexWhitelistInput.value = this.config.indexWhitelist ?? "";
         if (this.backlinkPanelHiddenInput) this.backlinkPanelHiddenInput.checked = this.config.backlinkPanelHidden === true;
@@ -2046,6 +2076,10 @@ export default class FileEditorPlugin extends Plugin {
             deleteMode: ((this.deleteModeSelect?.value || "plugin") as "plugin" | "system"),
             filesBacklinkScanAllText: this.backlinkScanAllTextInput?.checked ?? true,
             docWikilinkHint: this.docWikilinkHintInput?.checked ?? true,
+            siyuanBlockPreview: this.siyuanBlockPreviewInput?.checked ?? true,
+            siyuanBlockPreviewMaxHeight: Math.max(0, Math.min(2000,
+                parseInt(this.siyuanBlockPreviewMaxHeightInput?.value || "320", 10) || 0)),
+            siyuanBlockRefFormat: this.siyuanBlockRefFormatSelect?.value === "wikilink" ? "wikilink" : "markdown",
             indexBlacklist: this.indexBlacklistInput?.value ?? "",
             indexWhitelist: this.indexWhitelistInput?.value ?? "",
             backlinkPanelHidden: this.backlinkPanelHiddenInput?.checked ?? false,

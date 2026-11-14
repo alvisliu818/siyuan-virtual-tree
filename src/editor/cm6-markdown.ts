@@ -25,6 +25,7 @@ import {tags} from "@lezer/highlight";
 import {Menu} from "siyuan";
 import {cm6MarkdownRender, preloadCm6Katex} from "./cm6-render";
 import {cm6InlineWysiwyg, mdParserExtensions} from "./cm6-inline";
+import {cm6BlockPreview} from "./cm6-block-preview";
 import {BLOCK_FONT_FAMILY, BLOCK_FONT_SIZE, BLOCK_LINE_HEIGHT} from "./monaco-block";
 import {getLinkIndex} from "../utils/wikilink";
 import {searchBlocksForRef} from "../utils/backlink";
@@ -52,6 +53,15 @@ export interface Cm6MarkdownOptions {
     /** Ctrl/Cmd+Shift+L 插入双链:宿主弹文件选择器,选中后经 insertAtCursor 写入 */
     onInsertLink?(): void;
     placeholder?: string;
+    /** 思源块只读预览:开 = [[ 混合候选(文件 + 思源块)+ siyuan://blocks 链接
+     *  在行下渲染只读块卡片;关 = [[ 只补文件、不渲染卡片 */
+    siyuanBlockPreview?: boolean;
+    /** 思源块预览卡片最大高度(px,0 = 不限制) */
+    previewMaxHeight?: number;
+    /** 思源块引用插入格式(默认 markdown) */
+    blockRefFormat?: "markdown" | "wikilink";
+    /** 思源 app 实例:卡片「在思源中打开」优先走应用内 openTab */
+    app?: any;
     /** 只读阅读态:保留全部富渲染(代码块/公式/表格/图片/属性面板)与行号,
      *  但禁止点击进入编辑、不挂 Monaco 代码块编辑器,活动行/历史/拖拽/
      *  自动补全等编辑态 UI 一律不挂 */
@@ -571,6 +581,28 @@ const syfeCmTheme = EditorView.theme({
     ".syfe-cm-callout-title.syfe-cm-callout-danger::before": {content: "'⚡ '"},
     ".syfe-cm-callout-title.syfe-cm-callout-example::before": {content: "'📋 '"},
     ".syfe-cm-callout-title.syfe-cm-callout-quote::before": {content: "'❝ '"},
+
+    // ===== [[ 混合补全:文件 / 思源块用小图标区分(label 不写来源文字) =====
+    // CM6 对未知 type 没有内置图标,这里用纯 CSS 画:空心方块 = 文件,实心圆点 = 思源块
+    ".cm-tooltip-autocomplete .cm-completionIcon": {
+        backgroundImage: "none",
+        backgroundColor: "transparent",
+    },
+    ".cm-tooltip-autocomplete .cm-completionIcon-file::after": {
+        content: "''",
+        display: "inline-block",
+        width: "8px", height: "10px",
+        border: "1.5px solid var(--b3-theme-on-surface-light)",
+        borderRadius: "2px",
+        boxSizing: "border-box",
+    },
+    ".cm-tooltip-autocomplete .cm-completionIcon-block::after": {
+        content: "''",
+        display: "inline-block",
+        width: "8px", height: "8px",
+        borderRadius: "50%",
+        backgroundColor: "var(--b3-theme-primary)",
+    },
 });
 
 // ===== 语法高亮(Markdown 结构,色值走思源变量) =====
@@ -595,72 +627,110 @@ const syfeMdHighlight = HighlightStyle.define([
 
 // ===== [[ 双链补全 =====
 // 输入 [[ 触发:列出文件名索引(全部挂载根、所有类型文件,见 utils/wikilink.ts),
-// 选中插入 [[文件名]](含扩展名,解析端全名优先)。详情列显示所在目录消歧。
-// 空查询时只列前 64 个,避免超大库把下拉撑爆;键入即过滤。
-// ⚠ from 必须返回在触发符 [[ **之后**(obsidian-my-obsidian md-editor 的实测教训):
-//   CM6 内置过滤拿 from→光标 之间的文本对每个 label 做模糊匹配,若把 [[ 算进去
-//   ("[[read"),label 里没有 [ 字符,全部选项被过滤光 —— 永远不弹 tooltip。
-//   因此 apply 也只补 "名]]"(触发符 [[ 已在文档里,保留)。
+// [[ 混合补全:文件候选(TTL 索引)+ 思源块候选(SQL blocks 表)。
+// 与纯文件版的两处差异(都是为了让「选中块」能整体替换掉 [[ 触发符):
+//   ① from 移到 [[ 处,文件候选的 apply 改为自带 "[[" 的完整 [[名]];
+//   ② filter:false + 不带 validFor —— 含 "[[" 的 pattern 会被 CM6 内置模糊
+//      过滤全灭(md-editor 实测教训),改为每键入一字符重发 source 自行筛选。
+// 思源块候选插入 [标题](siyuan://blocks/<id>):它是外部协议链接,从外部打开
+// 也能跳到思源对应文档;CM6 会为该行附加只读块预览卡片(见 cm6-block-preview)。
 const WIKILINK_COMPLETE_LIMIT = 64;
+const WIKILINK_BLOCK_LIMIT = 16;
 
-const wikilinkCompletionSource = async (context: CompletionContext): Promise<CompletionResult | null> => {
-    const before = context.matchBefore(/\[\[([^\[\]]*)$/);
-    if (!before) return null;
-    const queryFrom = before.from + 2; // 越过 [[:补全/过滤都只针对触发符后的输入
-    const query = context.state.sliceDoc(queryFrom, before.to).trim().toLowerCase();
-    const index = await getLinkIndex();
-    const options: Completion[] = [];
-    const seen = new Set<string>(); // 同一文件在 byName/byStem 都出现,按路径去重
-    const collect = (map: Map<string, string[]>) => {
-        for (const [key, paths] of map) {
-            if (query && !key.includes(query)) continue;
-            for (const p of paths) {
+type BlockRefFormat = "markdown" | "wikilink";
+
+/** 块引用插入文本:两种形式都能点击跳思源块、都能被卡片扫描器识别 */
+function blockRefText(format: BlockRefFormat, label: string, id: string): string {
+    const url = `siyuan://blocks/${id}`;
+    return format === "wikilink" ? `[[${url}|${label}]]` : `[${label}](${url})`;
+}
+
+function wikilinkCompletionSource(withBlocks: boolean, format: BlockRefFormat) {
+    return async (context: CompletionContext): Promise<CompletionResult | null> => {
+        const before = context.matchBefore(/\[\[([^\[\]]*)$/);
+        if (!before) return null;
+        const queryFrom = before.from + 2; // 越过 [[:筛选只针对触发符后的输入
+        const rawQuery = context.state.sliceDoc(queryFrom, before.to).trim();
+        const query = rawQuery.toLowerCase();
+        const index = await getLinkIndex();
+        const options: Completion[] = [];
+        const seen = new Set<string>(); // 同一文件在 byName/byStem 都出现,按路径去重
+        const collect = (map: Map<string, string[]>) => {
+            for (const [key, paths] of map) {
+                if (query && !key.includes(query)) continue;
+                for (const p of paths) {
+                    if (options.length >= WIKILINK_COMPLETE_LIMIT) return;
+                    if (seen.has(p)) continue;
+                    seen.add(p);
+                    const name = p.split("/").pop() || key;
+                    options.push({
+                        label: name,
+                        detail: p.slice(0, p.lastIndexOf("/")),
+                        // from 含 [[,补全过程要把触发符一起写回
+                        apply: `[[${name}]]`,
+                        type: "file",
+                        boost: key === query ? 99 : 0,
+                    });
+                }
                 if (options.length >= WIKILINK_COMPLETE_LIMIT) return;
-                if (seen.has(p)) continue;
-                seen.add(p);
-                const name = p.split("/").pop() || key;
+            }
+        };
+        collect(index.byName);
+        if (options.length < WIKILINK_COMPLETE_LIMIT) collect(index.byStem);
+
+        if (withBlocks && rawQuery) {
+            const briefs = await searchBlocksForRef(rawQuery, WIKILINK_BLOCK_LIMIT);
+            // blocks 表里同内容块常有多个(文档块/标题块/段落块),按展示文案去重
+            const seenBlocks = new Set<string>();
+            for (const b of briefs) {
+                // label 里的 []() 会破坏 markdown 链接结构,插入前清掉
+                const text = b.title.replace(/[\[\]()]/g, " ").replace(/\s+/g, " ").trim().slice(0, 48) || b.id;
+                const dedupKey = text + "|" + (b.hpath || "");
+                if (seenBlocks.has(dedupKey)) continue;
+                seenBlocks.add(dedupKey);
                 options.push({
-                    label: name,
-                    detail: p.slice(0, p.lastIndexOf("/")),
-                    apply: `${name}]]`,
-                    type: "file",
-                    boost: key === query ? 99 : 0,
+                    // 来源靠补全浮层里的小图标区分,不往 label 里塞「思源块」文字
+                    label: text,
+                    detail: b.hpath || b.id,
+                    apply: blockRefText(format, text, b.id),
+                    type: "block",
                 });
             }
-            if (options.length >= WIKILINK_COMPLETE_LIMIT) return;
         }
+        if (options.length === 0) return null;
+        // 选中后整体替换 [[query;内置过滤对含 [[ 的 pattern 必然全灭 → filter:false
+        return {from: before.from, options, filter: false};
     };
-    collect(index.byName);
-    if (options.length < WIKILINK_COMPLETE_LIMIT) collect(index.byStem);
-    return {from: queryFrom, options, validFor: /^[^\[\]]*$/};
-};
+}
 
 // ===== (( 块引用补全(思源外部引用格式)=====
 // 与思源文档里 (( 同语义:内容搜索块,选中插入 [内容](siyuan://blocks/<id>)。
 // from 同样必须在触发符 (( 之后(见上方 wikilink 补全的教训注释)。
 const BLOCKREF_COMPLETE_LIMIT = 24;
 
-const blockRefCompletionSource = async (context: CompletionContext): Promise<CompletionResult | null> => {
-    const before = context.matchBefore(/\(\(([^()]*)$/);
-    if (!before) return null;
-    const query = context.state.sliceDoc(before.from + 2, before.to).trim();
-    const briefs = await searchBlocksForRef(query, BLOCKREF_COMPLETE_LIMIT);
-    const options: Completion[] = briefs.map(b => {
-        // label 里的 []() 会破坏 markdown 链接结构,插入前清掉
-        const label = b.title.replace(/[\[\]()]/g, " ").replace(/\s+/g, " ").trim().slice(0, 48) || b.id;
-        return {
-            label,
-            detail: b.hpath || "思源块",
-            apply: `[${label}](siyuan://blocks/${b.id})`,
-            type: "block",
-        };
-    });
-    if (options.length === 0) return null;
-    // from 在触发符 (( 处:选中后整体替换掉 ((query(与思源一致,触发符不残留)。
-    // 内置过滤对含 (( 的 pattern 必然全灭(md-editor 教训),SQL 已筛过 → filter:false。
-    // 不带 validFor:每键入一字符重新搜索(与思源 (( 行为一致)。
-    return {from: before.from, options, filter: false};
-};
+function blockRefCompletionSource(format: BlockRefFormat) {
+    return async (context: CompletionContext): Promise<CompletionResult | null> => {
+        const before = context.matchBefore(/\(\(([^()]*)$/);
+        if (!before) return null;
+        const query = context.state.sliceDoc(before.from + 2, before.to).trim();
+        const briefs = await searchBlocksForRef(query, BLOCKREF_COMPLETE_LIMIT);
+        const options: Completion[] = briefs.map(b => {
+            // label 里的 []() 会破坏链接结构,插入前清掉
+            const label = b.title.replace(/[\[\]()]/g, " ").replace(/\s+/g, " ").trim().slice(0, 48) || b.id;
+            return {
+                label,
+                detail: b.hpath || "思源块",
+                apply: blockRefText(format, label, b.id),
+                type: "block",
+            };
+        });
+        if (options.length === 0) return null;
+        // from 在触发符 (( 处:选中后整体替换掉 ((query(与思源一致,触发符不残留)。
+        // 内置过滤对含 (( 的 pattern 必然全灭(md-editor 教训),SQL 已筛过 → filter:false。
+        // 不带 validFor:每键入一字符重新搜索(与思源 (( 行为一致)。
+        return {from: before.from, options, filter: false};
+    };
+}
 
 export function createCm6MarkdownEditor(
     container: HTMLElement,
@@ -735,9 +805,19 @@ export function createCm6MarkdownEditor(
             markdown({base: markdownLanguage, codeLanguages: languages, extensions: mdParserExtensions}),
             cm6MarkdownRender({resolveImageSrc: opts.resolveImageSrc}),
             cm6InlineWysiwyg({onOpenLink: opts.onOpenLink}),
-            // [[ 文件双链补全 + (( 思源块引用补全(override = 本编辑器仅有的补全源;
-            // TTL 缓存索引/SQL 搜索,键入不重扫)——两态同挂,只读态无键入自然不触发
-            autocompletion({override: [wikilinkCompletionSource, blockRefCompletionSource]}),
+            // [[ 混合补全(文件 + 思源块)+ (( 思源块引用补全(override = 本编辑器仅有的
+            // 补全源;TTL 缓存索引/SQL 搜索,键入不重扫)——两态同挂,只读态无键入自然不触发
+            autocompletion({override: [
+                // 块检索始终可用;预览开关只管卡片渲染(关闭后仍只显示链接)
+                wikilinkCompletionSource(true, opts.blockRefFormat ?? "markdown"),
+                blockRefCompletionSource(opts.blockRefFormat ?? "markdown"),
+            ]}),
+            // 思源块只读预览:siyuan://blocks/<id> 链接所在行下方附加只读块 DOM
+            ...cm6BlockPreview({
+                enabled: opts.siyuanBlockPreview !== false,
+                maxHeight: opts.previewMaxHeight,
+                app: opts.app,
+            }),
             EditorView.lineWrapping,
             syfeCmTheme,
             // Ctrl/Cmd+S 保存 / Ctrl/Cmd+Shift+L 插入双链 —— 两态同挂

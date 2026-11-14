@@ -101,6 +101,15 @@ export interface EditorConfig {
     // 思源原生文档里用独立触发符 [[: 启用本插件的双链补全(任意文件 →
     // file:// markdown 链接);纯 [[ 始终是思源原生文档/块引用。关 = 只有原生 [[
     docWikilinkHint: boolean;
+    // 思源块只读预览:开 = [[ 补全混合「文件 + 思源块」候选,且 siyuan://blocks/<id>
+    // 链接所在行下方渲染只读块内容卡片;关 = [[ 只补文件、不渲染卡片。
+    // 全程只读(getBlockKramdown / exportMdContent),绝不写回 .sy
+    siyuanBlockPreview: boolean;
+    /** 思源块预览卡片最大高度(px);0 = 不限制,按块内容完整展开 */
+    siyuanBlockPreviewMaxHeight: number;
+    /** 思源块引用插入格式:markdown = [标题](siyuan://blocks/<id>);
+     *  wikilink = [[siyuan://blocks/<id>|标题]](双链,点击同样跳思源块) */
+    siyuanBlockRefFormat: "markdown" | "wikilink";
     // 文件名索引的过滤规则(多行文本,每行一条;支持正则,见 utils/index-filter.ts)
     // 白名单非空时只索引命中规则的文件;黑名单命中即排除(目录命中跳过整棵子树)
     indexWhitelist: string;
@@ -345,6 +354,12 @@ export const DEFAULT_CONFIG: EditorConfig = {
     filesBacklinkScanAllText: true,
     // 思源文档 [[: 双链补全默认开(设置里可关,关后只有原生 [[)
     docWikilinkHint: true,
+    // 思源块只读预览默认开(设置里可关)
+    siyuanBlockPreview: true,
+    // 预览卡片内容区默认最高 320px,超出内部滚动(0 = 不限制)
+    siyuanBlockPreviewMaxHeight: 320,
+    // 块引用默认仍用 Markdown 链接(兼容已有文档),设置里可切双链
+    siyuanBlockRefFormat: "markdown" as "markdown" | "wikilink",
     // 索引规则:白名单默认空(不限制),黑名单默认忽略 node_modules 等噪声目录
     indexWhitelist: DEFAULT_INDEX_WHITELIST,
     indexBlacklist: DEFAULT_INDEX_BLACKLIST,

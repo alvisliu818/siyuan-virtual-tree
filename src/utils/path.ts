@@ -68,6 +68,18 @@ export function isSiyuanPath(path: string): boolean {
     return p === "/data" || p.startsWith("/data/");
 }
 
+// sydoc://<docId> 虚拟文档路径:插件内「思源文档只读视图」的入口。
+// 注意 sydoc://nb/<id> 是笔记本,不匹配(文档/块 id 以 14 位时间戳开头)。
+export function isSydocPath(path: string): boolean {
+    return /^sydoc:\/\/[0-9]{14}-[0-9a-z]+$/i.test(path || "");
+}
+
+/** 从 sydoc://<docId> 取文档 id;笔记本等其它虚拟路径返回空 */
+export function docIdOfSydoc(path: string): string {
+    const m = /^sydoc:\/\/([0-9]{14}-[0-9a-z]+)$/i.exec(path || "");
+    return m ? m[1] : "";
+}
+
 // 是否为内核路径空间的路径(工作空间根相对路径):/data、/data/...、/conf、/temp、/ 等。
 // 内核 /api/file/* 的 path 参数按"工作空间根相对路径"解释,/data 只是其中的数据子目录,
 // /data 的父层(工作空间根:/conf、/temp、/ 等)同样可读写(实测内核 3.8.6 无限制)。

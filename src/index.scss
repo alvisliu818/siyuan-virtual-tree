@@ -6892,3 +6892,21 @@ button.syfe-editor__arrow--exp:hover {
     color: var(--b3-theme-primary);
     font-weight: 600;
 }
+
+// 思源文档只读视图:内核 getDoc 返回的 protyle blockDOM 原样渲染。
+// 外层需要 .protyle 祖先才能命中列表圆点等规则(_wysiwyg.scss:994),
+// 同时抵消 _content.scss:1-8 的编辑器容器布局,避免页签被撑高/裁切。
+.syfe-sydoc.protyle {
+    display: block;
+    position: static;
+    min-height: 0;
+    max-height: none;
+    overflow-x: visible;
+    background: transparent;
+
+    .syfe-sydoc__body {
+        padding-bottom: 0;
+        user-select: text;
+        cursor: default;
+    }
+}
