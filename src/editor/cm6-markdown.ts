@@ -25,6 +25,7 @@ import {tags} from "@lezer/highlight";
 import {Menu} from "siyuan";
 import {cm6MarkdownRender, preloadCm6Katex, registerCopyLineHandler} from "./cm6-render";
 import {cm6InlineWysiwyg, mdParserExtensions} from "./cm6-inline";
+import {cm6SelectionBubble} from "./cm6-selection-bubble";
 import {cm6BlockPreview} from "./cm6-block-preview";
 import {BLOCK_FONT_FAMILY, BLOCK_FONT_SIZE, BLOCK_LINE_HEIGHT} from "./monaco-block";
 import {getLinkIndex} from "../utils/wikilink";
@@ -862,6 +863,9 @@ export function createCm6MarkdownEditor(
             markdown({base: markdownLanguage, codeLanguages: languages, extensions: mdParserExtensions}),
             cm6MarkdownRender({resolveImageSrc: opts.resolveImageSrc}),
             cm6InlineWysiwyg({onOpenLink: opts.onOpenLink}),
+            // 选中气泡工具条:选中文本浮出格式按钮(SB 同款;只读态插件内部早退,
+            // 两态同挂保持扩展一致)。点击按钮执行与 Mod+B/I/E 同源的 toggle 命令
+            cm6SelectionBubble(),
             // [[ 混合补全(文件 + 思源块)+ (( 思源块引用补全(override = 本编辑器仅有的
             // 补全源;TTL 缓存索引/SQL 搜索,键入不重扫)——两态同挂,只读态无键入自然不触发
             autocompletion({override: [

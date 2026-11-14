@@ -909,7 +909,9 @@ function computeToggle(
     };
 }
 
-function makeToggleInlineCommand(nodeName: string, open: string, close: string): Command {
+// 导出给选中气泡(cm6-selection-bubble.ts)复用同一套 toggle 命令 ——
+// 气泡按钮与快捷键(Mod+B/I/E...)行为必须完全一致,单一事实来源。
+export function makeToggleInlineCommand(nodeName: string, open: string, close: string): Command {
     return (view) => {
         const {state} = view;
         const specs: ToggleSpec[] = [];
@@ -930,7 +932,7 @@ function makeToggleInlineCommand(nodeName: string, open: string, close: string):
 }
 
 /** 选区包成 [label](),光标落在括号内等输 URL(ProseMark insertLink) */
-const insertLinkCommand: Command = (view) => {
+export const insertLinkCommand: Command = (view) => {
     const {state} = view;
     for (const range of state.selection.ranges) {
         if (!isMarkdownContext(state, range.from)) return false;
@@ -943,6 +945,30 @@ const insertLinkCommand: Command = (view) => {
             return {
                 changes: {from: range.from, to: range.to, insert},
                 range: EditorSelection.cursor(head),
+            };
+        }),
+        scrollIntoView: true,
+        userEvent: "input",
+    } as TransactionSpec);
+    return true;
+};
+
+/** 选区包成 [[label]] 并保持内文选中(双链;选区为空时插入 [[]] 光标居中) */
+export const insertWikilinkCommand: Command = (view) => {
+    const {state} = view;
+    for (const range of state.selection.ranges) {
+        if (!isMarkdownContext(state, range.from)) return false;
+    }
+    view.dispatch({
+        ...state.changeByRange((range) => {
+            const label = state.sliceDoc(range.from, range.to);
+            const insert = range.empty ? "[[]]" : `[[${label}]]`;
+            const head = range.empty ? range.from + 2 : range.from + 2 + label.length;
+            return {
+                changes: {from: range.from, to: range.to, insert},
+                range: range.empty
+                    ? EditorSelection.cursor(head)
+                    : EditorSelection.range(range.from + 2, head),
             };
         }),
         scrollIntoView: true,

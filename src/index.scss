@@ -5784,6 +5784,43 @@ button.syfe-editor__arrow--exp:hover {
     display: none !important;
 }
 
+/* ===== 选中气泡工具条(cm6-selection-bubble.ts,挂在 document.body) =====
+   样式移植自 SilverBullet client/styles/_markup_bar.scss(.sb-selection-bubble),
+   变量换成思源 --b3-*:surface 底 + 边框 + 弹层阴影,按钮 28x26 悬停提亮。 */
+.syfe-selection-bubble {
+    position: fixed;
+    z-index: 320;
+    display: flex;
+    gap: 2px;
+    padding: 3px;
+    background: var(--b3-theme-surface, var(--b3-theme-background));
+    border: 1px solid var(--b3-border-color);
+    border-radius: var(--b3-border-radius, 6px);
+    box-shadow: var(--b3-dialog-shadow, 0 8px 24px rgba(0, 0, 0, .18));
+    user-select: none;
+    -webkit-user-select: none;
+
+    button {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 28px;
+        height: 26px;
+        padding: 0;
+        border: 0;
+        border-radius: calc(var(--b3-border-radius, 6px) - 2px);
+        background: transparent;
+        color: var(--b3-theme-on-surface);
+        cursor: pointer;
+
+        &:hover,
+        &:focus-visible {
+            background: var(--b3-list-hover, rgba(0, 0, 0, .05));
+            color: var(--b3-theme-on-background);
+        }
+    }
+}
+
 // ===== 思源文档属性面板(侧边 dock / 文档标题下共用一份组件) =====
 .syfe-dp {
     display: flex;
