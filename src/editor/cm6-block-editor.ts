@@ -48,7 +48,12 @@ const SCOPE_TAGS: [string, Tag][] = [
     ["string", highlightTags.string],
     ["keyword", highlightTags.keyword],
     ["number", highlightTags.number],
-    ["constant", highlightTags.standard(highlightTags.constant)],
+    // ⚠ tags.constant 是修饰符函数(Tag.defineModifier),不是 tag —— 修饰符
+    //   只能作用于基础 tag(如 tags.function(tags.variableName)),修饰符套修饰符
+    //   会在 lezer Tag.defineModifier 闭包里对无 modified 字段的函数取属性,
+    //   打包后模块求值即崩(整插件加载失败,TypeError: reading 'indexOf')。
+    //   TextMate "constant" 作用域(语言常量 true/false/null)映射到 tags.atom。
+    ["constant", highlightTags.standard(highlightTags.atom)],
     ["operator", highlightTags.operatorKeyword],
     ["punctuation", highlightTags.punctuation],
     ["variable", highlightTags.variableName],
