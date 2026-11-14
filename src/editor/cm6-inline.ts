@@ -107,7 +107,10 @@ const HIDDEN_CLASS = "syfe-cm-hidden";
 const hiddenDeco = Decoration.mark({class: HIDDEN_CLASS});
 
 const hideTheme = EditorView.theme({
-    [`.${HIDDEN_CLASS}`]: {fontSize: "0px"},
+    // tabSize:0 —— Chromium 里 font-size:0 压不掉 tab 前进宽(实测仍占 9.3px,
+    // 空格则归 0),tab 缩进行的首行悬挂被顶歪一整格,标记列对不齐(用户
+    // 2026-11-14 竖线修复时实测)。tab-size:0 让隐藏 tab 与空格同样归零。
+    [`.${HIDDEN_CLASS}`]: {fontSize: "0px", tabSize: "0"},
 });
 
 interface BaseRange {

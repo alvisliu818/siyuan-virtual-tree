@@ -1437,9 +1437,16 @@ function buildDecorations(state: EditorState, opts: Cm6RenderOptions): Decoratio
             //      ResizeObserver 派发 forceRenderEffect 全量重建(见文件末尾)。
             // 与 DOM 块大纲不同,CM6 逐行渲染,行盒本身就是单位,所以不需要
             // getBoundingClientRect 测真实几何;一条线拆成逐行 gradient 天然跨折行连续。
-            // x 与引述竖线同源公式(6px 行盒内边距 + tab16/空格4),圆点中心约 +2px。
+            // x 与悬挂容器模型同源(6px 行盒内边距 + depth×16px 层级),再按父项
+            // 标记类型取中心:复选框 13px 宽(中心 +6.5)、圆点 5.3px(中心 ~+2.65)。
+            // ⚠ 不能用源码缩进宽(空格 4px/个):2 空格缩进的文档源码宽 8px,
+            // 渲染深度却是 1 层 16px,每层错位 8px,竖线整根飘到标记左侧
+            //(用户 2026-11-14 实测,CDP 探针 bgPos 16px vs 圆点 cx 24.65px)。
             const GUIDE_GAP = 9;
             const GUIDE_WIDTH = 2;
+            // 每层容器缩进步长(引导线与下方悬挂缩进共用;声明在此,
+            // 引导线 x 计算先于悬挂块使用)
+            const HANG_STEP = 16;
             // 比 --b3-border-color(#e0e0e0,实测近乎隐形)深一档:22% 太淡,
             // 32% 在白底约 rgb(188),仍是参考 Logseq 那种「不抢眼的淡线」;
             // 可用 --syfe-cm-guide-color 覆盖。
@@ -1470,7 +1477,27 @@ function buildDecorations(state: EditorState, opts: Cm6RenderOptions): Decoratio
                     break;
                 }
                 if (end <= ln) continue;
-                const x = 6 + w + 2;
+                // 线锚父项标记中心:x = 标记列基线(6 + depth×16,与悬挂容器
+                // 模型同源)+ 标记中心偏移 - 线宽一半(2px 线居中于标记中心)。
+                // 任务项复选框 13px 宽(中心 +6.5),圆点 5.3px(中心 +2.65)。
+                const depth = Math.round(w / HANG_STEP);
+                const isTask = /^(\s*)(?:[-*+]|\d+[.)])(\s+)\[[ xX]\](\s|$)/.test(doc.line(ln).text);
+                const x = 6 + depth * HANG_STEP + (isTask ? 5.5 : 1.65);
+                // 直接相邻不画线(用户 2026-11-14):引导线与子树内任一列表项的
+                // 标记左缘间距 <4px(贴着甚至穿过,典型是容器深度塌缩——2 空格
+                // 父项与 4 空格子项渲染在同一列)时,线成了贴着复选框的噪音,
+                // 整条跳过;有真实间隙的(≥4px)保留。
+                let adjacentToChild = false;
+                for (let k = ln + 1; k <= end; k++) {
+                    const cm = RE_LIST_ITEM.exec(doc.line(k).text);
+                    if (!cm) continue;
+                    const childLeft = 6 + Math.round(indentWidth(cm[1]) / HANG_STEP) * HANG_STEP;
+                    if (childLeft - x < 4) {
+                        adjacentToChild = true;
+                        break;
+                    }
+                }
+                if (adjacentToChild) continue;
                 // 空行只算间隔不画线:空行行高矮,2px 竖线上下各留 9px 后只剩一小截,
                 // 看着像孤立的残渣点(用户 2026-11-14 反馈)。first/last 标记落到
                 // 首末个**实际绘制**行,引导线的上下留白仍贴内容行。
@@ -1500,7 +1527,6 @@ function buildDecorations(state: EditorState, opts: Cm6RenderOptions): Decoratio
             // 悬挂:padding 钉正文起点(层级缩进 + 标记列宽),负 text-indent
             // 让标记从层级缩进处起排,续行与正文对齐。⚠ 静态推导,无测量反馈
             //(实测 pad=textX 与 tab 停靠点耦合,点击即振荡整篇乱跳)。
-            const HANG_STEP = 16;      // 每层容器缩进步长
             const HANG_MARK_W = 9.3;   // 圆点/序号标记渲染宽 + 后随空格(实测均值)
             const HANG_QUOTE_W = 13.3; // 引述行:标记列 9.3 + 隐藏 > 0 + 后随空格 4
             const hangByLine = new Map<number, {pad: number; indent: number}>();
