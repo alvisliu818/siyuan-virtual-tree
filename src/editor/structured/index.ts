@@ -38,14 +38,17 @@ function inlineChildren(body: string): any[] {
     return parseInline(body).flatMap(t => {
         if (t.type === "text") return t.text
             ? [schema.text(t.text, t.strong ? [schema.marks.strong.create()] : [])] : [];
-        if (t.type === "strong") return [schema.text(t.text || "", [schema.marks.strong.create()])];
-        if (t.type === "code") return [schema.text(t.text || "", [
+        // ⚠ schema.text("") 抛 RangeError("Empty text nodes are not allowed"),
+        //   整个编辑器初始化即崩(用户 2026-11-14:列表里删围栏内容行缩进后
+        //   文档重新分块,某些行解析出空 strong/code 词元)——空词元直接丢弃。
+        if (t.type === "strong") return t.text ? [schema.text(t.text, [schema.marks.strong.create()])] : [];
+        if (t.type === "code") return t.text ? [schema.text(t.text, [
             schema.marks.code.create(),
             ...(t.strong ? [schema.marks.strong.create()] : []),
-        ])];
+        ])] : [];
         if (t.type === "math") return [schema.nodes.mathInline.create({tex: t.tex, delim: t.delim, display: t.display, strong: !!t.strong})];
         if (t.type === "image") return [schema.nodes.image.create({alt: t.alt, src: t.src, strong: !!t.strong})];
-        if (t.type === "link") return [schema.nodes.link.create({text: t.text, href: t.href, strong: !!t.strong})];
+        if (t.type === "link") return t.text ? [schema.nodes.link.create({text: t.text, href: t.href, strong: !!t.strong})] : [];
         return [];
     });
 }
