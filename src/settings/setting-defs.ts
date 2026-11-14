@@ -247,6 +247,9 @@ export const EDITOR_DEFS: SettingDef[] = [
         default: "off",
         enum: ["off", "on", "dimmed"],
         enumLabels: {off: "关", on: "开", dimmed: "淡化显示"},
+        // 块内代码卡片锁定 on:Enter 后模型以换行结尾, 末空行的行号要显示
+        //(用户 2026-11-14「换行后行号没出现」); 此键不进块内作用域
+        blockLocked: true,
     },
     {
         key: "editor.rulers",

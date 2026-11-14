@@ -110,6 +110,11 @@ function ensureEditor(): monaco.editor.IStandaloneCodeEditor {
         // 一直在 —— 两态都有行号,视觉不跳
         lineNumbers: "on",
         lineNumbersMinChars: 2,
+        // 末空行行号:Enter 后模型以换行结尾, 末行(空)的行号要显示 —— 代码
+        // 文件编辑器的设置 editor.renderFinalNewline 默认 off(末行行号不渲染)
+        // 会经设置扇出到本编辑器, 已在该 def 上标 blockLocked(不进块内作用域),
+        // 这里再在创建参数里强制 on 双保险(用户 2026-11-14「换行后行号没出现」)
+        renderFinalNewline: "on",
         // 行号右侧的装饰宽:补齐与阅读卡片行号列的差值 —— 卡片行号列宽 =
         // padding 0.9em×2(@13px Consolas = 23.4px,见 index.scss .syfe-cm-cl-n),
         // Monaco 行号数字 2ch = 14px,差 9.4px。不补的话进出编辑代码列整体
