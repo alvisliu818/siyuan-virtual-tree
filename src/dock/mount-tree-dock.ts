@@ -177,6 +177,20 @@ function currentFilePath(): string | null {
     }
 }
 
+/**
+ * 挂载行副标题(挂载点所在的父目录提示)。
+ * scheme:// 虚拟路径的「根/别名」——body 里没有 "/"(bdpan:/// 、bdpan://sync、
+ * gitee://user、onedrive:/// 等)——经通用 dirname 会退化:尾斜杠全剥后只剩
+ * "scheme:"(无斜杠返回 ""),显示成空串或悬空冒号(用户 2026-11-14 反馈:百度
+ * 网盘挂载根 "/" 下面没有路径提示)。此时退回显示虚拟路径本身;普通路径
+ * (Windows / /data / 有 body 的 scheme)dirname 结果照常。
+ */
+function mountPathHint(path: string): string {
+    const d = dirname(path);
+    if (!d || /^[A-Za-z][A-Za-z0-9+.-]*:$/.test(d)) return path;
+    return d;
+}
+
 export interface IPluginForMountTree {
     app: any;
     name: string;
@@ -1731,7 +1745,7 @@ export function mountTreePanelInit(self: MountTreeDockInstance, plugin: IPluginF
                     if (r.kind === "mount") {
                         const it = r.item;
                         const name = it.name || (it.path ? basename(it.path) : it.targetId || "");
-                        const sub = it.kind === "file" ? dirname(it.path || "") : "";
+                        const sub = it.kind === "file" ? mountPathHint(it.path || "") : "";
                         // 图标与思源文档树一致:文档/笔记本显示其自定义图标(emoji),
                         // 未设置时用与思源相同的默认图标(子文档数>0 用"文件夹"形态,否则"文档"形态)
                         let icon: string;
