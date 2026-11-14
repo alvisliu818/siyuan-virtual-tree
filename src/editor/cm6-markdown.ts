@@ -271,32 +271,55 @@ const syfeCmTheme = EditorView.theme({
         "border-bottom-left-radius": "8px",
         "border-bottom-right-radius": "8px",
     },
+    // 标题容器块化:标题行加底色(ATX 单行四角圆角;Setext 两行首末圆角)。
+    // 取列表盒与引述盒的中间色:标题略重于列表、轻于引述。⚠ 排在 tablesrc/
+    // quotesrc/callout 等盒色之前(同特异性靠源顺序决胜,后定义者覆盖)
+    ".syfe-cm-heading-box": {
+        backgroundColor: "color-mix(in srgb, var(--b3-theme-surface) 65%, var(--b3-theme-background))",
+    },
+    ".syfe-cm-heading-box.is-first": {
+        "border-top-left-radius": "8px",
+        "border-top-right-radius": "8px",
+    },
+    ".syfe-cm-heading-box.is-last": {
+        "border-bottom-left-radius": "8px",
+        "border-bottom-right-radius": "8px",
+    },
     ".syfe-cm-tablesrc-line": {backgroundColor: "var(--b3-theme-surface)"},
     ".syfe-cm-mathsrc-line": {backgroundColor: "var(--b3-theme-surface)"},
     ".syfe-cm-propsrc-line": {backgroundColor: "var(--b3-theme-surface)"},
     ".syfe-cm-quotesrc-line": {backgroundColor: "var(--b3-theme-surface)"},
     // 引述块统一渲染:编辑 / 退出编辑 / 只读阅读态都是同一条 .cm-line(不再切换 widget)。
-    // 竖线用 background-image 画在列表圆点右侧(--syfe-quote-bar 按缩进层级算出),
-    // 层级 = 「列表包引用」;不用行盒左缘的 inset 竖线(那会变成「引述块包裹列表」)。
+    // 盒左边界(--syfe-quote-bar)build 期按缩进估算,quoteBoxMeasure 渲染后实测钉到
+    // 列表圆点右缘+1;竖线贴盒内左边界,盒底色也从边界起画(边界之外无引述底色)。
     ".syfe-cm-quote-line": {
-        // ⚠ 不要用 text-indent 缩进折行续行:行内容区一变窄,行内公式 widget 就会
-        // 判溢出并出现横条,KaTeX 内容被裁(实测 0.48/(0.857 丢失)。
-        // padding-left(内容约束在竖线右侧,用户要求)+ .syfe-cm-math 负 margin 补偿:
-        // 公式块拉回全宽,attachOverflowSync 不再误判溢出。
-        "padding-left": "calc(var(--syfe-quote-bar, 30px) + 6px)",
+        // padding-left 把内容(含折行续行)约束在盒右;quoteBoxMeasure 会实测覆写为
+        // 正文起点并用负 text-indent 悬挂补偿冻结首行(续行与正文对齐)。
+        // .syfe-cm-math 负 margin 补偿把公式块拉回盒内全宽,attachOverflowSync
+        // 不再误判溢出(拉过量由 --syfe-quote-math-pull 实测给出)。
+        "padding-left": "calc(var(--syfe-quote-bar, 30px) + 7px)",
         backgroundImage:
             "linear-gradient(to right, transparent var(--syfe-quote-bar, 30px), " +
             "var(--b3-border-color, rgba(128,128,128,.45)) var(--syfe-quote-bar, 30px), " +
-            "var(--b3-border-color, rgba(128,128,128,.45)) calc(var(--syfe-quote-bar, 30px) + 3px), " +
-            "transparent calc(var(--syfe-quote-bar, 30px) + 3px))",
+            "var(--b3-border-color, rgba(128,128,128,.45)) calc(var(--syfe-quote-bar, 30px) + 2px), " +
+            "var(--b3-theme-surface, var(--b3-theme-background)) calc(var(--syfe-quote-bar, 30px) + 2px))",
     },
     ".syfe-cm-quote-line .syfe-cm-math": {
-        "margin-left": "calc(-1 * (var(--syfe-quote-bar, 30px) + 6px))",
+        "margin-left": "calc(-1 * var(--syfe-quote-math-pull, 7px))",
     },
-    // 容器块化:引述段整体加底色,首末行圆角(与 mdQuoteLineDeco 的竖线叠加)
-    ".syfe-cm-quote-box": {
-        backgroundColor: "var(--b3-theme-surface)",
+    // ⚠ 列表行内公式不做拉回补偿:曾按 --syfe-list-math-pull 左拉所有行内公式,
+    // 小个 $...$ 连同行内文字一起压到圆点列上,整篇错位(用户 2026-11-14 反馈
+    // 「里乱了」)。宽 $$ 块溢出走 attachOverflowSync 的横向滚动,即预期行为。
+    // ⚠ 悬挂缩进的负 text-indent 会继承进行内公式 widget 内部,KaTeX 内容首行
+    // 被拉出裁切(P( 显示成 "爪印|猫)"、后验丢 "后")—— 公式容器全局重置,
+    // 不按行类限定(列表行/引述行/任何悬挂行的公式一律不受缩进影响)
+    ".syfe-cm-math, .syfe-cm-inline-math, .syfe-cm-math-inline, .syfe-cm-quote-math, .katex": {
+        "text-indent": "0",
     },
+    // 容器块化:引述段整体容器盒(底色已并入 .syfe-cm-quote-line 的 gradient,
+    // 从盒左边界起画),此类只负责首末行圆角 —— 圆角裁的是元素盒,gradient
+    // 随之被裁;盒左边界在列表内时左角为直角(边界即竖线,视觉上贴边)
+    ".syfe-cm-quote-box": {},
     ".syfe-cm-quote-box.is-first": {
         "border-top-left-radius": "8px",
         "border-top-right-radius": "8px",
@@ -376,6 +399,15 @@ const syfeCmTheme = EditorView.theme({
         lineHeight: "1.6",
         padding: "2px 0",
         color: "var(--b3-theme-on-surface)",
+        whiteSpace: "pre-wrap",
+        wordBreak: "break-word",
+    },
+    // 跨行 \(...\) 块的段前/段后正文(块 replace 只能整行覆盖,同行文字进 widget):
+    // 正文字号(区别于 note 的 12px 辅注),支持粗/斜/行内码
+    ".syfe-cm-math-plain": {
+        fontSize: "14px",
+        lineHeight: "1.6",
+        padding: "2px 0",
         whiteSpace: "pre-wrap",
         wordBreak: "break-word",
     },

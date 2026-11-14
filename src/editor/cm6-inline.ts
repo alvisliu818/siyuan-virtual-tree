@@ -531,6 +531,8 @@ function buildInlineDecorations(state: EditorState, opts: Cm6InlineOptions): Inl
 
             // --- ATX 标题:隐藏行首 "# "(行级 onLine:光标在标题行即还原) ---
             if (name.startsWith("ATXHeading")) {
+                // 标题容器块化:标题行加容器盒(底色 + 四角圆角);编辑态/标记还原不撤盒
+                deco.push(Decoration.line({class: "syfe-cm-heading-box is-first is-last"}).range(doc.lineAt(node.from).from));
                 const header = node.node.firstChild;
                 if (!header || header.name !== "HeaderMark") return;
                 if (onLineTouches(state, node.from, node.to)) return;
@@ -540,6 +542,13 @@ function buildInlineDecorations(state: EditorState, opts: Cm6InlineOptions): Inl
 
             // --- Setext 标题:隐藏下划线行(整块替换,避免留空行) ---
             if (name.startsWith("SetextHeading")) {
+                // 标题容器块化:两行标题(text + 下划线行)各加盒行类,首末圆角
+                const hFromLine = doc.lineAt(node.from).number;
+                const hToLine = doc.lineAt(node.to).number;
+                for (let hln = hFromLine; hln <= hToLine; hln++) {
+                    const hCls = `syfe-cm-heading-box${hln === hFromLine ? " is-first" : ""}${hln === hToLine ? " is-last" : ""}`;
+                    deco.push(Decoration.line({class: hCls}).range(doc.line(hln).from));
+                }
                 if (inFrontmatter(node.from)) return;
                 if (onLineTouches(state, node.from, node.to)) return;
                 iterSubNodes(node.node, "HeaderMark", (m) => {
@@ -661,6 +670,12 @@ function buildInlineDecorations(state: EditorState, opts: Cm6InlineOptions): Inl
             // BulletList/OrderedList;ListItem 的下一个子是 Task 即任务项,
             // 任务项交给 TaskMarker 分支整体替换,这里跳过)
             if (name === "ListMark") {
+                // 行首缩进空白隐藏(font-size:0):tab 渲染宽度随停靠点浮动,
+                // 不参与悬挂几何;缩进由容器层级模型(build 静态推导)承担。
+                // ⚠ 勿用 replace({}) 折叠:空 replace 装饰与行渲染交互有未知
+                // 风险(页面错乱,已回退)。
+                const lmLine = doc.lineAt(node.from);
+                if (node.from > lmLine.from) hideRange(lmLine.from, node.from);
                 const listItem = node.node.parent;
                 const root = listItem && listItem.name === "ListItem" ? listItem.parent : null;
                 if (!listItem || !root) return;

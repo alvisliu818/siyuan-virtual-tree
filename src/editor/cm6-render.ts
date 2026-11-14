@@ -421,22 +421,38 @@ function splitMathBlockBody(lines: string[]): MathBlockBody {
 
 /** 公式块:KaTeX display 渲染;失败回退为等宽样式并给出错误提示 */
 class MathWidget extends WidgetType {
-    constructor(readonly tex: string, readonly notes: string[], readonly katex: any) {
+    constructor(readonly tex: string, readonly notes: string[], readonly katex: any,
+                readonly plainBefore = "", readonly plainAfter = "") {
         super();
     }
 
     eq(other: MathWidget): boolean {
-        return other.tex === this.tex && other.notes.join("\n") === this.notes.join("\n");
+        return other.tex === this.tex && other.notes.join("\n") === this.notes.join("\n")
+            && other.plainBefore === this.plainBefore && other.plainAfter === this.plainAfter;
     }
 
     /** 把公式 + 保留正文写进容器(KaTeX 就绪/失败两条路径共用) */
     private paint(wrap: HTMLElement, texHtml: string | null): void {
         wrap.textContent = "";
+        // 段前/段后正文(跨行 \(...\) 块的同行文字,如「\)...其中」的其中):
+        // 按普通文本保留,进块级 widget 一并显示(块 replace 只能整行覆盖)
+        if (this.plainBefore) {
+            const div = document.createElement("div");
+            div.className = "syfe-cm-math-plain";
+            div.innerHTML = formatInlineCell(this.plainBefore);
+            wrap.appendChild(div);
+        }
         if (this.tex) {
             const holder = document.createElement("div");
             if (texHtml !== null) holder.innerHTML = texHtml;
             else holder.textContent = this.tex;
             wrap.appendChild(holder);
+        }
+        if (this.plainAfter) {
+            const div = document.createElement("div");
+            div.className = "syfe-cm-math-plain";
+            div.innerHTML = formatInlineCell(this.plainAfter);
+            wrap.appendChild(div);
         }
         for (const note of this.notes) {
             const div = document.createElement("div");
@@ -912,6 +928,19 @@ function splitCellMath(text: string): CellPart[] {
     let i = 0;
     let plainFrom = 0;
     while (i < text.length) {
+        // \(...\) 行内公式(LaTeX 括号定界,思源/Obsidian 导出常见);跨行段在
+        // 单行文本里找不到闭合,自然落空,由块级 step 整段处理。
+        // 前一字符是反斜杠 → 是转义反斜杠后跟括号(\\(),不是公式开头
+        if (text.startsWith("\\(", i) && text[i - 1] !== "\\") {
+            const found = findMathClose(text, i + 2, "\\)");
+            if (found) {
+                if (i > plainFrom) parts.push({text: text.slice(plainFrom, i), from: plainFrom, to: i});
+                parts.push({text: text.slice(i, found.end), math: found.tex, from: i, to: found.end});
+                i = found.end;
+                plainFrom = i;
+                continue;
+            }
+        }
         // 转义符连同伴字符整体跳过(\$100 不是公式,\| 不是列分隔)
         if (text[i] === "\\" && i + 1 < text.length) { i += 2; continue; }
         if (text[i] !== "$") { i++; continue; }
@@ -1370,7 +1399,6 @@ export function cm6MarkdownRender(opts: Cm6RenderOptions): Extension {
             this.ro?.disconnect();
         }
     });
-
     ensureSettingsFanout();
     return [renderField, clickHandler, themeSync, editMounter, guideResize];
 }
@@ -1419,6 +1447,9 @@ function buildDecorations(state: EditorState, opts: Cm6RenderOptions): Decoratio
             const guideStops = new Map<number, Array<{x: number; first: boolean; last: boolean}>>();
             const quoteBarByLine = new Map<number, number>();
             const quoteLines = new Set<number>();
+            const quoteCalloutLines = new Set<number>();
+            // callout 首行(> [!type]):整段引述按标注样式渲染,不用容器盒 gradient
+            const RE_QUOTE_CALLOUT_LINE = /^\s*(?:[-*+]|\d+[.)])?\s*>\s*\[!\w+\][+-]?/;
             const indentWidth = (text: string): number => {
                 const m = /^(\s*)/.exec(text);
                 if (!m) return 0;
@@ -1440,11 +1471,51 @@ function buildDecorations(state: EditorState, opts: Cm6RenderOptions): Decoratio
                 }
                 if (end <= ln) continue;
                 const x = 6 + w + 2;
+                // 空行只算间隔不画线:空行行高矮,2px 竖线上下各留 9px 后只剩一小截,
+                // 看着像孤立的残渣点(用户 2026-11-14 反馈)。first/last 标记落到
+                // 首末个**实际绘制**行,引导线的上下留白仍贴内容行。
+                let firstDrawn = -1;
+                let lastDrawn = -1;
                 for (let k = ln + 1; k <= end; k++) {
+                    if (doc.line(k).text.trim() === "") continue;
+                    if (firstDrawn < 0) firstDrawn = k;
+                    lastDrawn = k;
+                }
+                // 单行子树:两端 9px 留白把引导线裁成一截残段,上下都不触达
+                // 父/子圆点,没有可对应的两个端点,不画(用户 2026-11-14 反馈)
+                if (firstDrawn < 0 || firstDrawn === lastDrawn) continue;
+                for (let k = ln + 1; k <= end; k++) {
+                    if (doc.line(k).text.trim() === "") continue;
                     const arr = guideStops.get(k) || [];
-                    arr.push({x, first: k === ln + 1, last: k === end});
+                    arr.push({x, first: k === firstDrawn, last: k === lastDrawn});
                     guideStops.set(k, arr);
                 }
+            }
+
+            // ===== 列表悬挂缩进(容器模型:父列表块控制子块缩进) =====
+            // 缩进由容器层级决定:每层固定步长,子块缩进 = 祖先链各层之和。
+            // 层级 = 行首空白折算(tab 1 层 / 每 4 空格 1 层);行首空白本身
+            // 已由 cm6-inline 隐藏(ListMark 分支),渲染宽度不再参与推导 ——
+            // tab 停靠点浮动导致缩进错位,层级模型彻底绕开。
+            // 悬挂:padding 钉正文起点(层级缩进 + 标记列宽),负 text-indent
+            // 让标记从层级缩进处起排,续行与正文对齐。⚠ 静态推导,无测量反馈
+            //(实测 pad=textX 与 tab 停靠点耦合,点击即振荡整篇乱跳)。
+            const HANG_STEP = 16;      // 每层容器缩进步长
+            const HANG_MARK_W = 9.3;   // 圆点/序号标记渲染宽 + 后随空格(实测均值)
+            const HANG_QUOTE_W = 13.3; // 引述行:标记列 9.3 + 隐藏 > 0 + 后随空格 4
+            const hangByLine = new Map<number, {pad: number; indent: number}>();
+            for (let ln = 1; ln <= doc.lines; ln++) {
+                const t = doc.line(ln).text;
+                const m = /^(\s*)(?:[-*+]|\d+[.)])\s/.exec(t);
+                if (!m) continue;
+                // 引述行同样入容器模型:标记列与兄弟项对齐(引述块自身不加缩进),
+                // 正文列 = 标记列 + 隐藏 > + 空格;引述视觉 = 竖线边界 + 内容 padding。
+                // ⚠ 缩进只由 depth 承担,prefix 仅含标记列 —— indentWidth 若同时
+                // 计入两处会双重叠加(depth×步长 + 缩进宽),缩进多出一整层
+                const isQuoteLine = /^\s*(?:[-*+]|\d+[.)])?\s*>/.test(t);
+                const prefix = isQuoteLine ? HANG_QUOTE_W : HANG_MARK_W;
+                const depth = Math.round(indentWidth(t) / HANG_STEP);
+                hangByLine.set(ln, {pad: 6 + depth * HANG_STEP + prefix, indent: -prefix});
             }
 
             // 0) Obsidian 页面属性:只认文档开头且闭合的 YAML frontmatter(--- ... ---)。
@@ -1545,22 +1616,97 @@ function buildDecorations(state: EditorState, opts: Cm6RenderOptions): Decoratio
                 }
             }
 
+            // 2.7) LaTeX 括号定界公式:\[...\](display)与跨行 \(...\)。CM6 行内
+            //     replace 不能跨行,跨行段整段(覆盖所有行)替换为 display 公式
+            //     widget;段前/段后的同行文字(如「\)...其中」的其中)进 widget
+            //     一并显示。光标进块回源码(与 $$ 块同模型)。
+            //     列表项(- 开头)与引述行(> 开头)不动:整行替换会吃掉圆点/引述
+            //     结构,保持源码。单行 \(...\) 由 step 5 行内渲染,这里跳过。
+            const RE_MATHBLOCK_GUARD = /^\s*(?:(?:[-*+]|\d+[.)])\s|>)/;
+            for (let ln = 1; ln <= doc.lines; ln++) {
+                const line = doc.line(ln);
+                if (overlapsUsed(line.from, line.to)) continue;
+                const t = line.text;
+                if (RE_MATHBLOCK_GUARD.test(t)) continue;
+                // 找第一个未转义的 \( 或 \[
+                let openPos = -1;
+                let kind = "";
+                for (const [open, closerOf, display] of [["\\(", "\\)", false], ["\\[", "\\]", true]] as const) {
+                    let at = 0;
+                    while ((at = t.indexOf(open, at)) >= 0) {
+                        if (t[at - 1] !== "\\") break;
+                        at += open.length;
+                    }
+                    if (at < 0) continue;
+                    // \( 同行已闭合 → 行内渲染(step 5),不按块级处理
+                    if (!display && findMathClose(t, at + open.length, closerOf)) continue;
+                    if (openPos < 0 || at < openPos) {
+                        openPos = at;
+                        kind = open;
+                    }
+                }
+                if (openPos < 0) continue;
+                const closer = kind === "\\(" ? "\\)" : "\\]";
+                // 向后找闭合行(闭合符须未转义;起始行从 opener 之后找起)
+                let endLine = -1;
+                let closeEnd = -1;
+                for (let j = ln; j <= doc.lines; j++) {
+                    const tj = doc.line(j).text;
+                    let at = j === ln ? openPos + kind.length : 0;
+                    while ((at = tj.indexOf(closer, at)) >= 0) {
+                        if (tj[at - 1] !== "\\") break;
+                        at += closer.length;
+                    }
+                    if (at >= 0) {
+                        endLine = j;
+                        closeEnd = at + closer.length;
+                        break;
+                    }
+                }
+                if (endLine < 0) continue;
+                const firstText = doc.line(ln).text;
+                const lastText = doc.line(endLine).text;
+                const segs: string[] = [];
+                if (endLine === ln) {
+                    segs.push(firstText.slice(openPos + kind.length, closeEnd - closer.length));
+                } else {
+                    segs.push(firstText.slice(openPos + kind.length));
+                    for (let k = ln + 1; k < endLine; k++) segs.push(doc.line(k).text);
+                    segs.push(lastText.slice(0, closeEnd - closer.length));
+                }
+                const tex = segs.join("\n").trim();
+                if (!tex) continue;
+                const from = line.from;
+                const to = doc.line(endLine).to;
+                usedRanges.push({from, to});
+                if (cursorInBlock(from, to)) {
+                    for (let k = ln; k <= endLine; k++) {
+                        lineDecos.push(mathSrcLineDeco.range(doc.line(k).from));
+                    }
+                } else {
+                    const widget = new MathWidget(tex, [], (window as any).__syfeKatex || null,
+                        firstText.slice(0, openPos).trim(), lastText.slice(closeEnd).trim());
+                    ranges.push(Decoration.replace({widget}).range(from, to));
+                }
+                ln = endLine;
+            }
+
             // 2.5) 引述块(含列表内 `- > …`):**不再整行替换为 widget**。
             //     编辑 / 退出编辑 / 只读阅读态统一走同一套渲染 —— CM6 源码行 +
             //     cm6-inline 的 WYSIWYM(圆点/粗体/公式) + 这里的一根引用竖线。
             //     历史:曾用 Lute/protyle widget 整行替换,编辑时翻回源码行,两态
             //     DOM 不同、层级相反(「引述块包裹列表」),用户 2026-11-13 反馈。
-            //     竖线按缩进层级定位,画在列表圆点**右侧**(= 列表包引用)。
             //     ⚠ 不占 usedRanges、不加 atomicRanges:step 4/5 的行内图片/公式
             //     照常渲染,光标也能自由进出该行。
-            // 竖线 x 用 build 期的安全估算给出(= 6px 行盒内边距 + 缩进宽度:
-            // 纯引述的 > 原位 / 列表引述的子弹点左侧)。关键:bar 必须 ≤ 正文起点,
-            // 实际由下方 lineStyleFor 的 padding-left:calc(var(--syfe-quote-bar) + 6px)
-            // 把整行(含折行续行)约束在竖线右侧 —— 这正是用户要的「内容不越过左边界」。
-            // ⚠ 不靠渲染后 ViewPlugin 精确测量:实测 build 期 coordsAtPos/domAtPos 只能读到
-            // 「装饰未生效」的旧布局(子弹点 widget、隐藏 > 未应用),偏左几十像素;而渲染后
-            // 测量会与 padding-left 形成反馈环(正文随 bar 同移,间隙恒为 6+inlineOffset,
-            // 无法收紧),故只保留安全估算 + padding 这一组合。
+            // 盒左边界(竖线 x):build 期只给安全估算(6px 行盒内边距 + 缩进宽度),
+            // 盒左边界按容器层级静态推导(见下方容器模型),标记列与兄弟项对齐 —— 盒边界 =
+            // 列表圆点右缘 + 1(圆点留在盒外,盒从列表结构内部开始),竖线贴盒内
+            // 左边界,盒底色也从边界起画(用户 2026-11-14:竖线应在块内左边界)。
+            // 关键:padding 钉到正文起点(续行与正文对齐、不穿越竖线),首行负
+            // text-indent 悬挂补偿冻结原布局 —— padding 与 bar 锚点解耦(bar 锚
+            // 圆点、pad 锚正文),不构成旧方案那种「正文随 bar 同移」的反馈环。
+            // build 期 coordsAtPos/domAtPos 只能读到「装饰未生效」的旧布局,故
+            // 测量必须走渲染后的 requestMeasure,不能在 build 期做。
             for (let ln = 1; ln <= doc.lines; ln++) {
                 const line = doc.line(ln);
                 if (overlapsUsed(line.from, line.to)) continue;
@@ -1575,13 +1721,19 @@ function buildDecorations(state: EditorState, opts: Cm6RenderOptions): Decoratio
                 }
                 const tabs = (indent.match(/\t/g) || []).length;
                 const spaces = indent.replace(/\t/g, "").length;
-                // 安全估算:正文必在竖线右侧,绝不越过左边界(精确值由 quoteBarMeasure 覆写)
-                const bar = 6 + tabs * 16 + spaces * 4;
+                // 竖线(盒左边界)= 容器标记列右缘 + 1:圆点 5.3 + 空隙 1。
+                // 容器层级模型:标记列 = 6px 基线 + depth×步长(行首空白已折叠,
+                // 标记从首行起点起排,几何确定,无测量反馈)。
+                const qDepth = Math.round((tabs * 16 + spaces * 4) / HANG_STEP);
+                const bar = 6 + qDepth * HANG_STEP + 6.3;
                 // 只记录,统一在下面的 lineStyleFor 出口生成行装饰 —— 引述竖线要与
                 // 列表引导线合并进同一个 style,否则两个 line deco 的 style 互相覆盖
+                // 标注行(callout)整段走旧竖线样式:标注类自带底色,不用容器盒 gradient
+                const callout = RE_QUOTE_CALLOUT_LINE.test(line.text);
                 for (let k = ln; k <= end; k++) {
                     quoteLines.add(k);
                     quoteBarByLine.set(k, bar);
+                    if (callout) quoteCalloutLines.add(k);
                 }
                 ln = end;
             }
@@ -1595,17 +1747,35 @@ function buildDecorations(state: EditorState, opts: Cm6RenderOptions): Decoratio
                 "var(--b3-border-color, rgba(128,128,128,.45)) var(--syfe-quote-bar), " +
                 "var(--b3-border-color, rgba(128,128,128,.45)) calc(var(--syfe-quote-bar) + 3px), " +
                 "transparent calc(var(--syfe-quote-bar) + 3px))";
+            // 引述容器盒:从盒左边界起画 [透明 → 2px 竖线 → 盒底色]。竖线贴盒内
+            // 左边界,边界之外不再有引述底色(下层露出列表盒/页面背景)——
+            // 盒左边界 = 容器标记列右缘 + 1(静态推导)。
+            const QUOTE_BOX_GRADIENT =
+                "linear-gradient(to right, transparent var(--syfe-quote-bar), " +
+                "var(--b3-border-color, rgba(128,128,128,.45)) var(--syfe-quote-bar), " +
+                "var(--b3-border-color, rgba(128,128,128,.45)) calc(var(--syfe-quote-bar) + 2px), " +
+                "var(--b3-theme-surface, var(--b3-theme-background)) calc(var(--syfe-quote-bar) + 2px))";
             const lineStyleFor = (k: number): string => {
                 const decls: string[] = [];
                 const images: string[] = [];
                 const sizes: string[] = [];
                 const positions: string[] = [];
+                // 列表悬挂缩进(静态推导):续行对齐正文,不越出圆点列。
+                // 排在最前 —— 引述行走自己的盒几何(引述行无悬挂),引导线
+                // gradient 叠加其后,互不覆盖。
+                const hang = hangByLine.get(k);
+                if (hang) {
+                    decls.push(`padding-left:${hang.pad.toFixed(1)}px`);
+                    decls.push(`text-indent:${hang.indent.toFixed(1)}px`);
+                }
                 const bar = quoteBarByLine.get(k);
                 if (bar !== undefined) {
                     decls.push(`--syfe-quote-bar:${bar}px`);
-                    // 引述行内容约束在竖线右侧:折行续行不再越出左边界(用户反馈)
-                    decls.push(`padding-left:calc(var(--syfe-quote-bar) + 6px)`);
-                    images.push(QUOTE_GRADIENT);
+                    // 引述行内容约束在盒右(边界 + 竖线 2px + 内容 padding 5px):
+                    // 静态容器几何,无测量反馈(实测反馈与 tab 停靠耦合会振荡)
+                    decls.push(`padding-left:calc(var(--syfe-quote-bar) + 7px)`);
+                    decls.push(`--syfe-quote-math-pull:7px`);
+                    images.push(quoteCalloutLines.has(k) ? QUOTE_GRADIENT : QUOTE_BOX_GRADIENT);
                     sizes.push("100% 100%");
                     positions.push("0 0");
                 }
@@ -1636,6 +1806,14 @@ function buildDecorations(state: EditorState, opts: Cm6RenderOptions): Decoratio
                     class: "syfe-cm-listguide",
                     attributes: {style: lineStyleFor(k)},
                 }).range(doc.line(k).from));
+            }
+            // 悬挂行中不在引导线/引述覆盖内的(普通列表项行):单独出行装饰
+            for (let ln = 1; ln <= doc.lines; ln++) {
+                if (quoteLines.has(ln) || guideStops.has(ln)) continue;
+                if (!hangByLine.has(ln)) continue;
+                lineDecos.push(Decoration.line({
+                    attributes: {style: lineStyleFor(ln)},
+                }).range(doc.line(ln).from));
             }
 
             // 3) GFM 表格(≥2 行:表头 + 分隔行;光标在块内时只加底色)
@@ -1708,7 +1886,7 @@ function buildDecorations(state: EditorState, opts: Cm6RenderOptions): Decoratio
             for (let ln = 1; ln <= doc.lines; ln++) {
                 const line = doc.line(ln);
                 if (overlapsUsed(line.from, line.to)) continue;
-                if (line.text.indexOf("$") < 0) continue;
+                if (line.text.indexOf("$") < 0 && line.text.indexOf("\\(") < 0) continue;
                 for (const part of splitCellMath(line.text)) {
                     if (part.math === undefined || part.from === undefined || part.to === undefined) continue;
                     const from = line.from + part.from;
