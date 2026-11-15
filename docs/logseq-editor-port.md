@@ -46,8 +46,10 @@ AGPL-3.0 已生效,允许引用/派生 Logseq 代码,但技术上仍以「读源
 - [x] LICENSE → AGPL-3.0-only
 - [x] package.json license 字段
 - [x] README 许可证章节
-- [ ] 每个 Logseq 派生文件头标注派生来源(移植时逐文件加)
-- [ ] README 补充 AGPL 义务说明(修改版分发需提供源码)
+- [~] 每个 Logseq 派生文件头标注派生来源:`src/editor/cm6-block-editor.ts` 已标
+     两处(事件隔离 ← `extensions/code.cljs`;选项注入 ← `:editor/extra-codemirror-options`),
+     其余移植/派生文件待补,做 M3/M4 / calc 块时逐文件加
+- [x] README 补充 AGPL 义务说明(修改版分发需提供对应源码、§13 网络服务同样适用,`e0d3ea6`)
 
 ## 5. 里程碑
 
@@ -55,3 +57,29 @@ AGPL-3.0 已生效,允许引用/派生 Logseq 代码,但技术上仍以「读源
 - M2:键盘行为移植(P1)——预计触及 cm6-markdown/cm6-inline 的 keymap
 - M3:光标管理移植(P2)
 - M4:块操作(P3,按需)
+
+### 5.1 代码块移植(出本计划主线,2026-11-15 单独推进,详见 project_memory.md)
+
+> 结论:og 代码块为 CM5 单编辑态 + calc 块,闭包是整个 CS 应用,功能不比本插件
+> 强,**不整体移植**;核心思路本插件已吸收,事件隔离已落地。
+
+- 已交付(测试库验证,主库未动):
+  - `e3860af` 参考 `extensions/code.cljs` 补强内嵌编辑器事件隔离(mousedown/
+    touchstart stopPropagation、Cmd/Ctrl+[ ] 拦截),文件头已标 AGPL 来源
+  - `b567f91` 修代码块编辑三处真 bug(写回越界/装饰崩溃/复制失效)
+  - `dc42156` 修未闭合围栏吞文档导致输入错位
+  - `e0d3ea6` 补齐两条低成本特性:
+    - **`:editor/extra-codemirror-options` 配置注入** → `markdown.cm6CodeBlockExtraOptions`
+      (JSON 字符串),按白名单映射成 CM6 facet(lineWrapping / lineNumbers /
+      tabSize / indentUnit / highlightActiveLine / highlightActiveLineGutter /
+      readOnly / allowMultipleSelections);非法 JSON 回落默认,未知键忽略
+    - **Enter 自动补闭合围栏 + 光标进块内编辑器** → `markdown.cm6AutoCloseFence`
+      (默认开,Obsidian 同款)。配对判据与 `fencedCodeInfos` 同源;卡片模式下
+      原子范围会把块内光标挤到边界,故命中后直接 `beginCodeEdit` 进内嵌 CM6
+    - 同笔提交补齐 README 的 AGPL 义务说明
+- 未做(待用户确认范围):
+  - **calc 计算块**(`extensions/calc.cljc`,235 行 instaparse + bignumber):
+    instaparse/bignumber 不能直接用,须先定表达式解析器选型,成本最高。
+    落点:新增 ```` ```calc ```` 语言块卡片,渲染态右侧出结果
+- 广义移植主线 M2(键盘)/M3(光标管理)/M4(块操作)本轮未动;按用户此前
+  排序,**M3 优先级高于代码块**,但代码块这批收尾后应先与用户确认再排期
