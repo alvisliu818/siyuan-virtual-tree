@@ -26,7 +26,7 @@ import {Menu} from "siyuan";
 import {cm6MarkdownRender, preloadCm6Katex, registerCopyLineHandler} from "./cm6-render";
 import {cm6InlineWysiwyg, mdParserExtensions} from "./cm6-inline";
 import {cm6SelectionBubble} from "./cm6-selection-bubble";
-import {cm6LineMenu, listBackspaceCommand, listIndentCommand, moveBlockCommand} from "./cm6-line-menu";
+import {cm6LineMenu, listIndentCommand, moveBlockCommand} from "./cm6-line-menu";
 import {cm6BlockPreview} from "./cm6-block-preview";
 import {BLOCK_FONT_FAMILY, BLOCK_FONT_SIZE, BLOCK_LINE_HEIGHT} from "./monaco-block";
 import {getLinkIndex} from "../utils/wikilink";
@@ -913,13 +913,21 @@ export function createCm6MarkdownEditor(
                 {key: "Tab", run: listIndentCommand(1)},
                 {key: "Shift-Tab", run: listIndentCommand(-1)},
                 {key: "Alt-ArrowUp", run: moveBlockCommand(-1)},
-                {key: "Backspace", run: listBackspaceCommand()},
                 {key: "Alt-ArrowDown", run: moveBlockCommand(1)},
             ])),
             keymap.of([...defaultKeymap, ...historyKeymap, ...searchKeymap, indentWithTab]),
             placeholder(opts.placeholder ?? ""),
             EditorView.updateListener.of((u) => {
-                if (u.docChanged) opts.onInput();
+                if (u.docChanged) {
+                    // [tx5] 临时
+                    const parts: string[] = [];
+                    u.changes.iterChangedRanges((fa, ta, fb, tb) => {
+                        const oldText = u.startState.doc.sliceString(fa, ta);
+                        parts.push("[" + fa + "-" + ta + "->" + fb + "-" + tb + "]old=" + JSON.stringify(oldText.slice(0, 20)) + " new=" + JSON.stringify(u.state.doc.sliceString(fb, Math.min(tb + 10, u.state.doc.length))));
+                    });
+                    console.log("[tx5]", u.transactions.map(t => (t.userEvent || "?") + "@" + t.changes.length).join(","), "|", parts.join(" "));
+                    opts.onInput();
+                }
                 if ((u.docChanged || u.selectionSet) && opts.onCursor) opts.onCursor();
             }),
         ],
