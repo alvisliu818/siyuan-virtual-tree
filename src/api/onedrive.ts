@@ -346,15 +346,25 @@ export async function odDownloadFile(vPath: string): Promise<ArrayBuffer> {
 
 // ==== 上传(简单 PUT;Graph 单请求上限 250MB)====
 
-export async function odUploadFile(vPath: string, data: Uint8Array): Promise<void> {
+// 上传并返回服务端元数据(size + lastModifiedDateTime)—— 同步引擎记基线用
+export async function odUploadFileMeta(vPath: string, data: Uint8Array): Promise<{size: number; mtimeMs: number}> {
     const cloud = cloudDirOf(vPath);
     if (!cloud || cloud === "/") throw new Error("OneDrive 根目录不可作为文件写入");
     if (data.length > 250 * 1024 * 1024) {
         throw new Error("OneDrive 简单上传上限 250MB,更大的文件请使用官方客户端或上传会话接口");
     }
-    // 父目录必须存在(Graph 不会自动建父链;与本地 writeFile 语义差异点)
-    await odGraph<any>("PUT", graphItemPath(cloud) + ":/content", data, "application/octet-stream");
+    // PUT /content 的响应体就是写入后的 driveItem(含 size 与服务端 lastModifiedDateTime)
+    const {json} = await odGraph<any>("PUT", graphItemPath(cloud) + ":/content", data, "application/octet-stream");
     clearOneDriveListCache(dirname(vPath));
+    const mtime = json?.lastModifiedDateTime ? new Date(json.lastModifiedDateTime).getTime() : NaN;
+    return {
+        size: Number(json?.size) || data.length,
+        mtimeMs: Number.isFinite(mtime) && mtime > 0 ? mtime : Date.now(),
+    };
+}
+
+export async function odUploadFile(vPath: string, data: Uint8Array): Promise<void> {
+    await odUploadFileMeta(vPath, data);
 }
 
 // ==== 新建目录 ====

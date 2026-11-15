@@ -67,9 +67,11 @@ import {loadStartPage, itemFromPath, itemFromDoc, toggleInGroup, START_PAGE_CHAN
 import {isVirtualPath, virtualId, initMountStore, getMountList, dropSyDocMounts} from "./utils/virtual-tree";
 import {initBaiduPanStore} from "./api/baidu-pan";
 import {openBaiduPanDialog} from "./components/baidu-pan-dialog";
-import {startLanSyncServer, stopLanSyncServer, isLanSyncServerRunning, executeAgentOp, agentOwnRoots} from "./api/lan-sync";
+import {startLanSyncServer, stopLanSyncServer, isLanSyncServerRunning, executeAgentOp, agentOwnRoots, runLanSyncTask, parseLanSyncTasks, formatLanSyncReport} from "./api/lan-sync";
 import {openLanSyncDialog} from "./components/lan-sync-dialog";
 import {initLanSyncAgentRuntime, startLanSyncAgent, stopLanSyncAgent, lanSyncAgentStatus, parseAgentConfig, serializeAgentConfig} from "./api/lan-sync-agent";
+import {runOdSyncTask, parseOdSyncTasks} from "./api/onedrive-sync";
+import {openOdSyncDialog} from "./components/od-sync-dialog";
 import {openOneDriveDialog} from "./components/onedrive-dialog";
 import {initOneDriveStore} from "./api/onedrive";
 import {initOutlookMailStore} from "./api/outlook-mail";
@@ -1163,6 +1165,22 @@ export default class FileEditorPlugin extends Plugin {
         return lanSyncAgentStatus();
     }
 
+    // 同步执行入口(设置保存后命令面板/自动化/调试探针可用):按任务 id 跑一次同步,
+    // 返回可读报告。preview=true 只算差异不动文件。
+    async runLanSyncTaskById(id: string, preview = false): Promise<string> {
+        const task = parseLanSyncTasks(this.config.lanSyncTasks).find(t => t.id === id);
+        if (!task) throw new Error(`没有局域网同步任务「${id}」`);
+        const report = await runLanSyncTask(this, task, preview);
+        return formatLanSyncReport(report);
+    }
+
+    async runOdSyncById(id: string, preview = false): Promise<string> {
+        const task = parseOdSyncTasks(this.config.odSyncTasks).find(t => t.id === id);
+        if (!task) throw new Error(`没有 OneDrive 同步任务「${id}」`);
+        const report = await runOdSyncTask(this, task, preview);
+        return formatLanSyncReport(report);
+    }
+
     // 新标签页:切换固定 / 收藏(供文件树右键菜单调用)
     async togglePin(path: string): Promise<void> {
         // 虚拟文档:条目为思源文档(title 用树节点标签,由调用方刷新)
@@ -1718,6 +1736,13 @@ export default class FileEditorPlugin extends Plugin {
         odBtn.addEventListener("click", () => openOneDriveDialog());
         addRow("onedrive", "OneDrive", "微软 OneDrive 接入:在 Azure 门户注册一个应用(个人类型,公共客户端流开启,权限 Files.ReadWrite.All + User.Read + offline_access)拿 Client ID,设备码授权后即可在虚拟文档树挂载 OneDrive 目录,支持浏览、编辑并保存回网盘。Graph API 允许 CORS,移动端可用", odBtn);
 
+        // OneDrive 云同步(参考 EasySync 模式:云中转,桌面/移动端同一套三方引擎)
+        const odSyncBtn = document.createElement("button");
+        odSyncBtn.className = "b3-button b3-button--text";
+        odSyncBtn.textContent = "云同步任务…";
+        odSyncBtn.addEventListener("click", () => openOdSyncDialog(this));
+        addRow("onedrive", "云同步任务", "把选定目录与 OneDrive 远端目录双向同步(基线三方比对,冲突跳过,绝不自动删本地)。与局域网同步共用同一引擎;移动端本端目录须为 /data/... 内核路径", odSyncBtn);
+
         // ---------- Outlook 邮箱 ----------
         const omBtn = document.createElement("button");
         omBtn.className = "b3-button b3-button--text";
@@ -2261,6 +2286,8 @@ export default class FileEditorPlugin extends Plugin {
             lanSyncToken: (this.lanSyncTokenInput?.value || "").trim(),
             // 任务列表由「同步任务管理」对话框维护,设置保存时原样保留
             lanSyncTasks: this.config.lanSyncTasks || "",
+            // OneDrive 云同步任务同理由「云同步任务」对话框维护
+            odSyncTasks: this.config.odSyncTasks || "",
             lanSyncAgent: serializeAgentConfig({
                 enabled: this.lanSyncAgentEnabledInput?.checked ?? false,
                 serverUrl: (this.lanSyncAgentUrlInput?.value || "").trim(),

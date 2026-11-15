@@ -112,7 +112,7 @@ function compileRules(text: string): RegExp[] {
 }
 
 /** 相对路径是否通过任务的规则(黑名单优先;白名单空 = 全部包含)。 */
-export function relPathAllowed(task: LanSyncTask, rel: string): boolean {
+export function relPathAllowed(task: {includeRules: string; excludeRules: string}, rel: string): boolean {
     const norm = rel.replace(/\\/g, "/");
     // 内核内部目录(.siyuan:回收站/快照/索引)绝不同步 —— 远端列表若含它们,
     // 不拦会把内核内部文件当"对端新文件"拉到本地 .siyuan,污染内核数据
@@ -454,8 +454,10 @@ async function lanRead(task: LanSyncTask, rel: string): Promise<{data: string; m
     return await remoteJson(task, `/api/lan-sync/read?rootId=${encodeURIComponent(task.remoteRootId)}&path=${encodeURIComponent(rel)}`, "GET");
 }
 
-async function lanWrite(task: LanSyncTask, rel: string, dataBase64: string, mtimeMs: number): Promise<void> {
-    await remoteJson(task, "/api/lan-sync/write", "POST", JSON.stringify({rootId: task.remoteRootId, path: rel, data: dataBase64, mtimeMs}));
+async function lanWrite(task: LanSyncTask, rel: string, dataBase64: string, mtimeMs: number): Promise<{size: number; mtimeMs: number}> {
+    const body = await remoteJson(task, "/api/lan-sync/write", "POST", JSON.stringify({rootId: task.remoteRootId, path: rel, data: dataBase64, mtimeMs}));
+    // 服务端 utimes 后回读的真实值;agent 隧道同形状
+    return {size: Number(body?.size) || 0, mtimeMs: Number(body?.mtimeMs) || 0};
 }
 
 async function lanDelete(task: LanSyncTask, rel: string): Promise<void> {
@@ -471,7 +473,7 @@ async function lanDelete(task: LanSyncTask, rel: string): Promise<void> {
 //   写   = /api/file/putFile(multipart,modTime 参数实测会把文件 mtime 设成传入值,
 //          与桌面端 utimesSync 行为对齐 —— pull 后的基线两侧语义一致)
 
-interface FileMeta {
+export interface FileMeta {
     size: number;
     mtimeMs: number;
 }
@@ -539,7 +541,7 @@ const nativeSyncFs: SyncFs = {
 };
 
 // ArrayBuffer/Uint8Array ⇄ base64(浏览器环境,分块防栈溢出)
-function bytesToBase64(bytes: Uint8Array): string {
+export function bytesToBase64(bytes: Uint8Array): string {
     let bin = "";
     const CHUNK = 0x8000;
     for (let i = 0; i < bytes.length; i += CHUNK) {
@@ -548,7 +550,7 @@ function bytesToBase64(bytes: Uint8Array): string {
     return btoa(bin);
 }
 
-function base64ToBytes(b64: string): Uint8Array<ArrayBuffer> {
+export function base64ToBytes(b64: string): Uint8Array<ArrayBuffer> {
     const bin = atob(b64);
     // 显式以 ArrayBuffer 为底(TS 5.7 的 BlobPart 类型要求,见 api/file.ts writeBinaryFile 同款处理)
     const buf = new ArrayBuffer(bin.length);
@@ -692,7 +694,8 @@ const kernelSyncFs: SyncFs = {    async scan(root: string): Promise<Record<strin
 };
 
 // 选后端:桌面端优先原生(任意路径);移动端强制内核后端且要求 /data/... 内核路径
-function pickSyncFs(task: LanSyncTask): {fs: SyncFs; root: string} {
+// (OneDrive 同步等外部引擎复用)
+export function pickSyncFs(task: {localRoot: string}): {fs: SyncFs; root: string} {
     if (isNativeFsAvailable() && !isMobileFrontend()) {
         return {fs: nativeSyncFs, root: resolveRootAbs(task.localRoot)};
     }
@@ -742,70 +745,128 @@ export async function previewLanSyncTask(plugin: PluginWithConfig, task: LanSync
     return runLanSyncTask(plugin, task, true, onProgress);
 }
 
-export async function runLanSyncTask(plugin: PluginWithConfig, task: LanSyncTask, preview = false, onProgress?: LanSyncProgress): Promise<LanSyncReport> {
+// ===== 通用三方同步引擎(LAN 与 OneDrive 同步共用) =====
+//
+// 远端访问抽象:LAN(HTTP 对端/agent 隧道)与 OneDrive(Graph API)各提供一个实现,
+// 三方比对/删除语义/冲突策略完全共用。
+export interface RemoteFs {
+    /** 递归文件清单 {rel: {size, mtimeMs}} */
+    list(): Promise<Record<string, FileMeta>>;
+    read(rel: string): Promise<{dataBase64: string; size: number; mtimeMs: number}>;
+    /** 写入;返回远端**真实** size/mtime(OneDrive 是服务端时间,LAN 是 utimes 后的值) */
+    write(rel: string, dataBase64: string, mtimeMs: number): Promise<{size: number; mtimeMs: number}>;
+    remove(rel: string): Promise<void>;
+}
+
+export interface ThreeWaySyncOptions {
+    taskId: string;             // 基线 store 的 key(LAN 任务与 OneDrive 任务共存,各自全局唯一 id)
+    localRoot: string;
+    localFs: SyncFs;
+    remote: RemoteFs;
+    direction: "both" | "push" | "pull";
+    rules: {includeRules: string; excludeRules: string};
+    preview?: boolean;
+    onProgress?: LanSyncProgress;
+}
+
+// 单文件传输上限:桌面 50MB / 移动端 20MB(移动端 base64 中转的内存峰值约 3×文件大小)
+export function syncMaxFileBytes(): number {
+    return isMobileFrontend() ? 20 * 1024 * 1024 : MAX_FILE_BYTES;
+}
+
+// 删除语义(EasySync automatic-handling-policy 对齐,刻意不对称的安全边界):
+//   本地已删、远端还在(基线证明上次两侧都有) → 提交远端删除(用户亲手删的,可传播)
+//   远端已删、本地还在 → **绝不自动删本地**;只报告保留观察;若本地相对基线已改
+//     (用户在远端删除后继续编辑了本地)→ 推送本地新版本重建远端,否则本地编辑永远出不去
+//   无基线一侧独有 → 当作该侧新文件(首次同步语义)
+export async function runThreeWaySync(plugin: PluginWithConfig, opts: ThreeWaySyncOptions): Promise<LanSyncReport> {
     const report = emptyLanSyncReport();
-    const {fs: localFs, root: localRoot} = pickSyncFs(task);
-    const pushable = task.direction !== "pull";
-    const pullable = task.direction !== "push";
+    const {taskId, localRoot, localFs, remote, direction, rules, preview = false, onProgress} = opts;
+    const cap = syncMaxFileBytes();
+    const pushable = direction !== "pull";
+    const pullable = direction !== "push";
 
-    onProgress?.("连接对端...");
-    const ping = await lanPing(task);
-    if (!ping.roots.some(r => r.id === task.remoteRootId)) {
-        throw new Error(`对端没有共享根「${task.remoteRootId}」(对端需建同名 id 的任务)`);
-    }
-
-    onProgress?.("扫描本地与对端...");
+    onProgress?.("扫描本地与远端...");
     const allLocal = await localFs.scan(localRoot);
-    const allRemote = await lanList(task);
+    const allRemote = await remote.list();
     // 任务规则只作用于**同步范围**(双方都按同一套规则过滤,范围不一致的一侧条目按"另一侧不存在"处理)
-    const local: Record<string, {size: number; mtimeMs: number}> = {};
+    const local: Record<string, FileMeta> = {};
     for (const [rel, st] of Object.entries(allLocal)) {
-        if (relPathAllowed(task, rel)) local[rel] = st;
+        if (relPathAllowed(rules, rel)) local[rel] = st;
     }
-    const remote: Record<string, {size: number; mtimeMs: number}> = {};
+    const remoteMap: Record<string, FileMeta> = {};
     for (const [rel, st] of Object.entries(allRemote)) {
-        if (relPathAllowed(task, rel)) remote[rel] = st;
+        if (relPathAllowed(rules, rel)) remoteMap[rel] = st;
     }
 
     onProgress?.("比对差异...");
     const baselineAll = await loadBaseline(plugin);
-    const baseline: Record<string, BaselineEntry> = baselineAll[task.id] || {};
+    const baseline: Record<string, BaselineEntry> = baselineAll[taskId] || {};
     const newBaseline: Record<string, BaselineEntry> = {};
-    const rels = Array.from(new Set([...Object.keys(local), ...Object.keys(remote), ...Object.keys(baseline)]));
+    const rels = Array.from(new Set([...Object.keys(local), ...Object.keys(remoteMap), ...Object.keys(baseline)]));
+
+    // 推送(本地读→远端写→按远端真实 mtime/size 记基线)
+    const doPush = async (rel: string, meta: FileMeta): Promise<void> => {
+        const buf = await localFs.read(localRoot, rel);
+        const wr = await remote.write(rel, buf.dataBase64, meta.mtimeMs);
+        report.pushed.push(rel);
+        newBaseline[rel] = {
+            size: meta.size,
+            localMtime: meta.mtimeMs,
+            remoteSize: wr?.size && wr.size > 0 ? wr.size : meta.size,
+            remoteMtime: wr?.mtimeMs && wr.mtimeMs > 0 ? wr.mtimeMs : meta.mtimeMs,
+        };
+    };
+    // 拉取(远端读→本地写 modTime 对齐→**stat 回读校验落地**,size 不符视为失败不记基线)
+    const doPull = async (rel: string, rmeta: FileMeta): Promise<void> => {
+        const buf = await remote.read(rel);
+        await localFs.write(localRoot, rel, buf.dataBase64, buf.mtimeMs || rmeta.mtimeMs);
+        const st = await localFs.stat(localRoot, rel);
+        if (!st || (rmeta.size > 0 && st.size !== rmeta.size)) {
+            throw new Error(`写入后校验失败(期望 ${rmeta.size} 字节,实际 ${st ? st.size : "无"})`);
+        }
+        report.pulled.push(rel);
+        newBaseline[rel] = {size: rmeta.size, localMtime: st.mtimeMs, remoteSize: rmeta.size, remoteMtime: rmeta.mtimeMs};
+    };
 
     for (const rel of rels) {
         const l = local[rel];
-        const r = remote[rel];
+        const r = remoteMap[rel];
         const b = baseline[rel];
         if (l && !r) {
             if (b) {
-                // 本地删除 → 提交对端删除
-                if (pushable && !preview) {
-                    try {
-                        await lanDelete(task, rel);
-                        report.deletedRemote.push(rel);
-                    } catch (e) {
-                        report.skipped.push(`${rel}(删除对端失败: ${(e as Error)?.message || e})`);
+                // 远端已删、本地还在:本地已改 → 推送重建远端;未改 → 只报告保留基线
+                const localChanged = l.size !== b.size || l.mtimeMs !== b.localMtime;
+                if (localChanged && pushable) {
+                    if (l.size > cap) {
+                        report.skipped.push(`${rel}(超过上限 ${(cap / 1024 / 1024).toFixed(0)}MB)`);
+                        newBaseline[rel] = b;
+                        continue;
+                    }
+                    if (!preview) {
+                        try {
+                            await doPush(rel, l);
+                        } catch (e) {
+                            report.skipped.push(`${rel}(推送失败: ${(e as Error)?.message || e})`);
+                            newBaseline[rel] = b;
+                        }
+                    } else {
+                        report.pushed.push(rel);
                         newBaseline[rel] = b;
                     }
-                } else if (pushable && preview) {
-                    report.deletedRemote.push(rel);
-                    newBaseline[rel] = b;
                 } else {
+                    report.remoteDeleted.push(rel);
                     newBaseline[rel] = b;
                 }
             } else if (pushable) {
                 // 本地新文件 → 推送
-                if (l.size > MAX_FILE_BYTES) {
-                    report.skipped.push(`${rel}(超过 50MB 上限)`);
+                if (l.size > cap) {
+                    report.skipped.push(`${rel}(超过上限 ${(cap / 1024 / 1024).toFixed(0)}MB)`);
                     continue;
                 }
                 if (!preview) {
                     try {
-                        const buf = await localFs.read(localRoot, rel);
-                        await lanWrite(task, rel, buf.dataBase64, l.mtimeMs);
-                        report.pushed.push(rel);
-                        newBaseline[rel] = {size: l.size, localMtime: l.mtimeMs, remoteSize: l.size, remoteMtime: l.mtimeMs};
+                        await doPush(rel, l);
                     } catch (e) {
                         report.skipped.push(`${rel}(推送失败: ${(e as Error)?.message || e})`);
                     }
@@ -820,25 +881,34 @@ export async function runLanSyncTask(plugin: PluginWithConfig, task: LanSyncTask
         }
         if (!l && r) {
             if (b) {
-                // 对端删除 → 只报告,不删本地
-                report.remoteDeleted.push(rel);
-                newBaseline[rel] = b;
+                // 本地已删、远端还在 → 提交远端删除(基线不再保留该条目,删除定案)
+                if (pushable) {
+                    if (!preview) {
+                        try {
+                            await remote.remove(rel);
+                            report.deletedRemote.push(rel);
+                        } catch (e) {
+                            report.skipped.push(`${rel}(删除远端失败: ${(e as Error)?.message || e})`);
+                            newBaseline[rel] = b;
+                        }
+                    } else {
+                        report.deletedRemote.push(rel);
+                        newBaseline[rel] = b;
+                    }
+                } else {
+                    // pull-only 不允许传播删除:报告方向限制,保留基线
+                    report.skipped.push(`${rel}(本地已删除,但方向为仅拉取,无法提交远端删除)`);
+                    newBaseline[rel] = b;
+                }
             } else if (pullable) {
-                // 对端新文件 → 拉取
-                if (r.size > MAX_FILE_BYTES) {
-                    report.skipped.push(`${rel}(超过 50MB 上限)`);
+                // 远端新文件 → 拉取
+                if (r.size > cap) {
+                    report.skipped.push(`${rel}(超过上限 ${(cap / 1024 / 1024).toFixed(0)}MB)`);
                     continue;
                 }
                 if (!preview) {
                     try {
-                        const buf = await lanRead(task, rel);
-                        await localFs.write(localRoot, rel, buf.data, buf.mtimeMs);
-                        // 用写入后的**真实** mtime 记基线(内核 modTime 秒级精度/原生 utimes 毫秒,
-                        // 以各后端 stat 回读值为准,下次比对才不会误判"本地已改")
-                        const st = await localFs.stat(localRoot, rel);
-                        const localMtime = st ? st.mtimeMs : buf.mtimeMs;
-                        report.pulled.push(rel);
-                        newBaseline[rel] = {size: r.size, localMtime, remoteSize: r.size, remoteMtime: r.mtimeMs};
+                        await doPull(rel, r);
                     } catch (e) {
                         report.skipped.push(`${rel}(拉取失败: ${(e as Error)?.message || e})`);
                     }
@@ -858,16 +928,13 @@ export async function runLanSyncTask(plugin: PluginWithConfig, task: LanSyncTask
             continue;
         }
         if (localChanged && !remoteChanged && pushable) {
-            if (l.size > MAX_FILE_BYTES) {
-                report.skipped.push(`${rel}(超过 50MB 上限)`);
+            if (l.size > cap) {
+                report.skipped.push(`${rel}(超过上限 ${(cap / 1024 / 1024).toFixed(0)}MB)`);
                 continue;
             }
             if (!preview) {
                 try {
-                    const buf = await localFs.read(localRoot, rel);
-                    await lanWrite(task, rel, buf.dataBase64, l.mtimeMs);
-                    report.pushed.push(rel);
-                    newBaseline[rel] = {size: l.size, localMtime: l.mtimeMs, remoteSize: l.size, remoteMtime: l.mtimeMs};
+                    await doPush(rel, l);
                 } catch (e) {
                     report.skipped.push(`${rel}(推送失败: ${(e as Error)?.message || e})`);
                     newBaseline[rel] = b || {size: l.size, localMtime: l.mtimeMs, remoteSize: r.size, remoteMtime: r.mtimeMs};
@@ -879,18 +946,13 @@ export async function runLanSyncTask(plugin: PluginWithConfig, task: LanSyncTask
             continue;
         }
         if (!localChanged && remoteChanged && pullable) {
-            if (r.size > MAX_FILE_BYTES) {
-                report.skipped.push(`${rel}(超过 50MB 上限)`);
+            if (r.size > cap) {
+                report.skipped.push(`${rel}(超过上限 ${(cap / 1024 / 1024).toFixed(0)}MB)`);
                 continue;
             }
             if (!preview) {
                 try {
-                    const buf = await lanRead(task, rel);
-                    await localFs.write(localRoot, rel, buf.data, buf.mtimeMs);
-                    const st = await localFs.stat(localRoot, rel);
-                    const localMtime = st ? st.mtimeMs : buf.mtimeMs;
-                    report.pulled.push(rel);
-                    newBaseline[rel] = {size: r.size, localMtime, remoteSize: r.size, remoteMtime: r.mtimeMs};
+                    await doPull(rel, r);
                 } catch (e) {
                     report.skipped.push(`${rel}(拉取失败: ${(e as Error)?.message || e})`);
                     newBaseline[rel] = b || {size: l.size, localMtime: l.mtimeMs, remoteSize: r.size, remoteMtime: r.mtimeMs};
@@ -907,10 +969,44 @@ export async function runLanSyncTask(plugin: PluginWithConfig, task: LanSyncTask
     }
 
     if (!preview) {
-        baselineAll[task.id] = newBaseline;
+        baselineAll[taskId] = newBaseline;
         await saveBaseline(plugin, baselineAll);
     }
     return report;
+}
+
+// LAN 远端实现:HTTP 对端直连/内核代理/agent 隧道请求(写入返回远端 utimes 后的真实值)
+function lanRemoteFs(task: LanSyncTask): RemoteFs {
+    return {
+        list: () => lanList(task),
+        read: async (rel) => {
+            const rd = await lanRead(task, rel);
+            return {dataBase64: rd.data, size: rd.size, mtimeMs: rd.mtimeMs};
+        },
+        write: async (rel, dataBase64, mtimeMs) => await lanWrite(task, rel, dataBase64, mtimeMs),
+        remove: (rel) => lanDelete(task, rel),
+    };
+}
+
+export async function runLanSyncTask(plugin: PluginWithConfig, task: LanSyncTask, preview = false, onProgress?: LanSyncProgress): Promise<LanSyncReport> {
+    const {fs: localFs, root: localRoot} = pickSyncFs(task);
+
+    onProgress?.("连接对端...");
+    const ping = await lanPing(task);
+    if (!ping.roots.some(r => r.id === task.remoteRootId)) {
+        throw new Error(`对端没有共享根「${task.remoteRootId}」(对端需建同名 id 的任务)`);
+    }
+
+    return await runThreeWaySync(plugin, {
+        taskId: task.id,
+        localRoot,
+        localFs,
+        remote: lanRemoteFs(task),
+        direction: task.direction,
+        rules: task,
+        preview,
+        onProgress,
+    });
 }
 
 // 报告 → 可展示文本(空类别不显示)
