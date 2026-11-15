@@ -1,5 +1,5 @@
 import {openTab, confirm, showMessage, Menu} from "siyuan";
-import {TAB_TYPE, MOUNT_TREE_DOCK_TYPE, isMarkdownFile} from "../constants";
+import {TAB_TYPE, MARKDOWN_TAB_TYPE, MOUNT_TREE_DOCK_TYPE, isMarkdownFile} from "../constants";
 import {basename, extname, dirname, joinPath} from "../utils/path";
 import {guardUnsavedClose} from "../utils/close-guard";
 import {applyFileTabHeadIcon, applyFileTabHeadIconWhenReady} from "../utils/tab-icon";
@@ -26,6 +26,7 @@ import {
     isDirty,
     isChangedExternally,
     reloadModel,
+    onDidReloadModel,
     consumePendingReveal,
 } from "../editor/model-manager";
 import {getGlobalDefaultChoice, kernelPythonOf} from "../utils/kernel/registry";
@@ -249,10 +250,18 @@ export function openFileTab(plugin: IPluginForTab, rawPath: string, opts?: OpenT
 // 只处理没未保存修改的 —— 有改动的不动,避免覆盖用户正在编辑的内容。
 export async function syncOpenEditors(plugin: any): Promise<void> {
     try {
-        const opened = plugin?.getOpenedTab?.()[TAB_TYPE] || [];
-        for (const c of opened) {
+        const opened = plugin?.getOpenedTab?.() || {};
+        // 代码页签与 Markdown 页签都归这里管:后者同样挂在共享模型上,
+        // 只扫代码页签会让「文件树刷新」漏掉所有打开着的 .md(实测场景:
+        // 外部脚本生成 md 后点刷新,页签里还是空的)。按路径去重,避免
+        // 同一文件在两个分屏里被重载两次。
+        const paths = new Set<string>();
+        for (const c of [...(opened[TAB_TYPE] || []), ...(opened[MARKDOWN_TAB_TYPE] || [])]) {
             const p = c?.data?.path;
-            if (typeof p === "string" && p && !isDirty(p) && isChangedExternally(p)) {
+            if (typeof p === "string" && p) paths.add(p);
+        }
+        for (const p of paths) {
+            if (!isDirty(p) && isChangedExternally(p)) {
                 await syncExternalChange(p);
             }
         }
@@ -271,8 +280,9 @@ export async function syncExternalChange(path: string): Promise<void> {
             showMessage("文件在外部已被修改,但你有未保存的修改 —— 保存后再打开即会同步", 4000, "info");
             return;
         }
-        await reloadModel(path);
-        showMessage("文件在外部已修改,已重新加载最新内容", 3000, "info");
+        if (await reloadModel(path)) {
+            showMessage("文件在外部已修改,已重新加载最新内容", 3000, "info");
+        }
     } catch {
         // 刷新失败不打断用户(内容保持原样)
     }
@@ -406,6 +416,12 @@ export function createEditorTabConfig(plugin: IPluginForTab) {
                         updateDirtyUI(true);
                     });
                     self._disposables!.push(() => sub.dispose());
+                    // 外部变更重载会 applyEdits,上面的监听器把页签误标脏;
+                    // 重载完成后按「已与磁盘同步」重画脏点与页签标题。
+                    const offReload = onDidReloadModel((p) => {
+                        if (p === path) updateDirtyUI(false);
+                    });
+                    self._disposables!.push(() => { offReload(); });
                     // 搜索结果跳转;链接带来的行号(?line=N)同样走这条
                     let revealLine = consumePendingReveal(path);
                     if (revealLine === null) {

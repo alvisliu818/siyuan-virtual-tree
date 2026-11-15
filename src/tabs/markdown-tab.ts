@@ -7,7 +7,7 @@ import {basename, dirname, sepFor, isSiyuanPath, isRemotePath, isSydocPath, docI
 import {getDocBlockDOM, sanitizeProtyleDOM} from "../api/block-io";
 import {EditorConfig} from "../types";
 import {createEditor, getCurrentMode} from "../editor/monaco";
-import {getModel, saveModel, markDirty, isDirty, consumePendingReveal} from "../editor/model-manager";
+import {getModel, saveModel, markDirty, isDirty, consumePendingReveal, onDidReloadModel} from "../editor/model-manager";
 import {readBinaryFile} from "../api/file";
 import {nativeStat} from "../api/native-fs";
 import {createBacklinkPanel, navigateBacklink, BacklinkPanel} from "../components/backlink-panel";
@@ -25,7 +25,7 @@ import {BacklinkItem, findBacklinksCached} from "../utils/backlink";
 // 双链:链接点击打开 + 插入双链(文件选择器 → [[wikilink]])+ 行内检测(ir 渲染态点击)
 import {openLinkFromEditor, buildWikilink, findLinkInLine} from "../utils/wikilink";
 import {openFilePicker} from "../components/file-picker";
-import {openFileTab} from "./editor-tab";
+import {openFileTab, syncExternalChange} from "./editor-tab";
 import {wantsSplitOpen, pickTabOutsideActiveWnd} from "./split-open";
 import {showVersionHistory} from "../version-control/version-ui";
 import {highlightMatches, clearFindHighlights, setCurrentFindHit} from "../components/markdown-find";
@@ -110,6 +110,8 @@ export interface MarkdownTabInstance {
     _resyncBacklinkPanel?: () => void;
     // Monaco 主题切换订阅(cm6 阅读态重取色);卸载时 dispose
     _monacoThemeOff?: {dispose(): void};
+    // 模型被外部变更重载后的刷新订阅;卸载时注销
+    _modelReloadOff?: () => void;
 }
 
 // Vditor 静态资源目录(webpack 已复制 vditor/dist 到插件目录)
@@ -708,6 +710,10 @@ export function openMarkdownTab(plugin: IPluginForMarkdownTab, rawPath: string, 
             if (tab?.headElement) {
                 (tab.headElement as HTMLElement).click();
             }
+            // 文件在思源之外被改过(外部编辑器/git/脚本)时同步一次;有未保存修改
+            // 时不动(避免冲掉用户正在编辑的内容)。曾以空模型打开(文件当时不
+            // 存在、后来在外部创建)的场景也靠这里拿到内容。
+            void syncExternalChange(path);
             // 链接里带了位置(标题锚点 / 行号)时,复用的页签也要跟着定位。
             // 页签还在初始化(_mode 未定 / Vditor 未渲染)时**不能**把位置消费掉 ——
             // 那会让位置凭空消失;留在队列里,由它自己的 after 回调消费。
@@ -1781,6 +1787,24 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
             // 供 openMarkdownTab 复用已开页签时直接定位(思源正文点带位置的链接走这里)
             self._applyFileRef = (ref: FileRef) => applyFileRef(self, ref);
 
+            // 模型从磁盘重载后(外部编辑器改文件 / 文件在外部被补建),把新内容推回
+            // 当前编辑面。CM6、Vditor、结构化内核都是创建时的 value 快照,只有
+            // Monaco 源码态绑定同一个 model 会自己跟着 applyEdits 刷新 —— 只改
+            // 模型不重进,页签会一直停在旧内容(空模型场景就是「永远空编辑器」)。
+            // 有未保存修改时 syncExternalChange 不会重载,这里不存在冲掉用户输入的风险。
+            const offModelReload = onDidReloadModel((p) => {
+                if (p !== path || !self._model) return;
+                // 文件当时不存在时挂的警告条,现在文件有了就该撤掉
+                self.element.querySelector(".syfe-md__missing")?.remove();
+                if (self._mode === "reading") enterReading();
+                else if (self._mode === "live") enterLive();
+                // 源码态的 onDidChangeModelContent 会被 applyEdits 触发 → 误标脏
+                markDirty(path, false);
+                updateDirtyUI(false);
+                self._hcrumbsHandle?.refresh();
+            });
+            this._modelReloadOff = offModelReload;
+
             (async () => {
                 try {
                     self._model = await getModel(path);
@@ -1872,6 +1896,8 @@ export function createMarkdownTabConfig(plugin: IPluginForMarkdownTab) {
             return guardUnsavedClose(basename(path), saveThenClose, discardThenClose);
         },
         destroy(this: MarkdownTabInstance) {
+            this._modelReloadOff?.();
+            this._modelReloadOff = undefined;
             this._monacoThemeOff?.dispose();
             this._monacoThemeOff = undefined;
             // 页签关闭时若代码块编辑器还挂着,归还全局单例并清编辑态

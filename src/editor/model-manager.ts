@@ -65,7 +65,11 @@ export function getModel(path: string): Promise<monaco.editor.ITextModel> {
                 throw e;
             }
         } catch {
-            // 读取失败(文件不存在等),使用空内容,允许新建后保存
+            // 读取失败(文件不存在等),使用空内容,允许新建后保存。
+            // 只在「文件确实不在磁盘上」时标记:文件后来在外部被创建时,
+            // syncExternalChange 借 missingFileModels 让模型重载(否则空模型
+            // 缓存永不失效)。权限错误等文件仍在的失败不标记,避免误判成外部变更。
+            if (!nativeStat(path)) missingFileModels.add(path);
             content = "";
         }
         // 兜底:await 期间别的路径可能已按同一 URI 建好 model(Map key 不同,
@@ -102,9 +106,29 @@ function recordStat(path: string): void {
     if (st) statMap.set(path, st);
 }
 
+// 打开时文件不存在(getModel 静默空模型)的路径标记:文件后来在外部被创建时,
+// 借"外部变更"通道让空模型重载,否则空模型缓存永不失效 —— 重开永远空编辑器
+// (实测:探针 writeFileSync 后 openFile 的竞态即中招;用户侧对应"路径抄错后
+// 补建文件"的场景)。
+const missingFileModels = new Set<string>();
+
+// 模型重载完成监听器:reloadModel 只改 Monaco 文本模型,挂载中的编辑面
+// (CM6/Vditor/结构化内核都是创建时的 value 快照,Monaco 源码态的脏点也是
+// 独立 UI)必须各自刷新。放在 model-manager 是因为触发入口有多处(再次点开
+// 文件、文件树「刷新」),逐个埋点一定会漏。
+const reloadListeners = new Set<(path: string) => void>();
+
+/** 注册「某个文件的模型已从磁盘重载」回调,返回注销函数 */
+export function onDidReloadModel(cb: (path: string) => void): () => void {
+    reloadListeners.add(cb);
+    return () => reloadListeners.delete(cb);
+}
+
 // 文件是否被思源之外的程序改过(外部编辑器、git 切换分支、脚本生成…)。
 // 拿不到 stat(环境不支持/文件已删)时返回 false —— 宁可不刷新,也不能凭空覆盖用户内容。
 export function isChangedExternally(path: string): boolean {
+    // 曾因文件不存在挂了空模型:文件现在出现了 → 视为外部变更,触发重载
+    if (missingFileModels.has(path) && nativeStat(path)) return true;
     const base = statMap.get(path);
     if (!base) return false;
     const now = nativeStat(path);
@@ -142,6 +166,7 @@ export async function saveModel(path: string): Promise<void> {
         recordVersion(path, prevContent);
     }
     await writeFile(path, value);
+    missingFileModels.delete(path);
     lastSavedMap.set(path, value);
     markDirty(path, false);
     recordStat(path);
@@ -154,27 +179,42 @@ export async function saveModel(path: string): Promise<void> {
     });
 }
 
-// 重新加载文件内容到已有模型(外部修改后刷新)
-export async function reloadModel(path: string): Promise<void> {
+// 重新加载文件内容到已有模型(外部修改后刷新)。
+// 返回是否真的重载成功:读盘失败时保持原样(并保留 missingFileModels 标记,
+// 下次再打开仍能重试),调用方据此决定要不要提示「已重新加载」。
+export async function reloadModel(path: string): Promise<boolean> {
     const model = models.get(path);
-    if (!model) return;
+    if (!model) return false;
     let content = "";
     try {
         content = await readTextFile(path);
     } catch {
-        return;
+        return false;
     }
-    const position = model.getFullModelRange();
-    model.applyEdits([{
-        range: position,
-        text: content,
-    }]);
+    // 内容没变就不 applyEdits —— 否则 Monaco 的 onDidChangeContent 会把页签
+    // 误标脏(文件刚被外部创建、内容恰好为空时尤其容易撞上)。
+    if (model.getValue() !== content) {
+        model.applyEdits([{
+            range: model.getFullModelRange(),
+            text: content,
+        }]);
+    }
+    missingFileModels.delete(path);
     markDirty(path, false);
     lastSavedMap.set(path, content);
     recordStat(path);
+    reloadListeners.forEach(cb => {
+        try {
+            cb(path);
+        } catch (e) {
+            console.warn("[syfe-model] 重载回调出错:", e);
+        }
+    });
+    return true;
 }
 
 export function disposeModel(path: string): void {
+    missingFileModels.delete(path);
     const model = models.get(path);
     if (model) {
         model.dispose();
@@ -191,6 +231,9 @@ export function disposeAll(): void {
     dirtyMap.clear();
     pendingReveals.clear();
     lastSavedMap.clear();
+    statMap.clear();
+    missingFileModels.clear();
+    reloadListeners.clear();
 }
 
 // 搜索结果跳转:设置待跳转行号
