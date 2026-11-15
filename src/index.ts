@@ -848,8 +848,9 @@ export default class FileEditorPlugin extends Plugin {
                 console.error("[siyuan-file-editor] 启动打开 HOME 页失败:", e);
             }
         }
-        // 局域网同步服务端:按配置启动(端口占用等失败只记日志,不影响其他功能)
-        if (this.config.lanSyncEnabled === true) {
+        // 局域网同步服务端:按配置启动(仅桌面端 —— 服务端需要 Node http;
+        // 移动端作为客户端,不需要本地服务)。端口占用等失败只记日志
+        if (!mobile && this.config.lanSyncEnabled === true) {
             void startLanSyncServer(this).catch(e => {
                 console.error("[siyuan-file-editor] 局域网同步服务端启动失败:", e);
             });
@@ -1122,6 +1123,15 @@ export default class FileEditorPlugin extends Plugin {
     // 打开新标签页(接管顶部「+」后的启动台)
     openStart(): void {
         openStartTab(this as any);
+    }
+
+    // 局域网同步服务端:手动启停(设置保存时自动调用;命令/调试探针也可用)
+    async startLanSync(): Promise<void> {
+        await startLanSyncServer(this);
+    }
+
+    stopLanSync(): void {
+        stopLanSyncServer();
     }
 
     // 新标签页:切换固定 / 收藏(供文件树右键菜单调用)
@@ -2233,15 +2243,17 @@ export default class FileEditorPlugin extends Plugin {
             // 解析失败保留原默认
         }
         await saveConfig(this, this.config);
-        // 局域网同步服务端跟随设置即时生效(启用/停用/端口/令牌变更都重启)
-        try {
-            if (this.config.lanSyncEnabled === true) {
-                await startLanSyncServer(this);
-            } else if (isLanSyncServerRunning()) {
-                stopLanSyncServer();
+        // 局域网同步服务端跟随设置即时生效(仅桌面端;启用/停用/端口/令牌变更都重启)
+        if (!isMobileFrontend()) {
+            try {
+                if (this.config.lanSyncEnabled === true) {
+                    await startLanSyncServer(this);
+                } else if (isLanSyncServerRunning()) {
+                    stopLanSyncServer();
+                }
+            } catch (e) {
+                showMessage(`局域网同步服务端启动失败: ${(e as Error)?.message || e}`, 4000, "error");
             }
-        } catch (e) {
-            showMessage(`局域网同步服务端启动失败: ${(e as Error)?.message || e}`, 4000, "error");
         }
         // 面板值即用户值:回写 settings.json(只写与默认不同的项,与 VS Code 一致)
         syncUserSettingsFromConfig(this.config);

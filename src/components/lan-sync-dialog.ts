@@ -12,7 +12,6 @@ import {
     runLanSyncTask,
     formatLanSyncReport,
 } from "../api/lan-sync";
-import {isNativeFsAvailable} from "../api/native-fs";
 
 function esc(s: string): string {
     return String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -23,10 +22,8 @@ function newTaskId(): string {
 }
 
 export function openLanSyncDialog(plugin: any): void {
-    if (!isNativeFsAvailable()) {
-        showMessage("局域网同步需要思源桌面端(Node 集成不可用)", 4000, "error");
-        return;
-    }
+    // 移动端也可作为客户端:本端目录须为 /data/... 内核路径(文件走内核 API 读写),
+    // 对端地址填桌面端服务端(http://桌面机IP:39099)。服务端本身仅桌面端可开。
     let tasks: LanSyncTask[] = parseLanSyncTasks(plugin.config?.lanSyncTasks);
     let currentId: string = tasks[0]?.id || "";
     let syncing = false;
@@ -64,7 +61,9 @@ export function openLanSyncDialog(plugin: any): void {
                         <div class="syfe-gitrepo__sec">
                             <div class="syfe-gitrepo__hint">
                                 白/黑名单为正则表达式,每行一条,匹配任务范围内的相对路径(目录分隔符用 /)。
-                                白名单空 = 全部包含;黑名单命中即排除。示例:<code>\\.md$</code>、<code>assets/</code>、<code>temp/.*\\.log</code>
+                                白名单空 = 全部包含;黑名单命中即排除。示例:<code>\\.md$</code>、<code>assets/</code>、<code>temp/.*\\.log</code><br />
+                                <b>移动端</b>:本端目录须为工作空间内路径(以 /data/ 开头),文件经思源内核 API 读写;
+                                服务端仅桌面端可开,对端地址填桌面机 IP。
                             </div>
                             <div class="syfe-gitrepo__field"><span>白名单</span><textarea class="b3-text-field" id="syfe-ls-include" rows="3" style="flex:1"></textarea></div>
                             <div class="syfe-gitrepo__field"><span>黑名单</span><textarea class="b3-text-field" id="syfe-ls-exclude" rows="3" style="flex:1"></textarea></div>

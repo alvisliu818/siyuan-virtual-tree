@@ -1,5 +1,6 @@
-// 局域网同步文件(仅桌面端):两台设备各跑一份思源 + 本插件,互为服务端/客户端,
-// 把选定的目录按白/黑名单正则双向同步。
+// 局域网同步文件:两台设备各跑一份思源 + 本插件互相同步选定的目录。
+// 服务端仅桌面端(需要 Node http);**移动端作为客户端** —— 本地文件走思源内核 API
+// (/data/... 内核路径),对端请求走 localHttp(桌面 Node 直连,移动端内核代理)。
 //
 // 协议(HTTP JSON,鉴权头 x-lansync-token):
 //   GET  /api/lan-sync/ping                → {device, roots:[{id,name}]}  roots=本机全部任务的 localRoot
@@ -18,6 +19,11 @@ import type {Plugin} from "siyuan";
 import {getNativeRequire} from "../utils/native-require";
 import {isNativeFsAvailable} from "./native-fs";
 import {toSystemPath, getWorkspacePath} from "../utils/system-path";
+import {isKernelPath, joinPath} from "../utils/path";
+import {isMobileFrontend} from "../utils/platform";
+import {readDir, readBinaryFile} from "./file";
+import {localHttp} from "./search-service";
+import {DirEntry} from "../types";
 
 // Plugin 泛型上没有 config 字段(插件实例才有),统一收窄
 type PluginWithConfig = Plugin & {config: any};
@@ -29,6 +35,11 @@ function reqNode(): any {
     return req;
 }
 
+// 内核内部目录(回收站/快照等),任何后端都不同步
+function isKernelInternalRel(rel: string): boolean {
+    return rel.split("/").includes(".siyuan");
+}
+
 // 单文件传输上限:超限跳过(局域网 JSON base64 传输,体积敏感)
 const MAX_FILE_BYTES = 50 * 1024 * 1024;
 // 目录递归扫描的文件数上限(防失控)
@@ -37,8 +48,8 @@ const MAX_SCAN_FILES = 20000;
 export interface LanSyncTask {
     id: string;             // 本机唯一;服务端把每个任务的 localRoot 作为共享根按 id 暴露
     name: string;
-    localRoot: string;      // 本端目录(内核路径 /data/... 或系统绝对路径)
-    remoteUrl: string;      // 对端 http://host:port
+    localRoot: string;      // 本端目录:桌面端可为内核路径 /data/... 或系统绝对路径;移动端**必须**是 /data/...
+    remoteUrl: string;      // 对端 http://host:port(服务端 = 对端桌面端)
     remoteRootId: string;   // 对端共享根 id(ping 返回的 roots)
     remoteToken: string;    // 对端令牌(空 = 用本端令牌)
     direction: "both" | "push" | "pull";
@@ -102,6 +113,9 @@ function compileRules(text: string): RegExp[] {
 /** 相对路径是否通过任务的规则(黑名单优先;白名单空 = 全部包含)。 */
 export function relPathAllowed(task: LanSyncTask, rel: string): boolean {
     const norm = rel.replace(/\\/g, "/");
+    // 内核内部目录(.siyuan:回收站/快照/索引)绝不同步 —— 远端列表若含它们,
+    // 不拦会把内核内部文件当"对端新文件"拉到本地 .siyuan,污染内核数据
+    if (isKernelInternalRel(norm)) return false;
     for (const re of compileRules(task.excludeRules)) {
         if (re.test(norm)) return false;
     }
@@ -369,8 +383,29 @@ function remoteHeaders(task: LanSyncTask): Record<string, string> {
 }
 
 function remoteUrl(task: LanSyncTask, pathQuery: string): string {
-    const base = (task.remoteUrl || "").replace(/\/+$/, "");
+    const base = (task.remoteUrl || "").trim().replace(/\/+$/, "");
+    if (!/^https?:\/\//i.test(base)) return "http://" + base + pathQuery;
     return base + pathQuery;
+}
+
+// 客户端请求走 localHttp:桌面端 Node http 直连;移动端/浏览器端经思源内核代理
+// (/api/network/proxy 或旧版 /api/fetch/proxy),绕过跨域与 mixed-content 限制。
+// 大文件同步耗时,超时放宽到 120s。
+async function remoteJson(task: LanSyncTask, pathQuery: string, method: "GET" | "POST", body?: string): Promise<any> {
+    const headers = remoteHeaders(task);
+    if (body !== undefined) headers["Content-Type"] = "application/json";
+    const resp = await localHttp(remoteUrl(task, pathQuery), method, headers, body ?? null, 120000);
+    const text = new TextDecoder("utf-8").decode(new Uint8Array(resp.bytes));
+    let data: any = null;
+    try {
+        data = text ? JSON.parse(text) : null;
+    } catch {
+        // 非 JSON 响应按空处理,下面的 status 检查给出错误
+    }
+    if (resp.status < 200 || resp.status >= 300) {
+        throw new Error(data?.error || `请求失败: HTTP ${resp.status}`);
+    }
+    return data;
 }
 
 export interface LanPingResult {
@@ -379,78 +414,226 @@ export interface LanPingResult {
 }
 
 export async function lanPing(task: LanSyncTask): Promise<LanPingResult> {
-    const resp = await fetch(remoteUrl(task, "/api/lan-sync/ping"), {headers: remoteHeaders(task)});
-    if (!resp.ok) throw new Error(`ping 失败: HTTP ${resp.status}`);
-    return await resp.json() as LanPingResult;
+    return await remoteJson(task, "/api/lan-sync/ping", "GET") as LanPingResult;
 }
 
 async function lanList(task: LanSyncTask): Promise<Record<string, {size: number; mtimeMs: number}>> {
-    const resp = await fetch(remoteUrl(task, `/api/lan-sync/list?rootId=${encodeURIComponent(task.remoteRootId)}`), {headers: remoteHeaders(task)});
-    const data = await resp.json();
-    if (!resp.ok) throw new Error(data?.error || `list 失败: HTTP ${resp.status}`);
-    return data.files || {};
+    const data = await remoteJson(task, `/api/lan-sync/list?rootId=${encodeURIComponent(task.remoteRootId)}`, "GET");
+    return data?.files || {};
 }
 
 async function lanRead(task: LanSyncTask, rel: string): Promise<{data: string; mtimeMs: number; size: number}> {
-    const resp = await fetch(remoteUrl(task, `/api/lan-sync/read?rootId=${encodeURIComponent(task.remoteRootId)}&path=${encodeURIComponent(rel)}`), {headers: remoteHeaders(task)});
-    const body = await resp.json();
-    if (!resp.ok) throw new Error(body?.error || `read 失败: HTTP ${resp.status}`);
-    return body;
+    return await remoteJson(task, `/api/lan-sync/read?rootId=${encodeURIComponent(task.remoteRootId)}&path=${encodeURIComponent(rel)}`, "GET");
 }
 
 async function lanWrite(task: LanSyncTask, rel: string, dataBase64: string, mtimeMs: number): Promise<void> {
-    const resp = await fetch(remoteUrl(task, "/api/lan-sync/write"), {
-        method: "POST",
-        headers: {...remoteHeaders(task), "Content-Type": "application/json"},
-        body: JSON.stringify({rootId: task.remoteRootId, path: rel, data: dataBase64, mtimeMs}),
-    });
-    const body = await resp.json();
-    if (!resp.ok) throw new Error(body?.error || `write 失败: HTTP ${resp.status}`);
+    await remoteJson(task, "/api/lan-sync/write", "POST", JSON.stringify({rootId: task.remoteRootId, path: rel, data: dataBase64, mtimeMs}));
 }
 
 async function lanDelete(task: LanSyncTask, rel: string): Promise<void> {
-    const resp = await fetch(remoteUrl(task, "/api/lan-sync/delete"), {
-        method: "POST",
-        headers: {...remoteHeaders(task), "Content-Type": "application/json"},
-        body: JSON.stringify({rootId: task.remoteRootId, path: rel}),
-    });
-    const body = await resp.json();
-    if (!resp.ok) throw new Error(body?.error || `delete 失败: HTTP ${resp.status}`);
+    await remoteJson(task, "/api/lan-sync/delete", "POST", JSON.stringify({rootId: task.remoteRootId, path: rel}));
 }
 
-// ===== 本地扫描与写入(原生 fs,支持 /data/... 内核路径) =====
+// ===== 本地文件访问(双后端) =====
+//
+// 桌面端 → 原生 fs(任意路径,/data/... 先转系统绝对路径);
+// 移动端/无 Node 环境 → 思源内核 API(**必须** /data/... 内核路径):
+//   扫描 = /api/file/readDir 递归(updated 是秒级时间戳 → ×1000)
+//   读   = /api/file/getFile
+//   写   = /api/file/putFile(multipart,modTime 参数实测会把文件 mtime 设成传入值,
+//          与桌面端 utimesSync 行为对齐 —— pull 后的基线两侧语义一致)
 
-function scanLocalDir(absRoot: string): Record<string, {size: number; mtimeMs: number}> {
-    const nreq = reqNode();
-    const f = nreq("fs");
-    const pathMod = nreq("path");
-    const files: Record<string, {size: number; mtimeMs: number}> = {};
-    walkFiles(f, pathMod, absRoot, "", files);
-    return files;
+interface FileMeta {
+    size: number;
+    mtimeMs: number;
 }
 
-function localReadBase64(absRoot: string, rel: string): {data: string; mtimeMs: number; size: number} {
-    const nreq = reqNode();
-    const f = nreq("fs");
-    const pathMod = nreq("path");
-    const full = pathMod.join(absRoot, rel);
-    const st = f.statSync(full);
-    const buf = f.readFileSync(full);
-    return {data: buf.toString("base64"), mtimeMs: st.mtimeMs, size: st.size};
+interface SyncFs {
+    scan(root: string): Promise<Record<string, FileMeta>>;
+    read(root: string, rel: string): Promise<{dataBase64: string; size: number}>;
+    write(root: string, rel: string, dataBase64: string, mtimeMs: number): Promise<void>;
+    /** 单文件状态(pull 后取真实 mtime 记基线;拿不到返回 null) */
+    stat(root: string, rel: string): Promise<FileMeta | null>;
 }
 
-function localWriteBase64(absRoot: string, rel: string, dataBase64: string, mtimeMs: number): void {
-    const nreq = reqNode();
-    const f = nreq("fs");
-    const pathMod = nreq("path");
-    const full = pathMod.join(absRoot, rel);
-    ensureParentDirs(f, pathMod, full);
-    f.writeFileSync(full, Buffer.from(dataBase64, "base64"));
-    if (Number.isFinite(mtimeMs) && mtimeMs > 0) {
+function metaOf(rel: string, e: {size: number; mtimeMs: number}): FileMeta | null {
+    if (isKernelInternalRel(rel)) return null; // 内核内部目录不同步
+    return e;
+}
+
+const nativeSyncFs: SyncFs = {
+    async scan(root: string): Promise<Record<string, FileMeta>> {
+        const nreq = reqNode();
+        const f = nreq("fs");
+        const pathMod = nreq("path");
+        const files: Record<string, {size: number; mtimeMs: number}> = {};
+        walkFiles(f, pathMod, root, "", files);
+        const out: Record<string, FileMeta> = {};
+        for (const [rel, meta] of Object.entries(files)) {
+            const m = metaOf(rel, meta);
+            if (m) out[rel] = m;
+        }
+        return out;
+    },
+    async read(root: string, rel: string): Promise<{dataBase64: string; size: number}> {
+        const nreq = reqNode();
+        const f = nreq("fs");
+        const pathMod = nreq("path");
+        const full = pathMod.join(root, rel);
+        const st = f.statSync(full);
+        const buf = f.readFileSync(full);
+        return {dataBase64: buf.toString("base64"), size: st.size};
+    },
+    async write(root: string, rel: string, dataBase64: string, mtimeMs: number): Promise<void> {
+        const nreq = reqNode();
+        const f = nreq("fs");
+        const pathMod = nreq("path");
+        const full = pathMod.join(root, rel);
+        ensureParentDirs(f, pathMod, full);
+        f.writeFileSync(full, Buffer.from(dataBase64, "base64"));
+        if (Number.isFinite(mtimeMs) && mtimeMs > 0) {
+            try {
+                f.utimesSync(full, new Date(mtimeMs), new Date(mtimeMs));
+            } catch { /* 忽略 */ }
+        }
+    },
+    async stat(root: string, rel: string): Promise<FileMeta | null> {
         try {
-            f.utimesSync(full, new Date(mtimeMs), new Date(mtimeMs));
-        } catch { /* 忽略 */ }
+            const nreq = reqNode();
+            const f = nreq("fs");
+            const pathMod = nreq("path");
+            const st = f.statSync(pathMod.join(root, rel));
+            return {size: st.size, mtimeMs: st.mtimeMs};
+        } catch {
+            return null;
+        }
+    },
+};
+
+// ArrayBuffer/Uint8Array ⇄ base64(浏览器环境,分块防栈溢出)
+function bytesToBase64(bytes: Uint8Array): string {
+    let bin = "";
+    const CHUNK = 0x8000;
+    for (let i = 0; i < bytes.length; i += CHUNK) {
+        bin += String.fromCharCode.apply(null, Array.from(bytes.subarray(i, i + CHUNK)) as unknown as number[]);
     }
+    return btoa(bin);
+}
+
+function base64ToBytes(b64: string): Uint8Array<ArrayBuffer> {
+    const bin = atob(b64);
+    // 显式以 ArrayBuffer 为底(TS 5.7 的 BlobPart 类型要求,见 api/file.ts writeBinaryFile 同款处理)
+    const buf = new ArrayBuffer(bin.length);
+    const out = new Uint8Array(buf);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+}
+
+// 内核路径 → 移动端安全写:逐级建父目录(putFile isDir 幂等,已存在报错也忽略)
+async function kernelEnsureDirs(root: string, rel: string): Promise<void> {
+    const segs = rel.split("/").slice(0, -1).filter(Boolean);
+    let cur = root.replace(/\/+$/, "");
+    for (const seg of segs) {
+        cur = cur + "/" + seg;
+        try {
+            const fd = new FormData();
+            fd.append("path", cur);
+            fd.append("isDir", "true");
+            const w = window as any;
+            const token = w?.siyuan?.config?.api?.token || w?.siyuan?.config?.system?.conf?.api?.token;
+            const resp = await fetch("/api/file/putFile", {
+                method: "POST",
+                headers: token ? {Authorization: `Token ${token}`} : {},
+                body: fd,
+            });
+            // 已存在等非零 code 一律忽略
+            void resp;
+        } catch {
+            // 忽略,真正写入时失败会抛错
+        }
+    }
+}
+
+const kernelSyncFs: SyncFs = {
+    async scan(root: string): Promise<Record<string, FileMeta>> {
+        const out: Record<string, FileMeta> = {};
+        let count = 0;
+        const walk = async (dir: string, rel: string): Promise<void> => {
+            if (count >= MAX_SCAN_FILES) return;
+            let entries: DirEntry[];
+            try {
+                entries = (await readDir(dir)) as DirEntry[];
+            } catch {
+                return;
+            }
+            for (const e of entries || []) {
+                if ((e as any).isSymlink) continue;
+                const childRel = rel ? rel + "/" + e.name : e.name;
+                if (isKernelInternalRel(childRel)) continue;
+                if (e.isDir) {
+                    await walk(joinPath(dir, e.name), childRel);
+                    if (count >= MAX_SCAN_FILES) return;
+                } else {
+                    count++;
+                    const updated = Number((e as any).updated);
+                    out[childRel] = {
+                        size: Number(e.size) || 0,
+                        mtimeMs: Number.isFinite(updated) && updated > 0 ? updated * 1000 : 0,
+                    };
+                }
+            }
+        };
+        await walk(root, "");
+        return out;
+    },
+    async read(root: string, rel: string): Promise<{dataBase64: string; size: number}> {
+        const buf = new Uint8Array(await readBinaryFile(joinPath(root, rel)));
+        return {dataBase64: bytesToBase64(buf), size: buf.length};
+    },
+    async write(root: string, rel: string, dataBase64: string, mtimeMs: number): Promise<void> {
+        await kernelEnsureDirs(root, rel);
+        const fd = new FormData();
+        fd.append("path", joinPath(root, rel));
+        fd.append("modTime", String(Math.round(Number.isFinite(mtimeMs) && mtimeMs > 0 ? mtimeMs : Date.now())));
+        fd.append("file", new Blob([base64ToBytes(dataBase64)]), "file");
+        const w = window as any;
+        const token = w?.siyuan?.config?.api?.token || w?.siyuan?.config?.system?.conf?.api?.token;
+        const resp = await fetch("/api/file/putFile", {
+            method: "POST",
+            headers: token ? {Authorization: `Token ${token}`} : {}, // 不设 Content-Type,让浏览器自动加 boundary
+            body: fd,
+        });
+        if (!resp.ok) throw new Error(`写入文件失败: ${rel} (HTTP ${resp.status})`);
+        const json = await resp.json();
+        if (json.code !== 0) throw new Error(json.msg || `写入文件失败: ${rel}`);
+    },
+    async stat(root: string, rel: string): Promise<FileMeta | null> {
+        try {
+            const parent = rel.includes("/") ? joinPath(root, rel.slice(0, rel.lastIndexOf("/"))) : root;
+            const name = rel.includes("/") ? rel.slice(rel.lastIndexOf("/") + 1) : rel;
+            const entries = (await readDir(parent)) as DirEntry[];
+            const hit = (entries || []).find(e => e.name === name && !e.isDir);
+            if (!hit) return null;
+            const updated = Number((hit as any).updated);
+            return {
+                size: Number(hit.size) || 0,
+                mtimeMs: Number.isFinite(updated) && updated > 0 ? updated * 1000 : 0,
+            };
+        } catch {
+            return null;
+        }
+    },
+};
+
+// 选后端:桌面端优先原生(任意路径);移动端强制内核后端且要求 /data/... 内核路径
+function pickSyncFs(task: LanSyncTask): {fs: SyncFs; root: string} {
+    if (isNativeFsAvailable() && !isMobileFrontend()) {
+        return {fs: nativeSyncFs, root: resolveRootAbs(task.localRoot)};
+    }
+    if (isKernelPath(task.localRoot)) {
+        return {fs: kernelSyncFs, root: task.localRoot};
+    }
+    throw new Error("移动端同步目录必须是工作空间内的内核路径(以 /data/ 开头)");
 }
 
 // ===== 基线快照(跨窗口共享,存插件存储) =====
@@ -494,10 +677,8 @@ export async function previewLanSyncTask(plugin: PluginWithConfig, task: LanSync
 }
 
 export async function runLanSyncTask(plugin: PluginWithConfig, task: LanSyncTask, preview = false, onProgress?: LanSyncProgress): Promise<LanSyncReport> {
-    if (!isNativeFsAvailable()) throw new Error("局域网同步需要思源桌面端");
     const report = emptyLanSyncReport();
-    const ws = getWorkspacePath();
-    const localRootAbs = resolveRootAbs(task.localRoot);
+    const {fs: localFs, root: localRoot} = pickSyncFs(task);
     const pushable = task.direction !== "pull";
     const pullable = task.direction !== "push";
 
@@ -508,7 +689,7 @@ export async function runLanSyncTask(plugin: PluginWithConfig, task: LanSyncTask
     }
 
     onProgress?.("扫描本地与对端...");
-    const allLocal = scanLocalDir(localRootAbs);
+    const allLocal = await localFs.scan(localRoot);
     const allRemote = await lanList(task);
     // 任务规则只作用于**同步范围**(双方都按同一套规则过滤,范围不一致的一侧条目按"另一侧不存在"处理)
     const local: Record<string, {size: number; mtimeMs: number}> = {};
@@ -555,10 +736,10 @@ export async function runLanSyncTask(plugin: PluginWithConfig, task: LanSyncTask
                 }
                 if (!preview) {
                     try {
-                        const buf = localReadBase64(localRootAbs, rel);
-                        await lanWrite(task, rel, buf.data, buf.mtimeMs);
+                        const buf = await localFs.read(localRoot, rel);
+                        await lanWrite(task, rel, buf.dataBase64, l.mtimeMs);
                         report.pushed.push(rel);
-                        newBaseline[rel] = {size: l.size, localMtime: l.mtimeMs, remoteSize: l.size, remoteMtime: buf.mtimeMs};
+                        newBaseline[rel] = {size: l.size, localMtime: l.mtimeMs, remoteSize: l.size, remoteMtime: l.mtimeMs};
                     } catch (e) {
                         report.skipped.push(`${rel}(推送失败: ${(e as Error)?.message || e})`);
                     }
@@ -585,9 +766,13 @@ export async function runLanSyncTask(plugin: PluginWithConfig, task: LanSyncTask
                 if (!preview) {
                     try {
                         const buf = await lanRead(task, rel);
-                        localWriteBase64(localRootAbs, rel, buf.data, buf.mtimeMs);
+                        await localFs.write(localRoot, rel, buf.data, buf.mtimeMs);
+                        // 用写入后的**真实** mtime 记基线(内核 modTime 秒级精度/原生 utimes 毫秒,
+                        // 以各后端 stat 回读值为准,下次比对才不会误判"本地已改")
+                        const st = await localFs.stat(localRoot, rel);
+                        const localMtime = st ? st.mtimeMs : buf.mtimeMs;
                         report.pulled.push(rel);
-                        newBaseline[rel] = {size: r.size, localMtime: buf.mtimeMs, remoteSize: r.size, remoteMtime: r.mtimeMs};
+                        newBaseline[rel] = {size: r.size, localMtime, remoteSize: r.size, remoteMtime: r.mtimeMs};
                     } catch (e) {
                         report.skipped.push(`${rel}(拉取失败: ${(e as Error)?.message || e})`);
                     }
@@ -613,10 +798,10 @@ export async function runLanSyncTask(plugin: PluginWithConfig, task: LanSyncTask
             }
             if (!preview) {
                 try {
-                    const buf = localReadBase64(localRootAbs, rel);
-                    await lanWrite(task, rel, buf.data, buf.mtimeMs);
+                    const buf = await localFs.read(localRoot, rel);
+                    await lanWrite(task, rel, buf.dataBase64, l.mtimeMs);
                     report.pushed.push(rel);
-                    newBaseline[rel] = {size: l.size, localMtime: l.mtimeMs, remoteSize: l.size, remoteMtime: buf.mtimeMs};
+                    newBaseline[rel] = {size: l.size, localMtime: l.mtimeMs, remoteSize: l.size, remoteMtime: l.mtimeMs};
                 } catch (e) {
                     report.skipped.push(`${rel}(推送失败: ${(e as Error)?.message || e})`);
                     newBaseline[rel] = b || {size: l.size, localMtime: l.mtimeMs, remoteSize: r.size, remoteMtime: r.mtimeMs};
@@ -635,9 +820,11 @@ export async function runLanSyncTask(plugin: PluginWithConfig, task: LanSyncTask
             if (!preview) {
                 try {
                     const buf = await lanRead(task, rel);
-                    localWriteBase64(localRootAbs, rel, buf.data, buf.mtimeMs);
+                    await localFs.write(localRoot, rel, buf.data, buf.mtimeMs);
+                    const st = await localFs.stat(localRoot, rel);
+                    const localMtime = st ? st.mtimeMs : buf.mtimeMs;
                     report.pulled.push(rel);
-                    newBaseline[rel] = {size: r.size, localMtime: buf.mtimeMs, remoteSize: r.size, remoteMtime: r.mtimeMs};
+                    newBaseline[rel] = {size: r.size, localMtime, remoteSize: r.size, remoteMtime: r.mtimeMs};
                 } catch (e) {
                     report.skipped.push(`${rel}(拉取失败: ${(e as Error)?.message || e})`);
                     newBaseline[rel] = b || {size: l.size, localMtime: l.mtimeMs, remoteSize: r.size, remoteMtime: r.mtimeMs};

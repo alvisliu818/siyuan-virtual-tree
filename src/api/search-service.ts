@@ -37,6 +37,10 @@ interface RawResp {
     bytes: ArrayBuffer;
 }
 
+// 供其他模块复用(局域网同步客户端等):桌面端 Node 直连,浏览器/移动端走内核代理
+export type {RawResp};
+export {localHttp};
+
 // ==== 传输层 ====
 
 function kernelAuthHeaders(): Record<string, string> {
@@ -98,7 +102,16 @@ function nodeRequest(
 }
 
 // 内核代理端点探测结果(浏览器端;"" = 未探测)
+// 内核代理端点探测结果(浏览器端;"" = 未探测)
 let proxyMode: "" | "new" | "old" = "";
+
+// 内核 /api/network/proxy 的 h 参数是 Go map[string][]string:**值必须是数组**,
+// 传字符串值会 400(parse [h] failed: cannot unmarshal string into ... []string)
+function kernelProxyHeaders(headers: Record<string, string>): string {
+    const arrs: Record<string, string[]> = {};
+    for (const [k, v] of Object.entries(headers)) arrs[k] = [v];
+    return b64url(JSON.stringify(arrs));
+}
 
 // 浏览器端:经思源内核代理请求(新版透传方法与请求体,旧版 JSON 包裹)
 async function proxyRequest(
@@ -109,7 +122,7 @@ async function proxyRequest(
 ): Promise<RawResp> {
     if (proxyMode !== "old") {
         try {
-            const h = b64url(JSON.stringify(headers));
+            const h = kernelProxyHeaders(headers);
             const resp = await fetch(`/api/network/proxy?u=${b64url(url)}&h=${encodeURIComponent(h)}&t=30s`, {
                 method,
                 headers: {
