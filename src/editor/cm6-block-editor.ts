@@ -14,15 +14,14 @@
 // 视图值 = codeView(去结构缩进), 写回按栅栏列重新缩进(与 Monaco 版契约
 // 一致, 见 cm6-render 的 syncFromMonaco)。Esc / 点击卡片外退出回 colorize。
 
-import {EditorView, keymap, lineNumbers, drawSelection, highlightActiveLine, highlightActiveLineGutter} from "@codemirror/view";
-import {EditorState, Compartment, Extension} from "@codemirror/state";
+import {Decoration, DecorationSet, EditorView, keymap, lineNumbers, drawSelection, highlightActiveLine, highlightActiveLineGutter} from "@codemirror/view";
+import {EditorState, Compartment, Extension, StateEffect, StateField} from "@codemirror/state";
 import {defaultKeymap, history, historyKeymap, indentWithTab} from "@codemirror/commands";
-import {LanguageDescription, syntaxHighlighting, defaultHighlightStyle, HighlightStyle, indentUnit, bracketMatching, indentOnInput} from "@codemirror/language";
+import {LanguageDescription, indentUnit, bracketMatching, indentOnInput} from "@codemirror/language";
 import {closeBrackets, closeBracketsKeymap} from "@codemirror/autocomplete";
-import {tags as highlightTags, Tag} from "@lezer/highlight";
 import {languages} from "@codemirror/language-data";
-import {getActiveCodeTheme, TmTokenRule} from "../extensions/theme-loader";
 import {getSetting} from "../settings/user-settings";
+import {colorizeCached, getMonacoThemeName} from "./monaco-block";
 
 interface MountOptions {
     container: HTMLElement;
@@ -113,58 +112,14 @@ function extraOptionExtensions(o: ExtraCm6Options): Extension[] {
     return out;
 }
 
-/** TextMate 顶层 scope → CM6 tag(常见子集; 主题规则按最长前缀探测取色) */
-const SCOPE_TAGS: [string, Tag][] = [
-    ["comment", highlightTags.comment],
-    ["string", highlightTags.string],
-    ["keyword", highlightTags.keyword],
-    ["number", highlightTags.number],
-    // ⚠ tags.constant 是修饰符函数(Tag.defineModifier),不是 tag —— 修饰符
-    //   只能作用于基础 tag(如 tags.function(tags.variableName)),修饰符套修饰符
-    //   会在 lezer Tag.defineModifier 闭包里对无 modified 字段的函数取属性,
-    //   打包后模块求值即崩(整插件加载失败,TypeError: reading 'indexOf')。
-    //   TextMate "constant" 作用域(语言常量 true/false/null)映射到 tags.atom。
-    ["constant", highlightTags.standard(highlightTags.atom)],
-    ["operator", highlightTags.operatorKeyword],
-    ["punctuation", highlightTags.punctuation],
-    ["variable", highlightTags.variableName],
-    ["entity", highlightTags.function(highlightTags.variableName)],
-    ["support", highlightTags.function(highlightTags.variableName)],
-    ["storage", highlightTags.typeName],
-    ["type", highlightTags.typeName],
-    ["class", highlightTags.className],
-];
-
-/** 主题规则 → CM6 HighlightStyle(与块内 colorize 的 Monaco 主题取色同源) */
-function buildTokenHighlight(): HighlightStyle | null {
-    const theme = getActiveCodeTheme();
-    if (!theme || !theme.rules.length) return null;
-    const probe = (scope: string[]): TmTokenRule | null => {
-        let best: TmTokenRule | null = null;
-        let bestLen = 0;
-        for (const r of theme.rules) {
-            if (r.segments.length > scope.length) continue;
-            if (r.segments.length <= bestLen) continue;
-            let ok = true;
-            for (let i = 0; i < r.segments.length; i++) {
-                if (r.segments[i] !== scope[i]) { ok = false; break; }
-            }
-            if (ok) { best = r; bestLen = r.segments.length; }
-        }
-        return best;
-    };
-    const entries: {tag: Tag; color: string; fontStyle?: string; fontWeight?: string; textDecoration?: string}[] = [];
-    for (const [scope, tag] of SCOPE_TAGS) {
-        const rule = probe([scope]);
-        if (!rule) continue;
-        const style: {tag: Tag; color: string; fontStyle?: string; fontWeight?: string; textDecoration?: string} = {tag, color: rule.foreground};
-        if (rule.fontStyle === "italic") style.fontStyle = "italic";
-        if (rule.fontStyle === "bold") style.fontWeight = "bold";
-        if (rule.fontStyle === "underline") style.textDecoration = "underline";
-        entries.push(style);
-    }
-    return entries.length ? HighlightStyle.define(entries) : null;
-}
+// 2026-11-15 移除:原先这里有一套「TextMate scope → CM6 tag」的 HighlightStyle
+// (buildTokenHighlight/SCOPE_TAGS),给内嵌编辑器单独着色。它用的是 Lezer 分词,
+// 与阅读态的 Monaco TextMate 分词对同一 token 分类不同(python 的 print:
+// TextMate = support.function 蓝,Lezer = keyword 红),造成「进出编辑变色」。
+// 更麻烦的是 CM6 的 <span class="ͼxx"> 会嵌在 colorize 装饰 span 里,
+// 子级 class 色覆盖父级内联色,无法靠叠加装饰修正。
+// 现在 token 颜色只由下方 colorizeField 的 Monaco 同源装饰提供(单一真源),
+// 语言包 langSlot 仍保留给缩进/括号匹配/输入重排。
 
 // 行号列样式(复刻 colorize 的 .syfe-cm-cl-n: on-surface 0.45、右对齐)
 const gutterTheme = EditorView.theme({
@@ -182,8 +137,95 @@ const gutterTheme = EditorView.theme({
     ".cm-activeLineGutter": {backgroundColor: "transparent"},
 });
 
+// ===== 与阅读态同源的 token 配色(2026-11-15 用户反馈「进出编辑主题不一样」)=====
+// 阅读态卡片 = monaco.editor.colorize(TextMate 语法)的 HTML;内嵌 CM6 原来另用
+// Lezer + buildTokenHighlight 着色,两套分词器对同一 token 分类不同(python 的
+// print:TextMate = support.function → 蓝 #005cc5,Lezer = keyword → 红
+// #d73a49),进出编辑会「变色」。这里把阅读态**同一份** colorize HTML 解析成
+// 带内联颜色的 mark 装饰喂给内嵌 CM6:内联 style 压过 CM6 的 class 着色,
+// 两态最终颜色完全一致(主题切换时按主题名失效 mtk 颜色缓存)。
+const setColorizeDeco = StateEffect.define<DecorationSet>();
+const colorizeField = StateField.define<DecorationSet>({
+    create: () => Decoration.none,
+    update(deco, tr) {
+        deco = deco.map(tr.changes);
+        for (const e of tr.effects) if (e.is(setColorizeDeco)) deco = e.value;
+        return deco;
+    },
+    provide: f => EditorView.decorations.from(f),
+});
+
+/** Monaco 主题类 mtkN → 颜色(需挂在 .monaco-editor 下才能取到主题 CSS) */
+let mtkCacheName = "";
+let mtkCache = new Map<string, string>();
+function mtkColor(cls: string): string | null {
+    const name = getMonacoThemeName();
+    if (name !== mtkCacheName) { mtkCacheName = name; mtkCache = new Map(); }
+    const hit = mtkCache.get(cls);
+    if (hit !== undefined) return hit;
+    const probe = document.createElement("div");
+    probe.className = "monaco-editor";
+    probe.style.cssText = "position:absolute;left:-99999px;top:0;visibility:hidden;pointer-events:none";
+    const span = document.createElement("span");
+    span.className = cls;
+    span.textContent = "x";
+    probe.appendChild(span);
+    document.body.appendChild(probe);
+    const color = getComputedStyle(span).color;
+    probe.remove();
+    mtkCache.set(cls, color);
+    return color || null;
+}
+
+interface ColorRange { from: number; to: number; color: string; }
+
+/** colorize HTML → 字符区间 + 颜色。<br/> = 换行,纯文本节点继承父级颜色 */
+function parseColorizeHtml(html: string, docLen: number): ColorRange[] {
+    const holder = document.createElement("div");
+    holder.innerHTML = html;
+    const out: ColorRange[] = [];
+    let pos = 0;
+    const walk = (node: Node, inherited: string | null): void => {
+        if (node.nodeType === Node.TEXT_NODE) {
+            const text = node.textContent || "";
+            if (inherited && text && pos < docLen) {
+                out.push({from: pos, to: Math.min(pos + text.length, docLen), color: inherited});
+            }
+            pos += text.length;
+            return;
+        }
+        if (node.nodeType !== Node.ELEMENT_NODE) return;
+        const el = node as HTMLElement;
+        if (el.tagName === "BR") { pos += 1; return; }
+        let color = inherited;
+        const inline = el.style?.color;
+        if (inline) color = inline;
+        else {
+            const m = /\bmtk\d+\b/.exec(el.className || "");
+            if (m) color = mtkColor(m[0]) ?? color;
+        }
+        for (const child of Array.from(el.childNodes)) walk(child, color);
+    };
+    for (const child of Array.from(holder.childNodes)) walk(child, null);
+    return out.filter(r => r.from < r.to);
+}
+
+/** 刷新内嵌编辑器配色;异步结果按 doc 版本与单例身份丢弃,避免错位 */
+function refreshColorize(view: EditorView, lang: string): void {
+    const doc = view.state.doc;
+    void colorizeCached(lang, doc.toString()).then(html => {
+        if (S.view !== view || view.state.doc !== doc) return;
+        const decos = parseColorizeHtml(html, doc.length).map(r =>
+            Decoration.mark({attributes: {style: `color:${r.color}`}}).range(r.from, r.to));
+        view.dispatch({effects: setColorizeDeco.of(Decoration.set(decos, true))});
+    }).catch(() => undefined);
+}
+
 export function mountBlockEditor(o: MountOptions): void {
     unmountBlockEditor();
+    // 宿主编辑态的 editorhost 默认有 0.9em 左内边距(Monaco 版遗留),内嵌 CM6
+    // 要归零才能与阅读态的行号列对齐;用 class 精确限定,不影响 Monaco 路径。
+    o.container.classList.add("has-cm6-editor");
     const extra = readExtraOptions();
     const langSlot = new Compartment();
     // 语言匹配:language-data 的 LanguageDescription(与 markdown codeLanguages
@@ -200,7 +242,9 @@ export function mountBlockEditor(o: MountOptions): void {
                 drawSelection(),
                 ...(extra.highlightActiveLineGutter === false ? [] : [highlightActiveLineGutter()]),
                 ...(extra.highlightActiveLine === false ? [] : [highlightActiveLine()]),
-                syntaxHighlighting(buildTokenHighlight() ?? defaultHighlightStyle, {fallback: true}),
+                // token 颜色只由阅读态同源的 colorize 装饰提供(不挂 CM6 自己的
+                // syntaxHighlighting,否则子级 class 色会盖掉内联色)
+                colorizeField,
                 gutterTheme,
                 // 代码块编辑手感(2026-11-15):Tab/Shift-Tab 多行缩进、括号/
                 // 引号自动闭合 + 配对高亮、换行自动缩进。此前只有默认键位,
@@ -240,8 +284,10 @@ export function mountBlockEditor(o: MountOptions): void {
                         // ⚠ 宿主 syfeCmTheme 的 .cm-scroller{padding:0 16px 45vh}
                         // 是后代选择器,会串到内嵌编辑器上:一行代码被 45vh
                         // 底部留白撑出整屏空白(839px 视口实测 377px)。这里
-                        // 显式重置,保留左右边距、去掉底部滚动留白。
-                        padding: "0 16px",
+                        // 显式重置,去掉底部滚动留白。左内边距归零让内嵌行号槽
+                        // 与阅读态 .syfe-cm-cl-n 同一起点(否则进编辑整个行号 +
+                        // 代码右移 27px,观感像「换了主题」);右侧 16px 保留。
+                        padding: "0 16px 0 0",
                     },
                     "&.cm-focused": {outline: "none"},
                     ".cm-selectionBackground, .cm-content ::selection": {
@@ -251,7 +297,11 @@ export function mountBlockEditor(o: MountOptions): void {
                     ".cm-activeLineGutter": {backgroundColor: "transparent"},
                 }),
                 EditorView.updateListener.of(u => {
-                    if (u.docChanged) o.onContentChange(u.state.doc.toString());
+                    if (!u.docChanged) return;
+                    o.onContentChange(u.state.doc.toString());
+                    // 逐键重取与阅读态同源的配色(装饰按 changes 映射即时过渡,
+                    // 新结果到位后整体替换,不会有空白期)
+                    refreshColorize(u.view, o.lang);
                 }),
                 langSlot.of(desc?.support ? [desc.support] : []),
                 ...extraOptionExtensions(extra),
@@ -302,6 +352,13 @@ export function mountBlockEditor(o: MountOptions): void {
     S.lang = o.lang;
     S.outsideListener = outsideListener;
     S.onContentChange = o.onContentChange;
+    // 宿主 syfeCmTheme 的 ".cm-scroller{padding:0 16px 45vh}" 是后代选择器,
+    // 会串到内嵌编辑器;theme 里同名规则与它特异性打平、实测被宿主盖过(左
+    // 内边距仍 16px)。直接写内联样式定死:左 0 让行号槽与阅读态对齐,
+    // 底部 0 去掉 45vh 留白,右侧 16px 保留。
+    const scroller = view.dom.querySelector(".cm-scroller") as HTMLElement | null;
+    if (scroller) scroller.style.padding = "0 16px 0 0";
+    refreshColorize(view, o.lang);
     view.focus();
     setTimeout(() => view.focus(), 0);
 }
@@ -310,16 +367,21 @@ export function mountBlockEditor(o: MountOptions): void {
 export function remountBlockEditor(o: MountOptions): void {
     if (!S.view || S.activeKey !== o.key) return;
     if (S.container === o.container) return;
+    S.container?.classList.remove("has-cm6-editor");
+    o.container.classList.add("has-cm6-editor");
     S.container = o.container;
     o.container.appendChild(S.view.dom);
     // 这里没有局部 view 变量(mountBlockEditor 的 view 是它的局部变量),
     // 之前写成 view.focus() 会在重挂载时抛 ReferenceError。
     S.view.focus();
+    // 卡片重建(含主题切换)后重取配色:mtk 颜色缓存按主题名失效
+    refreshColorize(S.view, o.lang);
 }
 
 export function unmountBlockEditor(): void {
     if (!S.view) return;
     const view = S.view;
+    S.container?.classList.remove("has-cm6-editor");
     S.view = null;
     S.activeKey = null;
     S.container = null;

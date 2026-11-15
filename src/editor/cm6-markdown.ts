@@ -270,6 +270,11 @@ const syfeCmTheme = EditorView.theme({
         padding: "0 0 0 0.9em",
         minHeight: "21px",
     },
+    // 内嵌 CM6 编辑器自带行号槽,不再叠 Monaco 版的 0.9em 左内边距 ——
+    // 否则进编辑后行号与代码整体右移 27px,与阅读态对不齐。
+    ".syfe-cm-codeblock-body.is-editing .syfe-cm-codeblock-editorhost.has-cm6-editor": {
+        paddingLeft: "0",
+    },
     ".syfe-cm-codeblock-editorhost": {display: "none"},
     // 容器块化:最外层列表整段加底色,首末行圆角(与引述盒同模型)。
     // 用 color-mix 取背景与表面的中间色:列表盒比引述盒淡,行上叠有

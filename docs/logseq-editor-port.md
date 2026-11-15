@@ -90,6 +90,17 @@ AGPL-3.0 已生效,允许引用/派生 Logseq 代码,但技术上仍以「读源
       (Logseq 的 CM5 change → eval-lines 等价);失败行显示 `?`
     - 同笔提交补内嵌 CM6 编辑手感:Tab/Shift-Tab 缩进、括号引号自动闭合、
       配对高亮、输入自动缩进、4 空格缩进单元
+- 后续修(用户截图反馈「进出编辑主题渲染不一样 / 编辑时行号重叠」):
+  - **配色**:阅读态是 Monaco TextMate 分词、编辑态原是 Lezer 分词 + 自建
+    scope→tag 映射,同一 token 分类不同(python `print`:TextMate 蓝
+    `#005cc5` / Lezer 红 `#d73a49`)。移除内嵌 CM6 的 `syntaxHighlighting`,
+    改由 `colorizeField` 把**同一份 colorize HTML** 解析成带内联色的 mark
+    装饰;子级 CM6 class 色会盖掉父级内联色,所以必须单一真源。
+  - **行号**:补画列原按 `height:100%` flex 均分,编辑态卡片被压矮后行号
+    仍按宿主行高撑出卡片、压到后续行号上。现钉成 `行数 ×
+    view.defaultLineHeight` 并给卡片同值 `minHeight`;内嵌行号槽左内边距
+    归零与阅读态对齐;`toDOM` 早于宿主 `.cm-gutters` 时改为 rAF 重试挂载,
+    修掉阅读态补画行号偶发整段消失。
 - **未做(刻意,非遗漏)**:blur 自动退出编辑态 —— 本 Electron 下极易误退出
   (点结果列/复制按钮都会触发),按前期调研结论保持 Esc / 点击卡外退出。
 - 广义移植主线 M2(键盘)/M3(光标管理)/M4(块操作)本轮未动;按用户此前

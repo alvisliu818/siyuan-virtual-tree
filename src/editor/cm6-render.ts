@@ -340,19 +340,34 @@ class CodeBlockWidget extends WidgetType {
         // 被吞行的行号:原生行号槽对 widget 块不画号,卡片把数字列绝对定位
         // 覆盖到槽列上(负偏移 = 卡片左缘到槽列左缘),高度随卡片内部行分布
         if (this.gutterNums.length) {
-            const gutters = view.dom.querySelector(".cm-gutters");
-            const contentEl = view.dom.querySelector(".cm-content");
-            if (gutters && contentEl) {
+            // ⚠ 补画行号必须严格按宿主行高排:原来 height:100% 随卡片高度
+            // flex 均分,编辑态卡片被压矮(is-editing padding:0 + 内嵌编辑器
+            // 21px)时,行号仍按 23px 的自然高度撑到卡片外,压到宿主后续行
+            // 的行号上(用户反馈「编辑时行号重叠」)。这里把列高钉成
+            // 行数 × view.defaultLineHeight,并给卡片同样的 minHeight。
+            const lineH = view.defaultLineHeight || 23;
+            const colH = this.gutterNums.length * lineH;
+            wrap.style.position = "relative";
+            wrap.style.minHeight = `${colH.toFixed(2)}px`;
+            // toDOM 可能跑在宿主 .cm-gutters 进 DOM 之前(首帧测量),此时拿不到
+            // 槽列几何就只能放弃补画,而 widget eq 相等又不会重建 → 阅读态常见
+            // 「3~6 行号整段消失」。改成拿到几何后重挂,最多重试 5 帧。
+            const attach = (): boolean => {
+                if (wrap.querySelector(".syfe-cm-codeblock-gutternums")) return true;
+                const gutters = view.dom.querySelector(".cm-gutters");
+                const contentEl = view.dom.querySelector(".cm-content");
+                if (!gutters || !contentEl) return false;
                 const gRect = gutters.getBoundingClientRect();
                 // 偏移用 content/gutters 的稳定几何算(toDOM 时 wrap 尚未入 DOM,
                 // 自己的 rect 是零)。wrap 与 content 同宽同左缘
                 const offset = contentEl.getBoundingClientRect().left - gRect.left;
-                wrap.style.position = "relative";
                 const col = document.createElement("div");
                 col.className = "cm-lineNumbers syfe-cm-codeblock-gutternums";
                 // z-index 高过 .cm-gutters(sticky, z=200):槽列有不透明背景,
                 // 不抬层数字被盖住不可见
                 col.style.zIndex = "300";
+                col.style.height = `${colH.toFixed(2)}px`;
+                col.style.overflow = "hidden";
                 col.style.left = `${(-Math.max(0, offset)).toFixed(1)}px`;
                 col.style.width = `${gRect.width.toFixed(1)}px`;
                 for (const n of this.gutterNums) {
@@ -371,6 +386,15 @@ class CodeBlockWidget extends WidgetType {
                     col.appendChild(el);
                 }
                 wrap.prepend(col);
+                return true;
+            };
+            if (!attach() && typeof requestAnimationFrame !== "undefined") {
+                let tries = 5;
+                const retry = () => {
+                    if (!wrap.isConnected || tries-- <= 0 || attach()) return;
+                    requestAnimationFrame(retry);
+                };
+                requestAnimationFrame(retry);
             }
         }
         // colorize / Monaco 挂载会改变卡片高度 → 通知 CM6 重新测量行号槽
