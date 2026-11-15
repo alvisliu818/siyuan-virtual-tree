@@ -1247,10 +1247,15 @@ function fencedCodeInfos(state: EditorState): FencedCodeInfo[] {
                 break;
             }
         }
+        // 未闭合围栏:CommonMark 里它延伸到文档尾,但编辑器里**不能**把整段
+        // 替换成卡片 widget —— 块级 replace 会让 CM6 的光标映射错乱
+        // (实测输入围栏再回车后继续键入,字符会落到围栏之前的行里、搅乱原文)。
+        // 保持源码可编辑,等用户输入闭合围栏后再渲染卡片。
+        if (closeLine < 0) { ln = doc.lines; continue; }
         const first = doc.line(ln);
-        const last = closeLine > 0 ? doc.line(closeLine) : doc.line(doc.lines);
+        const last = doc.line(closeLine);
         const contentFrom = first.to + 1;
-        const contentTo = closeLine > 0 ? doc.line(closeLine - 1).to : last.to;
+        const contentTo = doc.line(closeLine - 1).to;
         const code = contentTo >= contentFrom ? doc.sliceString(contentFrom, contentTo) : "";
         // 视图文本:每行剥到栅栏列为止 —— 与```对齐的空白(markdown 结构)
         // 不显示, 多出的缩进是代码自身的内容, 保留(用户 2026-11-14 最终确认
@@ -1263,7 +1268,7 @@ function fencedCodeInfos(state: EditorState): FencedCodeInfo[] {
             return l.slice(n);
         }).join("\n");
         out.push({from: line.from + fenceCol, to: last.to, lang, code, codeView, contentFrom, contentTo});
-        ln = closeLine > 0 ? closeLine : doc.lines;
+        ln = closeLine;
     }
     return out;
 }
