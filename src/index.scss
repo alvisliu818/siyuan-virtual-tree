@@ -709,6 +709,16 @@ button.syfe-editor__arrow--exp:hover {
 .syfe-md__content .cm-editor .cm-scroller {
     overscroll-behavior: contain;
 }
+// 代码块卡片内「CM6 套 CM6」:宿主 syfeCmTheme 的 .cm-scroller{padding:0 16px 45vh}
+// 与 .syfe-md__content .cm-editor{height:100%} 都是后代选择器,会串到内嵌编辑器,
+// 把一行代码撑出 45vh 空白(839px 视口实测 377px、卡片高 429px)。用更高优先级
+// 的作用域规则兜底,不依赖两个 theme 的注入顺序。
+.syfe-md__content .syfe-cm-codeblock .cm-editor {
+    height: auto;
+}
+.syfe-md__content .syfe-cm-codeblock .cm-editor .cm-scroller {
+    padding: 0 16px;
+}
 
 // CM6 模式的阅读态:Vditor.preview 静态渲染容器(结构同 .vditor-reset,
 // 由 preview 自挂类名),这里只管占满与滚动;正文字体宽窄继承 content-theme

@@ -143,6 +143,9 @@ export function mountBlockEditor(o: MountOptions): void {
                     "&": {
                         fontSize: "13px",
                         backgroundColor: "var(--b3-theme-surface)",
+                        // 内嵌编辑器是宿主 .cm-editor 的后代,宿主的
+                        // .syfe-md__content .cm-editor{height:100%} 会串进来
+                        height: "auto",
                     },
                     ".cm-content": {padding: "0", caretColor: "var(--b3-theme-on-surface)"},
                     ".cm-line": {
@@ -153,6 +156,11 @@ export function mountBlockEditor(o: MountOptions): void {
                     ".cm-scroller": {
                         fontFamily: 'Consolas, "Courier New", monospace',
                         lineHeight: "21px",
+                        // ⚠ 宿主 syfeCmTheme 的 .cm-scroller{padding:0 16px 45vh}
+                        // 是后代选择器,会串到内嵌编辑器上:一行代码被 45vh
+                        // 底部留白撑出整屏空白(839px 视口实测 377px)。这里
+                        // 显式重置,保留左右边距、去掉底部滚动留白。
+                        padding: "0 16px",
                     },
                     "&.cm-focused": {outline: "none"},
                     ".cm-selectionBackground, .cm-content ::selection": {
