@@ -110,6 +110,9 @@ function lineContext(state: EditorState, n: number): LineContext {
     let listItem: SyntaxNode | null = null;
     for (let node: SyntaxNode | null = inner; node; node = node.parent) {
         ctx.names.push(node.name);
+        // 记住 ListItem 节点:下面用它判断本行是否带子树(有子级时禁缩进,
+        // 半树移动会破坏嵌套)。此前声明后从未赋值,判据恒为 false。
+        if (node.name === "ListItem") listItem = node;
         if (node.name === "ATXHeading" && ctx.kind !== "heading") {
             const mark = node.getChild("ATXHeadingMark");
             if (mark) {
@@ -782,7 +785,8 @@ const HANDLE_ICON =
 
 /** 渲染出的 .cm-line 元素(视口内),SB line_geometry.lineElement */
 function lineElement(view: EditorView, line: Line): HTMLElement | undefined {
-    for (const child of view.contentDOM.children) {
+    // HTMLCollection 在 tsconfig 的 lib(dom,不含 dom.iterable)下不可直接 for-of
+    for (const child of Array.from(view.contentDOM.children)) {
         if (!child.classList.contains("cm-line")) continue;
         try {
             if (view.posAtDOM(child, 0) === line.from) return child as HTMLElement;

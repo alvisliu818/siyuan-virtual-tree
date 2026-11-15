@@ -341,7 +341,9 @@ function bindBlockListeners(o: MountBlockOptions, ed: monaco.editor.IStandaloneC
             e.browserEvent.preventDefault();
             e.browserEvent.stopPropagation();
             const sel = ed.getSelection();
-            ed.executeEdits("enter", [{range: sel, text: "\n"}]);
+            // getSelection() 可能为 null(模型刚被替换/编辑器未就绪),
+            // 此时不能拿 null 当 IRange 传给 executeEdits
+            if (sel) ed.executeEdits("enter", [{range: sel, text: "\n"}]);
         }
     });
     setActiveBlock({

@@ -111,7 +111,7 @@ const gutterTheme = EditorView.theme({
     ".cm-activeLineGutter": {backgroundColor: "transparent"},
 });
 
-export function mountBlockEditor(o: MountBlockOptions): void {
+export function mountBlockEditor(o: MountOptions): void {
     unmountBlockEditor();
     const langSlot = new Compartment();
     // 语言匹配:language-data 的 LanguageDescription(与 markdown codeLanguages
@@ -200,12 +200,14 @@ export function mountBlockEditor(o: MountBlockOptions): void {
 }
 
 // 同一块的 CM6 重建后:把编辑器 DOM 搬进新容器(模型/光标/历史保持)。
-export function remountBlockEditor(o: MountBlockOptions): void {
+export function remountBlockEditor(o: MountOptions): void {
     if (!S.view || S.activeKey !== o.key) return;
     if (S.container === o.container) return;
     S.container = o.container;
     o.container.appendChild(S.view.dom);
-    view.focus();
+    // 这里没有局部 view 变量(mountBlockEditor 的 view 是它的局部变量),
+    // 之前写成 view.focus() 会在重挂载时抛 ReferenceError。
+    S.view.focus();
 }
 
 export function unmountBlockEditor(): void {

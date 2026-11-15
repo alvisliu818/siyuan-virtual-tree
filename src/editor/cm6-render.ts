@@ -617,8 +617,10 @@ function maskQuoteMath(md: string): {masked: string; slots: QuoteMathSlot[]} {
 /** 把 Lute 产物文本节点里的占位符换成 KaTeX 公式 span(未就绪时显示源码,就绪后 paint 重绘) */
 function fillQuoteMath(root: HTMLElement, slots: QuoteMathSlot[], katex: any): void {
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-    const texts: Text[] = [];
-    while (walker.nextNode()) texts.push(walker.currentNode as Text);
+    // 本文件从 @codemirror/state 导入了 Text,会遮蔽 DOM 的 Text 类型;
+    // 这里要的是文本节点,用其基类 CharacterData(带 nodeValue / parentNode)。
+    const texts: CharacterData[] = [];
+    while (walker.nextNode()) texts.push(walker.currentNode as CharacterData);
     const re = /SYFEMATH(\d+)ZSYFE/g;
     for (const node of texts) {
         const text = node.nodeValue || "";
@@ -1896,7 +1898,7 @@ function buildBlockDeco(
     digests: LineDigest[],
     cursor: number,
     opts: Cm6RenderOptions,
-): BlockDecorations {
+): Pick<BlockDecorations, "ranges" | "lineDecos"> {
     const view = {state} as EditorView;
     const ranges: Array<Range<Decoration>> = [];
     const lineDecos: Array<Range<Decoration>> = [];
@@ -2295,7 +2297,8 @@ const blockDecoCache = new WeakMap<Text, Map<number, BlockDecorations>>();
  *  与 RangeSet.map 内部逐 range 的映射一致) */
 function mapDecoRange(r: Range<Decoration>, changes: ChangeDesc): Range<Decoration> {
     const d = r.value as Decoration;
-    return d.range(changes.mapPos(r.from, d.startSide, true), changes.mapPos(r.to, d.endSide, true));
+    // mapPos 的第三参数是 MapMode(枚举),不是布尔值;只需传 assoc 即可
+    return d.range(changes.mapPos(r.from, d.startSide), changes.mapPos(r.to, d.endSide));
 }
 
 function buildDecorations(state: EditorState, opts: Cm6RenderOptions, tr?: Transaction): DecorationSet {

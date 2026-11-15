@@ -163,7 +163,7 @@ function measureSelection(view: EditorView) {
 /** 选区起点是否落在代码上下文(围栏/缩进代码块、HTML 块)里 */
 function inCodeContext(state: EditorState, pos: number): boolean {
     const node: SyntaxNode | null = syntaxTree(state).resolveInner(pos, 1);
-    for (let n = node; n; n = n.parent) {
+    for (let n: SyntaxNode | null = node; n; n = n.parent) {
         if (n.name === "FencedCode" || n.name === "CodeBlock" || n.name === "HTMLBlock") {
             return true;
         }

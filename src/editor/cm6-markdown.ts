@@ -919,13 +919,6 @@ export function createCm6MarkdownEditor(
             placeholder(opts.placeholder ?? ""),
             EditorView.updateListener.of((u) => {
                 if (u.docChanged) {
-                    // [tx5] 临时
-                    const parts: string[] = [];
-                    u.changes.iterChangedRanges((fa, ta, fb, tb) => {
-                        const oldText = u.startState.doc.sliceString(fa, ta);
-                        parts.push("[" + fa + "-" + ta + "->" + fb + "-" + tb + "]old=" + JSON.stringify(oldText.slice(0, 20)) + " new=" + JSON.stringify(u.state.doc.sliceString(fb, Math.min(tb + 10, u.state.doc.length))));
-                    });
-                    console.log("[tx5]", u.transactions.map(t => (t.userEvent || "?") + "@" + t.changes.length).join(","), "|", parts.join(" "));
                     opts.onInput();
                 }
                 if ((u.docChanged || u.selectionSet) && opts.onCursor) opts.onCursor();
