@@ -26,7 +26,7 @@
 // 块级替换配合 atomicRanges 让光标不落在渲染物中间;
 // 光标进入块内即回源码,这是 Obsidian 同款的编辑模型。
 // 全局主题切换(Monaco 扩展主题)经 onCodeThemeChanged → StateEffect 强制重建。
-import {EditorState, Extension, Range, StateEffect, StateField, Text} from "@codemirror/state";
+import {ChangeDesc, EditorState, Extension, Range, StateEffect, StateField, Text, Transaction} from "@codemirror/state";
 import {
     Decoration,
     DecorationSet,
@@ -1164,6 +1164,7 @@ const RE_LIST_ITEM = /^(\s*)(?:[-*+]|\d+[.)])\s/;
 const RE_GUIDE_SKIP_ROW = /^\s*(?:\||\$|>)/;
 const RE_HANG_BOX_LINE = /^\s*(?:>|\||```|~~~|\$\$)/;
 const RE_HANG_LIST = /^(\s*)(?:[-*+]|\d+[.)])\s/;
+const RE_MATH_DELIM = /^\s*\$\$\s*$/;
 const RE_TASK_LINE = /^(\s*)(?:[-*+]|\d+[.)])(\s+)\[[ xX]\](\s|$)/;
 
 /** 行首空白折算宽(4px/空格、16px/tab;行形态摘要与悬挂几何共用) */
@@ -1430,14 +1431,17 @@ export function cm6MarkdownRender(opts: Cm6RenderOptions): Extension {
         create: (st) => buildDecorations(st, opts),
         update: (value, tr) => {
             if (tr.effects.some(e => e.is(forceRenderEffect))) {
+                // 强制重建(主题/KaTeX 就绪/进编辑态/尺寸变化):块缓存按旧 doc 记忆,
+                // 不传 tr 即全量重建并刷新新 doc 的缓存
                 return buildDecorations(tr.state, opts);
             }
             // doc/selection 变化重建;语法树异步解析完成(树实例变化)也重建,
-            // 否则大文档首次渲染时 FencedCode 装饰会缺失(PurrMD 同款坑)
+            // 否则大文档首次渲染时 FencedCode 装饰会缺失(PurrMD 同款坑)。
+            // 块级增量:未变块按位移映射复用,仅变块重建(见 buildDecorations)。
             if (!tr.docChanged && !tr.selection && syntaxTree(tr.startState) === syntaxTree(tr.state)) {
                 return value;
             }
-            return buildDecorations(tr.state, opts);
+            return buildDecorations(tr.state, opts, tr);
         },
         provide: (f) => [
             EditorView.decorations.from(f),
@@ -1657,348 +1661,461 @@ export function cm6MarkdownRender(opts: Cm6RenderOptions): Extension {
     return [renderField, clickHandler, themeSync, editMounter, guideResize];
 }
 
-function buildDecorations(state: EditorState, opts: Cm6RenderOptions): DecorationSet {
+// ===== 块分解与按块增量(decoration_regions 移植;文本级,按 doc 版本记忆化) =====
+//
+// 原 buildDecorations 每次击键对全文档跑全部段落扫描(实测 2400 行 27ms/键)。
+// 改造:文档分解为顶层块(列表项含子树/段落/标题/围栏/表格/公式对/引述/属性
+// 面板),每块的装饰由**块内容 + 光标是否在块内**唯一决定 —— 都不变 → 旧装饰
+// 按位移映射后原样复用(纯重发射,零正则零 widget 重建);变了 → 只重建该块。
+
+interface LineDigest {
+    from: number;
+    to: number;
+    indentW: number;
+    isList: boolean;
+    isTask: boolean;
+    isBlank: boolean;
+    isQuote: boolean;
+    quoteIndent: string;
+    isBoxLine: boolean;
+    isTableRow: boolean;
+    inFence: boolean;
+}
+
+function buildLineDigests(doc: Text, fences: FencedCodeInfo[]): LineDigest[] {
+    const out: LineDigest[] = new Array(doc.lines + 1);
+    const fenceLineSpans: Array<[number, number]> = fences.map(info => [
+        doc.lineAt(info.from).number,
+        doc.lineAt(Math.max(info.from, info.to - 1)).number,
+    ]);
+    let fi = 0;
+    for (let n = 1; n <= doc.lines; n++) {
+        const line = doc.line(n);
+        const text = line.text;
+        const isList = RE_LIST_ITEM.test(text);
+        while (fi < fenceLineSpans.length && fenceLineSpans[fi][1] < n) fi++;
+        const inFence = fi < fenceLineSpans.length && n >= fenceLineSpans[fi][0];
+        const qm = /^((?:\s*)(?:[-*+]|\d{1,9}[.)])?\s*)>/.exec(text);
+        out[n] = {
+            from: line.from,
+            to: line.to,
+            indentW: indentWidth(text),
+            isList,
+            isTask: RE_TASK_LINE.test(text),
+            isBlank: text.trim() === "",
+            isQuote: !!qm,
+            quoteIndent: qm ? qm[1] : "",
+            isBoxLine: RE_HANG_BOX_LINE.test(text),
+            isTableRow: RE_TABLE_ROW.test(text),
+            inFence,
+        };
+    }
+    return out;
+}
+
+const lineDigestCache = new WeakMap<Text, LineDigest[]>();
+function lineDigestsOf(state: EditorState): LineDigest[] {
+    const doc = state.doc;
+    let d = lineDigestCache.get(doc);
+    if (!d) {
+        d = buildLineDigests(doc, fencedCodeInfosOf(state));
+        lineDigestCache.set(doc, d);
+    }
+    return d;
+}
+
+interface RenderBlock {
+    fromLine: number;
+    toLine: number;
+    kind: "props" | "fence" | "table" | "math" | "quote" | "list" | "para" | "heading";
+    from: number;
+    to: number;
+    /** list 块内部的围栏信息(顶层围栏块就是自己) */
+    fences: FencedCodeInfo[];
+}
+
+const renderBlockCache = new WeakMap<Text, RenderBlock[]>();
+
+function docBlocksOf(state: EditorState): RenderBlock[] {
+    const doc = state.doc;
+    const cached = renderBlockCache.get(doc);
+    if (cached) return cached;
+    const fences = fencedCodeInfosOf(state);
+    const fenceCovered = new Uint8Array(doc.lines + 1);
+    const fenceInfoByFirstLine = new Map<number, FencedCodeInfo>();
+    for (const info of fences) {
+        const f = doc.lineAt(info.from).number;
+        const t = doc.lineAt(Math.max(info.from, info.to - 1)).number;
+        for (let k = f; k <= t; k++) fenceCovered[k] = 1;
+        fenceInfoByFirstLine.set(f, info);
+    }
+    const mathSpans: Array<[number, number]> = [];
     {
-            const view = {state} as EditorView;
-            // 全部装饰先收集再 Decoration.set(自动按位置排序,避免 RangeSetBuilder 的乱序抛错)
-            const ranges: Array<Range<Decoration>> = [];
-            const atomicRanges: Array<Range<Decoration>> = [];
-            // 只读阅读态:光标永不算「进块」,始终保留富渲染(卡片/公式/表格/
-            // 属性面板),不会因为一次点击或定位就退回源码
-            const cursor = view.state.readOnly ? 0 : view.state.selection.main.head;
-            const doc = view.state.doc;
-            const lineDecos: Array<Range<Decoration>> = [];
-            const usedRanges: Array<{from: number; to: number}> = [];
+        let k = 1;
+        while (k <= doc.lines) {
+            if (!RE_MATH_DELIM.test(doc.line(k).text)) { k++; continue; }
+            let j = k + 1;
+            while (j <= doc.lines && !RE_MATH_DELIM.test(doc.line(j).text)) j++;
+            if (j <= doc.lines) { mathSpans.push([k, j]); k = j + 1; } else k++;
+        }
+    }
+    const inMathSpan = new Uint8Array(doc.lines + 1);
+    for (const [a, b] of mathSpans) for (let k = a; k <= b; k++) inMathSpan[k] = 1;
 
-            const overlapsUsed = (from: number, to: number) => usedRanges.some(r => from < r.to && to > r.from);
+    const blocks: RenderBlock[] = [];
+    const mk = (fromLine: number, toLine: number, kind: RenderBlock["kind"], inner: FencedCodeInfo[] = []): RenderBlock => ({
+        fromLine, toLine, kind,
+        from: doc.line(fromLine).from,
+        to: doc.line(toLine).to,
+        fences: inner,
+    });
 
-            interface LineDigest {
-                from: number;
-                to: number;
-                indentW: number;
-                isList: boolean;
-                isTask: boolean;
-                isBlank: boolean;
-                isQuote: boolean;
-                quoteIndent: string;
-                isBoxLine: boolean;
-                isTableRow: boolean;
-                inFence: boolean;
+    let n = 1;
+    while (n <= doc.lines) {
+        // 属性面板(文首闭合 frontmatter)
+        if (n === 1 && doc.lines >= 2 && /^\s*---\s*$/.test(doc.line(1).text)) {
+            let end = 2;
+            while (end <= doc.lines && !/^\s*---\s*$/.test(doc.line(end).text)) end++;
+            if (end <= doc.lines) {
+                blocks.push(mk(1, end, "props"));
+                n = end + 1;
+                continue;
             }
-            // ===== 行摘要(LineDigest):一次遍历算好全部行形态旗标 =====
-            // 引导线/悬挂/引述/表格/公式守卫等段落级扫描原先各自全量跑 doc.line
-            // + 同一批正则(实测 2400 行每次重建 ~35ms,正则与 Line 分配占大头);
-            // 摘要一次算好,后面全部读表。旗标语义与原各段正则严格一致。
-            const lineCount = doc.lines;
-            const fences = fencedCodeInfosOf(state);
-            const fenceLineSpans: Array<[number, number]> = fences.map(info => [
-                doc.lineAt(info.from).number,
-                doc.lineAt(Math.max(info.from, info.to - 1)).number,
-            ]);
-            const digest: LineDigest[] = new Array(lineCount + 1);
-            {
-                let fi = 0;
-                for (let n = 1; n <= lineCount; n++) {
-                    const line = doc.line(n);
-                    const text = line.text;
-                    const isList = RE_LIST_ITEM.test(text);
-                    while (fi < fenceLineSpans.length && fenceLineSpans[fi][1] < n) fi++;
-                    const inFence = fi < fenceLineSpans.length && n >= fenceLineSpans[fi][0];
-                    const qm = /^((?:\s*)(?:[-*+]|\d+[.)])?\s*)>/.exec(text);
-                    digest[n] = {
-                        from: line.from,
-                        to: line.to,
-                        indentW: indentWidth(text),
-                        isList,
-                        isTask: RE_TASK_LINE.test(text),
-                        isBlank: text.trim() === "",
-                        isQuote: !!qm,
-                        quoteIndent: qm ? qm[1] : "",
-                        isBoxLine: RE_HANG_BOX_LINE.test(text),
-                        isTableRow: RE_TABLE_ROW.test(text),
-                        inFence,
-                    };
+        }
+        // 顶层围栏块(不在任何列表子树内的围栏)
+        if (fenceCovered[n]) {
+            let f = n;
+            while (f > 1 && fenceCovered[f - 1]) f--;
+            let t = n;
+            while (t + 1 <= doc.lines && fenceCovered[t + 1]) t++;
+            blocks.push(mk(f, t, "fence", [fenceInfoByFirstLine.get(f)!]));
+            n = t + 1;
+            continue;
+        }
+        // 顶层 $$ 公式对
+        if (inMathSpan[n]) {
+            const span = mathSpans.find(([a, b]) => n >= a && n <= b)!;
+            blocks.push(mk(span[0], span[1], "math"));
+            n = span[1] + 1;
+            continue;
+        }
+        const line = doc.line(n);
+        const text = line.text;
+        const ind = indentWidth(text);
+        if (text.trim() === "") { n++; continue; }
+        if (/^\s*#{1,6}\s/.test(text)) {
+            blocks.push(mk(n, n, "heading"));
+            n++;
+            continue;
+        }
+        if (RE_TABLE_ROW.test(text) && ind === 0) {
+            let tail = n;
+            while (tail + 1 <= doc.lines && RE_TABLE_ROW.test(doc.line(tail + 1).text)) tail++;
+            blocks.push(mk(n, tail, "table"));
+            n = tail + 1;
+            continue;
+        }
+        const qm = /^((?:\s*)(?:[-*+]|\d{1,9}[.)])?\s*)>/.exec(text);
+        if (qm) {
+            let end = n;
+            while (end + 1 <= doc.lines) {
+                const nm = /^((?:\s*)(?:[-*+]|\d{1,9}[.)])?\s*)>/.exec(doc.line(end + 1).text);
+                if (!nm || nm[1] !== qm[1]) break;
+                end++;
+            }
+            blocks.push(mk(n, end, "quote"));
+            n = end + 1;
+            continue;
+        }
+        // 列表项:项 + 更深缩进子树(内部围栏/表格/公式随块);子树止于缩进 ≤
+        // 首项的行(与行级菜单 blockEnd 同一规则)。围栏行原子并入。
+        if (RE_LIST_ITEM.test(text)) {
+            const base = ind;
+            let end = n;
+            const inner: FencedCodeInfo[] = [];
+            while (end + 1 <= doc.lines) {
+                const j = end + 1;
+                const tj = doc.line(j).text;
+                if (fenceCovered[j]) {
+                    let f = j;
+                    while (f > n && fenceCovered[f - 1]) f--;
+                    let t = j;
+                    while (t + 1 <= doc.lines && fenceCovered[t + 1]) t++;
+                    const info = fenceInfoByFirstLine.get(f);
+                    if (info) inner.push(info);
+                    end = t;
+                    continue;
                 }
-            }
-            // 光标与块的关系 —— 对齐 md-editor/livePreview.ts 的 inBlock/onLine:
-            //   · 块级构造(表格/公式/代码块):开右区间。光标停在块尾(to)算
-            //     「在块之后」,保留富渲染,不再整块翻回源码;from 端仍算进入,
-            //     clickHandler 点击渲染物时把光标落到块内,照常进编辑态。
-            //   · 行级构造(行内图片):onLine 闭区间,光标在该行(含行尾)
-            //     一律保持源码态,便于编辑图片地址。
-            const cursorInBlock = (from: number, to: number) => cursor >= from && cursor < to;
-            const cursorOnLine = (from: number, to: number) => cursor >= from && cursor <= to;
-
-            // ===== 列表缩进引导线(参考 md-editor/src/blocks/guideLayout.ts) =====
-            // 每个「有子项的父列表项」在自身圆点正下方引出一条竖线,覆盖整个子树。
-            // 参考实现的三个要点在这里逐行落地:
-            //   ① 两端与圆点等距:GUIDE_DOT_RADIUS(3)+GUIDE_END_GAP(6)=9px,
-            //      首/末行用 background-size/position 裁掉这 9px;
-            //   ② 线的底端锚到「下一个兄弟块」而非自己最后一个后代 —— 逐行模型里
-            //      子树遇到缩进 <= 父项的下一行即止,末行留白天然对齐后续块;
-            //   ③ 重算:字体/缩放/折行引起的尺寸变化由 guideResize 的
-            //      ResizeObserver 派发 forceRenderEffect 全量重建(见文件末尾)。
-            // 与 DOM 块大纲不同,CM6 逐行渲染,行盒本身就是单位,所以不需要
-            // getBoundingClientRect 测真实几何;一条线拆成逐行 gradient 天然跨折行连续。
-            // x 与悬挂容器模型同源(6px 行盒内边距 + depth×16px 层级),再按父项
-            // 标记类型取中心:复选框 13px 宽(中心 +6.5)、圆点 5.3px(中心 ~+2.65)。
-            // ⚠ 不能用源码缩进宽(空格 4px/个):2 空格缩进的文档源码宽 8px,
-            // 渲染深度却是 1 层 16px,每层错位 8px,竖线整根飘到标记左侧
-            //(用户 2026-11-14 实测,CDP 探针 bgPos 16px vs 圆点 cx 24.65px)。
-            const GUIDE_GAP = 9;
-            const GUIDE_WIDTH = 2;
-            // 每层容器缩进步长(引导线与下方悬挂缩进共用;声明在此,
-            // 引导线 x 计算先于悬挂块使用)
-            const HANG_STEP = 16;
-            // 比 --b3-border-color(#e0e0e0,实测近乎隐形)深一档:22% 太淡,
-            // 32% 在白底约 rgb(188),仍是参考 Logseq 那种「不抢眼的淡线」;
-            // 可用 --syfe-cm-guide-color 覆盖。
-            const GUIDE_COLOR = "var(--syfe-cm-guide-color, color-mix(in srgb, var(--b3-theme-on-background, #888) 32%, transparent))";
-            const guideStops = new Map<number, Array<{x: number; first: boolean; last: boolean}>>();
-            const quoteBarByLine = new Map<number, number>();
-            const quoteLines = new Set<number>();
-            const quoteCalloutLines = new Set<number>();
-            // callout 首行(> [!type]):整段引述按标注样式渲染,不用容器盒 gradient
-            // 引导线只画在列表结构行上(用户 2026-11-14「只有列表显示竖线」):
-            // 自绘盒内容的行不画 —— 卡片/表格有自己的左缘视觉,引述行有自己的
-            // 竖线;源码态下竖线贴着裸代码/表格文本更是纯噪音。围栏按**整块 span**
-            // 跳过(内容行任意文本,前缀匹配不住);公式按 $$ 对整段跳过。
-            const guideSkipLines = new Set<number>();
-            for (const info of fences) {
-                const f = doc.lineAt(info.from).number;
-                const t = doc.lineAt(Math.max(info.from, info.to - 1)).number;
-                for (let k = f; k <= t; k++) guideSkipLines.add(k);
-            }
-            {
-                let k = 1;
-                while (k <= doc.lines) {
-                    if (!/^\s*\$\$\s*$/.test(doc.line(k).text)) { k++; continue; }
-                    let j = k + 1;
-                    while (j <= doc.lines && !/^\s*\$\$\s*$/.test(doc.line(j).text)) j++;
-                    if (j <= doc.lines) {
-                        for (let m = k; m <= j; m++) guideSkipLines.add(m);
-                        k = j + 1;
-                        continue;
-                    }
-                    k++;
-                }
-            }
-            for (let ln = 1; ln <= doc.lines; ln++) {
-                if (!digest[ln].isList) continue;
-                const w = digest[ln].indentW;
-                let end = ln;
-                // 子树 = 后续缩进更深的行(子列表项 / 引述块 / 折行续行);空行算间隔
-                for (let j = ln + 1; j <= doc.lines; j++) {
-                    const d = digest[j];
-                    if (d.isBlank || d.indentW > w) {
-                        end = j;
-                        continue;
-                    }
+                if (tj.trim() === "") {
+                    const nx = end + 2 <= doc.lines ? doc.line(end + 2).text : "";
+                    if (nx.trim() !== "" && indentWidth(nx) > base) { end = j; continue; }
                     break;
                 }
-                if (end <= ln) continue;
-                // 线锚父项标记中心:x = 标记列基线(6 + depth×16,与悬挂容器
-                // 模型同源)+ 标记中心偏移 - 线宽一半(2px 线居中于标记中心)。
-                // 任务项复选框 13px 宽(中心 +6.5),圆点 5.3px(中心 +2.65)。
-                const depth = Math.round(w / HANG_STEP);
-                const isTask = digest[ln].isTask;
-                const x = 6 + depth * HANG_STEP + (isTask ? 5.5 : 1.65);
-                // 直接相邻不画线(用户 2026-11-14):引导线与子树内任一列表项的
-                // 标记左缘间距 <4px(贴着甚至穿过,典型是容器深度塌缩——2 空格
-                // 父项与 4 空格子项渲染在同一列)时,线成了贴着复选框的噪音,
-                // 整条跳过;有真实间隙的(≥4px)保留。
-                let adjacentToChild = false;
-                for (let k = ln + 1; k <= end; k++) {
-                    if (!digest[k].isList) continue;
-                    const childLeft = 6 + Math.round(digest[k].indentW / HANG_STEP) * HANG_STEP;
-                    if (childLeft - x < 4) {
-                        adjacentToChild = true;
-                        break;
-                    }
-                }
-                if (adjacentToChild) continue;
-                // 空行只算间隔不画线:空行行高矮,2px 竖线上下各留 9px 后只剩一小截,
-                // 看着像孤立的残渣点(用户 2026-11-14 反馈)。first/last 标记落到
-                // 首末个**实际绘制**行,引导线的上下留白仍贴内容行。
-                let firstDrawn = -1;
-                let lastDrawn = -1;
-                for (let k = ln + 1; k <= end; k++) {
-                    if (digest[k].isBlank) continue;
-                    if (guideSkipLines.has(k) || RE_GUIDE_SKIP_ROW.test(doc.line(k).text)) continue;
-                    if (firstDrawn < 0) firstDrawn = k;
-                    lastDrawn = k;
-                }
-                // 单行子树:两端 9px 留白把引导线裁成一截残段,上下都不触达
-                // 父/子圆点,没有可对应的两个端点,不画(用户 2026-11-14 反馈)
-                if (firstDrawn < 0 || firstDrawn === lastDrawn) continue;
-                for (let k = ln + 1; k <= end; k++) {
-                    if (digest[k].isBlank) continue;
-                    if (guideSkipLines.has(k) || RE_GUIDE_SKIP_ROW.test(doc.line(k).text)) continue;
-                    const arr = guideStops.get(k) || [];
-                    arr.push({x, first: k === firstDrawn, last: k === lastDrawn});
-                    guideStops.set(k, arr);
-                }
+                if (indentWidth(tj) > base) { end = j; continue; }
+                break;
             }
-
-            // ===== 列表悬挂缩进(容器模型:父列表块控制子块缩进) =====
-            // 缩进由容器层级决定:每层固定步长,子块缩进 = 祖先链各层之和。
-            // 层级 = 行首空白折算(tab 1 层 / 每 4 空格 1 层);行首空白本身
-            // 已由 cm6-inline 隐藏(ListMark 分支),渲染宽度不再参与推导 ——
-            // tab 停靠点浮动导致缩进错位,层级模型彻底绕开。
-            // 悬挂:padding 钉正文起点(层级缩进 + 标记列宽),负 text-indent
-            // 让标记从层级缩进处起排,续行与正文对齐。⚠ 静态推导,无测量反馈
-            //(实测 pad=textX 与 tab 停靠点耦合,点击即振荡整篇乱跳)。
-            const HANG_MARK_W = 9.3;   // 圆点/序号标记渲染宽 + 后随空格(实测均值)
-            const HANG_QUOTE_W = 13.3; // 引述行:标记列 9.3 + 隐藏 > 0 + 后随空格 4
-            const hangByLine = new Map<number, {pad: number; indent: number}>();
-            for (let ln = 1; ln <= doc.lines; ln++) {
-                const d = digest[ln];
-                if (!d.isList) continue;
-                // 引述行同样入容器模型:标记列与兄弟项对齐(引述块自身不加缩进),
-                // 正文列 = 标记列 + 隐藏 > + 空格;引述视觉 = 竖线边界 + 内容 padding。
-                // ⚠ 缩进只由 depth 承担,prefix 仅含标记列 —— indentWidth 若同时
-                // 计入两处会双重叠加(depth×步长 + 缩进宽),缩进多出一整层
-                const prefix = d.isQuote ? HANG_QUOTE_W : HANG_MARK_W;
-                const depth = Math.round(d.indentW / HANG_STEP);
-                hangByLine.set(ln, {pad: 6 + depth * HANG_STEP + prefix, indent: -prefix});
-            }
-
-            // 列表项(有序/无序都一样)是**容器块**:项内续行必须与首行正文列
-            // 对齐,留在容器左边界(引导线)右侧。此前 hangByLine 只收带 marker
-            // 的首行,续行/长文本折行从行盒 0 起排,会越过引导线跑到容器外
-            //(用户 2026-11-14 反馈)。续行只用 pad、不挂负 text-indent。
-            {
-                let owner: {pad: number; base: number} | null = null;
-                for (let ln = 1; ln <= doc.lines; ln++) {
-                    const d = digest[ln];
-                    if (d.isList) {
-                        const h = hangByLine.get(ln);
-                        if (h) owner = {pad: h.pad, base: d.indentW};
-                        continue;   // 子列表项用自己的(更深)容器几何
-                    }
-                    if (!owner || d.isBlank) continue;
-                    if (d.indentW <= owner.base) { owner = null; continue; }  // 退回同级 = 离开容器
-                    // 自绘盒的行(引述/表格/围栏/公式)由各自几何接管,不覆盖
-                    if (d.isBoxLine) continue;
-                    hangByLine.set(ln, {pad: owner.pad, indent: 0});
-                }
-            }
-
-            // 0) Obsidian 页面属性:只认文档开头且闭合的 YAML frontmatter(--- ... ---)。
-            //    光标在块内时回源码态,与表格/公式块同一套编辑模型。
-            {
-                const first = doc.line(1);
-                if (/^\s*---\s*$/.test(first.text)) {
-                    let end = 2;
-                    while (end <= doc.lines && !/^\s*---\s*$/.test(doc.line(end).text)) end++;
-                    if (end <= doc.lines) {
-                        const from = first.from;
-                        const to = doc.line(end).to;
-                        usedRanges.push({from, to});
-                        // 打开文档时光标默认停在位置 0(块首),此时仍要显示属性面板;
-                        // 只有真正进入块内(cursor > from)才回源码态。点击面板时
-                        // clickHandler 会把光标送到 line.from + 1,同样能进编辑态。
-                        if (cursor > from && cursor <= to) {
-                            for (let k = 1; k <= end; k++) {
-                                lineDecos.push(propSrcLineDeco.range(doc.line(k).from));
-                            }
-                        } else {
-                            const propLines: string[] = [];
-                            for (let k = 2; k < end; k++) propLines.push(doc.line(k).text);
-                            const deco = Decoration.replace({widget: new PropertiesWidget(propLines), block: true});
-                            ranges.push(deco.range(from, to));
-                            atomicRanges.push(deco.range(from, to));
-                        }
-                    }
-                }
-            }
-
-            // 1) 围栏代码块:三种形态 ——
-            //    a. 光标在块外            → 卡片(colorize 正文)
-            //    b. editingKey 命中(点卡片) → 卡片 + 全局单例 Monaco(monaco-block.ts)
-            //    c. 光标在块内未挂 Monaco   → 原始围栏(源码态;点语言标签/方向键进块,
-            //       Obsidian 同款「点语言看源码」),不加替换装饰、不占 usedRanges
-            //    开关 markdown.cm6CodeBlockMonaco 关闭 → 整体回落源码行(无卡片),
-            //    数学/表格/图片等非 Monaco 渲染不受影响
             for (const info of fences) {
-                if (!isCodeBlockMonacoEnabled()) continue;
-                const editing = !view.state.readOnly && getEditingKey() === String(info.from);
-                if (!editing && cursorInBlock(info.from, info.to)) continue;
-                // 列表内的开栅栏行,若栅栏前只有空白或「缩进+列表标记」,整行替换
-                // (用户 2026-11-14:纯缩进围栏 "  \`\`\`python" 的前导空格曾渲染
-                // 成空行,卡片被顶下一行「渲染下移」)。带标记时圆点由卡片顶部
-                // 自画并与卡片顶对齐;纯空白前缀无标记,不画。卡片缩进到所属项
-                // 正文列 —— 缩进/盒色都写进 widget 自身(padding-left + listBox)。
-                const fenceLine = doc.lineAt(info.from);
-                const prefix = fenceLine.text.slice(0, info.from - fenceLine.from);
-                const hasMarker = /^\s*(?:[-*+]|\d+[.)])\s*$/.test(prefix);
-                const swallowLine = /^\s*(?:[-*+]|\d+[.)])?\s*$/.test(prefix);
-                const indent = listBlockIndent(doc, fenceLine.number, hasMarker, (ln) => hangByLine.get(ln)?.pad ?? 0, indentWidth);
-                const span = topListBoxSpan(state, info.from);
-                let listBoxCls = "";
-                if (span) {
-                    const f1 = fenceLine.number;
-                    const f2 = doc.lineAt(Math.max(info.from, info.to - 1)).number;
-                    if (f1 <= span.toLine && f2 >= span.fromLine) {
-                        listBoxCls = "syfe-cm-list-box-extend";
-                        if (f1 <= span.fromLine) listBoxCls += " is-box-first";
-                        if (f2 >= span.toLine) listBoxCls += " is-box-last";
-                    }
-                }
-                const from = swallowLine ? fenceLine.from : info.from;
-                const markerLeft = hasMarker ? indent - 9.3 : -1;
-                const gutterNums: number[] = [];
-                if (swallowLine) {
-                    const f2 = doc.lineAt(Math.max(info.from, info.to - 1)).number;
-                    for (let k = fenceLine.number; k <= f2; k++) gutterNums.push(k);
-                }
-                usedRanges.push({from, to: info.to});
-                const widget = new CodeBlockWidget(info.lang, info.codeView, String(info.from), indent, listBoxCls, markerLeft, gutterNums);
-                const replace = Decoration.replace({widget, block: true});
-                ranges.push(replace.range(from, info.to));
-                atomicRanges.push(replace.range(from, info.to));
+                const f = doc.lineAt(info.from).number;
+                if (f >= n && f <= end && !inner.includes(info)) inner.push(info);
             }
+            blocks.push(mk(n, end, "list", inner));
+            n = end + 1;
+            continue;
+        }
+        // 段落
+        let end = n;
+        while (end + 1 <= doc.lines) {
+            const tj = doc.line(end + 1).text;
+            if (tj.trim() === "") break;
+            if (fenceCovered[end + 1] || inMathSpan[end + 1]) break;
+            if (RE_LIST_ITEM.test(tj) || RE_TABLE_ROW.test(tj) ||
+                /^\s*(?:[-*+]|\d{1,9}[.)])?\s*>/.test(tj) || /^\s*#{1,6}\s/.test(tj)) break;
+            end++;
+        }
+        blocks.push(mk(n, end, "para"));
+        n = end + 1;
+    }
+    renderBlockCache.set(doc, blocks);
+    return blocks;
+}
 
-            // 2) 数学块 $$...$$(光标在块内时只加底色,便于编辑)
-            {
-                const lines = doc.lines;
-                let i = 1;
-                while (i <= lines) {
-                    const line = doc.line(i);
-                    if (!/^\s*\$\$\s*$/.test(line.text)) { i++; continue; }
-                    let j = i + 1;
-                    while (j <= lines && !/^\s*\$\$\s*$/.test(doc.line(j).text)) j++;
-                    if (j > lines) { i++; continue; }
-                    const from = line.from;
-                    const to = doc.line(j).to;
-                    if (overlapsUsed(from, to)) { i = j + 1; continue; }
-                    usedRanges.push({from, to});
-                    if (cursorInBlock(from, to)) {
-                        for (let ln = i; ln <= j; ln++) {
-                            lineDecos.push(mathSrcLineDeco.range(doc.line(ln).from));
-                        }
-                    } else {
-                        const bodyLines: string[] = [];
-                        for (let k = i + 1; k < j; k++) bodyLines.push(doc.line(k).text);
-                        const body = splitMathBlockBody(bodyLines);
-                        const widget = new MathWidget(body.tex, body.notes, (window as any).__syfeKatex || null);
-                        // 非 block 的跨行 replace:视觉上仍是一个公式 widget,但
-                        // CM6 的原生行号槽按原行数逐行生成(不会跳过 3 行再按
-                        // 估算高度补 margin-top),从根上消除公式块之后的行号漂移。
-                        const replace = Decoration.replace({widget});
-                        ranges.push(replace.range(from, to));
-                    }
-                    i = j + 1;
+// ===== 单块装饰构建(各段落扫描的块局域版) =====
+
+interface BlockDecorations {
+    fromLine: number;
+    content: string;
+    /** 构建时光标是否在本块范围内(缓存复用条件之一) */
+    near: boolean;
+    ranges: Range<Decoration>[];
+    lineDecos: Range<Decoration>[];
+}
+
+function buildBlockDeco(
+    state: EditorState,
+    block: RenderBlock,
+    digests: LineDigest[],
+    cursor: number,
+    opts: Cm6RenderOptions,
+): BlockDecorations {
+    const view = {state} as EditorView;
+    const ranges: Array<Range<Decoration>> = [];
+    const lineDecos: Array<Range<Decoration>> = [];
+    const usedRanges: Array<{from: number; to: number}> = [];
+    const overlapsUsed = (from: number, to: number) => usedRanges.some(r => from < r.to && to > r.from);
+    // 与原实现同一语义:块级开右区间(光标停在块尾算「在块之后」)
+    const cursorInBlock = (from: number, to: number) => cursor >= from && cursor < to;
+    const cursorOnLine = (from: number, to: number) => cursor >= from && cursor <= to;
+    const doc = state.doc;
+    const readOnly = state.readOnly;
+    const HANG_STEP = 16;
+    const HANG_MARK_W = 9.3;
+    const HANG_QUOTE_W = 13.3;
+    const GUIDE_GAP = 9;
+    const GUIDE_WIDTH = 2;
+    const GUIDE_COLOR = "var(--syfe-cm-guide-color, color-mix(in srgb, var(--b3-theme-on-background, #888) 32%, transparent))";
+    const fromLine = block.fromLine;
+    const toLine = block.toLine;
+
+    const guideStops = new Map<number, Array<{x: number; first: boolean; last: boolean}>>();
+    const quoteBarByLine = new Map<number, number>();
+    const quoteLines = new Set<number>();
+    const quoteCalloutLines = new Set<number>();
+    const hangByLine = new Map<number, {pad: number; indent: number}>();
+
+    // 悬挂几何(列表/引述块)
+    if (block.kind === "list" || block.kind === "quote") {
+        for (let ln = fromLine; ln <= toLine; ln++) {
+            const d = digests[ln];
+            if (!d.isList && !d.isQuote) continue;
+            const prefix = d.isQuote ? HANG_QUOTE_W : HANG_MARK_W;
+            const depth = Math.round(d.indentW / HANG_STEP);
+            hangByLine.set(ln, {pad: 6 + depth * HANG_STEP + prefix, indent: -prefix});
+        }
+        {
+            let owner: {pad: number; base: number} | null = null;
+            for (let ln = fromLine; ln <= toLine; ln++) {
+                const d = digests[ln];
+                if (d.isList) {
+                    const h = hangByLine.get(ln);
+                    if (h) owner = {pad: h.pad, base: d.indentW};
+                    continue;
+                }
+                if (!owner || d.isBlank) continue;
+                if (d.indentW <= owner.base) { owner = null; continue; }
+                if (d.isBoxLine) continue;
+                hangByLine.set(ln, {pad: owner.pad, indent: 0});
+            }
+        }
+    }
+
+    // 引导线(列表块)
+    if (block.kind === "list") {
+        const guideSkipLines = new Set<number>();
+        for (const info of block.fences) {
+            const f = doc.lineAt(info.from).number;
+            const t = doc.lineAt(Math.max(info.from, info.to - 1)).number;
+            for (let k = f; k <= t; k++) guideSkipLines.add(k);
+        }
+        for (let ln = fromLine; ln <= toLine; ln++) {
+            if (!digests[ln].isList) continue;
+            const w = digests[ln].indentW;
+            let end = ln;
+            for (let j = ln + 1; j <= toLine; j++) {
+                const d = digests[j];
+                if (d.isBlank || d.indentW > w) { end = j; continue; }
+                break;
+            }
+            if (end <= ln) continue;
+            const depth = Math.round(w / HANG_STEP);
+            const isTask = digests[ln].isTask;
+            const x = 6 + depth * HANG_STEP + (isTask ? 5.5 : 1.65);
+            let adjacentToChild = false;
+            for (let k = ln + 1; k <= end; k++) {
+                if (!digests[k].isList) continue;
+                const childLeft = 6 + Math.round(digests[k].indentW / HANG_STEP) * HANG_STEP;
+                if (childLeft - x < 4) { adjacentToChild = true; break; }
+            }
+            if (adjacentToChild) continue;
+            let firstDrawn = -1;
+            let lastDrawn = -1;
+            for (let k = ln + 1; k <= end; k++) {
+                if (digests[k].isBlank) continue;
+                if (guideSkipLines.has(k) || digests[k].isQuote || /^\s*(?:\||\$)/.test(doc.line(k).text)) continue;
+                if (firstDrawn < 0) firstDrawn = k;
+                lastDrawn = k;
+            }
+            if (firstDrawn < 0 || firstDrawn === lastDrawn) continue;
+            for (let k = ln + 1; k <= end; k++) {
+                if (digests[k].isBlank) continue;
+                if (guideSkipLines.has(k) || digests[k].isQuote || /^\s*(?:\||\$)/.test(doc.line(k).text)) continue;
+                const arr = guideStops.get(k) || [];
+                arr.push({x, first: k === firstDrawn, last: k === lastDrawn});
+                guideStops.set(k, arr);
+            }
+        }
+    }
+
+    // 引述竖线(引述块)
+    if (block.kind === "quote") {
+        for (let ln = fromLine; ln <= toLine; ln++) {
+            const d0 = digests[ln];
+            if (!d0.isQuote) continue;
+            if (overlapsUsed(d0.from, d0.to)) continue;
+            let end = ln;
+            while (end + 1 <= toLine) {
+                const dn = digests[end + 1];
+                if (!dn.isQuote || dn.quoteIndent !== d0.quoteIndent) break;
+                end++;
+            }
+            const qDepth = Math.round(d0.indentW / HANG_STEP);
+            const bar = 6 + qDepth * HANG_STEP + 6.3;
+            const callout = RE_QUOTE_CALLOUT_LINE.test(doc.line(ln).text);
+            for (let k = ln; k <= end; k++) {
+                quoteLines.add(k);
+                quoteBarByLine.set(k, bar);
+                if (callout) quoteCalloutLines.add(k);
+            }
+            ln = end;
+        }
+    }
+
+    // 0) 属性面板(光标在 from 之后、to 之前 → 源码态;块首光标仍渲染)
+    if (block.kind === "props") {
+        if (cursor > block.from && cursor <= block.to) {
+            for (let k = 1; k <= toLine; k++) lineDecos.push(propSrcLineDeco.range(doc.line(k).from));
+        } else {
+            const propLines: string[] = [];
+            for (let k = 2; k < toLine; k++) propLines.push(doc.line(k).text);
+            const deco = Decoration.replace({widget: new PropertiesWidget(propLines), block: true});
+            ranges.push(deco.range(block.from, block.to));
+        }
+    }
+
+    // 1) 围栏代码卡片(围栏块 / 列表块内部围栏)
+    if (block.kind === "fence" || block.kind === "list") {
+        for (const info of block.fences) {
+            if (!isCodeBlockMonacoEnabled()) continue;
+            const editing = !readOnly && getEditingKey() === String(info.from);
+            if (!editing && cursorInBlock(info.from, info.to)) continue;
+            const fenceLine = doc.lineAt(info.from);
+            const prefix = fenceLine.text.slice(0, info.from - fenceLine.from);
+            const hasMarker = /^\s*(?:[-*+]|\d+[.)])\s*$/.test(prefix);
+            const swallowLine = /^\s*(?:[-*+]|\d+[.)])?\s*$/.test(prefix);
+            const indent = listBlockIndent(doc, fenceLine.number, hasMarker, (ln) => hangByLine.get(ln)?.pad ?? 0, indentWidth);
+            const span = topListBoxSpan(state, info.from);
+            let listBoxCls = "";
+            if (span) {
+                const f1 = fenceLine.number;
+                const f2 = doc.lineAt(Math.max(info.from, info.to - 1)).number;
+                if (f1 <= span.toLine && f2 >= span.fromLine) {
+                    listBoxCls = "syfe-cm-list-box-extend";
+                    if (f1 <= span.fromLine) listBoxCls += " is-box-first";
+                    if (f2 >= span.toLine) listBoxCls += " is-box-last";
                 }
             }
+            const from = swallowLine ? fenceLine.from : info.from;
+            const markerLeft = hasMarker ? indent - 9.3 : -1;
+            const gutterNums: number[] = [];
+            if (swallowLine) {
+                const f2 = doc.lineAt(Math.max(info.from, info.to - 1)).number;
+                for (let k = fenceLine.number; k <= f2; k++) gutterNums.push(k);
+            }
+            usedRanges.push({from, to: info.to});
+            const widget = new CodeBlockWidget(info.lang, info.codeView, String(info.from), indent, listBoxCls, markerLeft, gutterNums);
+            const replace = Decoration.replace({widget, block: true});
+            ranges.push(replace.range(from, info.to));
+        }
+    }
 
-            // 2.6) 独立单行显示公式 $$...$$(无列表标记):整行替换为显示公式 widget。
-            //     列表项内 `- $$…$$` 不在此处理(保留列表圆点),走 inline 渲染(step 5)
-            for (let ln = 1; ln <= doc.lines; ln++) {
-                const line = doc.line(ln);
-                if (overlapsUsed(line.from, line.to)) continue;
-                const sm = /^\s*\$\$(.+)\$\$\s*$/.exec(line.text);
-                if (!sm) continue;
+    // 2) $$ 公式对(顶层公式块)
+    if (block.kind === "math") {
+        const i = block.fromLine;
+        const j = block.toLine;
+        const from = doc.line(i).from;
+        const to = doc.line(j).to;
+        usedRanges.push({from, to});
+        if (cursorInBlock(from, to)) {
+            for (let ln = i; ln <= j; ln++) lineDecos.push(mathSrcLineDeco.range(doc.line(ln).from));
+        } else {
+            const bodyLines: string[] = [];
+            for (let k = i + 1; k < j; k++) bodyLines.push(doc.line(k).text);
+            const body = splitMathBlockBody(bodyLines);
+            const widget = new MathWidget(body.tex, body.notes, (window as any).__syfeKatex || null);
+            const replace = Decoration.replace({widget});
+            ranges.push(replace.range(from, to));
+        }
+    }
+
+    // 3) 表格(顶层表格块)
+    if (block.kind === "table") {
+        const from = block.from;
+        const to = block.to;
+        const tableLines: string[] = [];
+        for (let k = fromLine; k <= toLine; k++) tableLines.push(doc.line(k).text);
+        const indent = listBlockIndent(doc, fromLine, false, (l) => hangByLine.get(l)?.pad ?? 0, indentWidth);
+        const span = topListBoxSpan(state, from);
+        let listBoxCls = "";
+        if (span) {
+            const endLn = toLine;
+            if (fromLine <= span.toLine && endLn >= span.fromLine) {
+                listBoxCls = "syfe-cm-list-box-extend";
+                if (fromLine <= span.fromLine) listBoxCls += " is-box-first";
+                if (endLn >= span.toLine) listBoxCls += " is-box-last";
+            }
+        }
+        const gutterNums: number[] = [];
+        for (let k = fromLine; k <= toLine; k++) gutterNums.push(k);
+        const decoReplace = Decoration.replace({widget: new TableWidget(tableLines, indent, listBoxCls, gutterNums), block: true});
+        ranges.push(decoReplace.range(from, to));
+    }
+
+    // 2.6/2.7) 单行显示公式与 \( \[ 块(段落/标题/列表/引述块内的行)
+    if (block.kind === "para" || block.kind === "heading" || block.kind === "list" || block.kind === "quote") {
+        for (let ln = fromLine; ln <= toLine; ln++) {
+            const line = doc.line(ln);
+            if (overlapsUsed(line.from, line.to)) continue;
+            const sm = /^\s*\$\$(.+)\$\$\s*$/.exec(line.text);
+            if (sm) {
                 const from = line.from;
                 const to = line.to;
                 usedRanges.push({from, to});
@@ -2008,302 +2125,225 @@ function buildDecorations(state: EditorState, opts: Cm6RenderOptions): Decoratio
                     const widget = new MathWidget(sm[1].trim(), [], (window as any).__syfeKatex || null);
                     ranges.push(Decoration.replace({widget}).range(from, to));
                 }
+                continue;
             }
-
-            // 2.7) LaTeX 括号定界公式:\[...\](display)与跨行 \(...\)。CM6 行内
-            //     replace 不能跨行,跨行段整段(覆盖所有行)替换为 display 公式
-            //     widget;段前/段后的同行文字(如「\)...其中」的其中)进 widget
-            //     一并显示。光标进块回源码(与 $$ 块同模型)。
-            //     列表项(- 开头)与引述行(> 开头)不动:整行替换会吃掉圆点/引述
-            //     结构,保持源码。单行 \(...\) 由 step 5 行内渲染,这里跳过。
-            for (let ln = 1; ln <= doc.lines; ln++) {
-                const line = doc.line(ln);
-                // 守卫走摘要旗标(原 RE_MATHBLOCK_GUARD:列表标记+空格 或 >)
-                if (digest[ln].isList || digest[ln].isQuote) continue;
-                if (overlapsUsed(line.from, line.to)) continue;
-                const t = line.text;
-                // 找第一个未转义的 \( 或 \[
-                let openPos = -1;
-                let kind = "";
-                for (const [open, closerOf, display] of [["\\(", "\\)", false], ["\\[", "\\]", true]] as const) {
-                    let at = 0;
-                    while ((at = t.indexOf(open, at)) >= 0) {
-                        if (t[at - 1] !== "\\") break;
-                        at += open.length;
-                    }
-                    if (at < 0) continue;
-                    // \( 同行已闭合 → 行内渲染(step 5),不按块级处理
-                    if (!display && findMathClose(t, at + open.length, closerOf)) continue;
-                    if (openPos < 0 || at < openPos) {
-                        openPos = at;
-                        kind = open;
-                    }
+            if (digests[ln].isList || digests[ln].isQuote) continue;
+            const t = line.text;
+            let openPos = -1;
+            let kind = "";
+            for (const [open, closerOf, display] of [["\\(", "\\)", false], ["\\[", "\\]", true]] as const) {
+                let at = 0;
+                while ((at = t.indexOf(open, at)) >= 0) {
+                    if (t[at - 1] !== "\\") break;
+                    at += open.length;
                 }
-                if (openPos < 0) continue;
-                const closer = kind === "\\(" ? "\\)" : "\\]";
-                // 向后找闭合行(闭合符须未转义;起始行从 opener 之后找起)
-                let endLine = -1;
-                let closeEnd = -1;
-                for (let j = ln; j <= doc.lines; j++) {
-                    const tj = doc.line(j).text;
-                    let at = j === ln ? openPos + kind.length : 0;
-                    while ((at = tj.indexOf(closer, at)) >= 0) {
-                        if (tj[at - 1] !== "\\") break;
-                        at += closer.length;
-                    }
-                    if (at >= 0) {
-                        endLine = j;
-                        closeEnd = at + closer.length;
-                        break;
-                    }
-                }
-                if (endLine < 0) continue;
-                const firstText = doc.line(ln).text;
-                const lastText = doc.line(endLine).text;
-                const segs: string[] = [];
-                if (endLine === ln) {
-                    segs.push(firstText.slice(openPos + kind.length, closeEnd - closer.length));
-                } else {
-                    segs.push(firstText.slice(openPos + kind.length));
-                    for (let k = ln + 1; k < endLine; k++) segs.push(doc.line(k).text);
-                    segs.push(lastText.slice(0, closeEnd - closer.length));
-                }
-                const tex = segs.join("\n").trim();
-                if (!tex) continue;
-                const from = line.from;
-                const to = doc.line(endLine).to;
-                usedRanges.push({from, to});
-                if (cursorInBlock(from, to)) {
-                    for (let k = ln; k <= endLine; k++) {
-                        lineDecos.push(mathSrcLineDeco.range(doc.line(k).from));
-                    }
-                } else {
-                    const widget = new MathWidget(tex, [], (window as any).__syfeKatex || null,
-                        firstText.slice(0, openPos).trim(), lastText.slice(closeEnd).trim());
-                    ranges.push(Decoration.replace({widget}).range(from, to));
-                }
-                ln = endLine;
+                if (at < 0) continue;
+                if (!display && findMathClose(t, at + open.length, closerOf)) continue;
+                if (openPos < 0 || at < openPos) { openPos = at; kind = open; }
             }
-
-            // 2.5) 引述块(含列表内 `- > …`):**不再整行替换为 widget**。
-            //     编辑 / 退出编辑 / 只读阅读态统一走同一套渲染 —— CM6 源码行 +
-            //     cm6-inline 的 WYSIWYM(圆点/粗体/公式) + 这里的一根引用竖线。
-            //     历史:曾用 Lute/protyle widget 整行替换,编辑时翻回源码行,两态
-            //     DOM 不同、层级相反(「引述块包裹列表」),用户 2026-11-13 反馈。
-            //     ⚠ 不占 usedRanges、不加 atomicRanges:step 4/5 的行内图片/公式
-            //     照常渲染,光标也能自由进出该行。
-            // 盒左边界(竖线 x):build 期只给安全估算(6px 行盒内边距 + 缩进宽度),
-            // 盒左边界按容器层级静态推导(见下方容器模型),标记列与兄弟项对齐 —— 盒边界 =
-            // 列表圆点右缘 + 1(圆点留在盒外,盒从列表结构内部开始),竖线贴盒内
-            // 左边界,盒底色也从边界起画(用户 2026-11-14:竖线应在块内左边界)。
-            // 关键:padding 钉到正文起点(续行与正文对齐、不穿越竖线),首行负
-            // text-indent 悬挂补偿冻结原布局 —— padding 与 bar 锚点解耦(bar 锚
-            // 圆点、pad 锚正文),不构成旧方案那种「正文随 bar 同移」的反馈环。
-            // build 期 coordsAtPos/domAtPos 只能读到「装饰未生效」的旧布局,故
-            // 测量必须走渲染后的 requestMeasure,不能在 build 期做。
-            for (let ln = 1; ln <= doc.lines; ln++) {
-                const d0 = digest[ln];
-                if (!d0.isQuote) continue;
-                const line = doc.line(ln);
-                if (overlapsUsed(d0.from, d0.to)) continue;
-                const indent = d0.quoteIndent;
-                let end = ln;
-                while (end + 1 <= doc.lines) {
-                    const dn = digest[end + 1];
-                    if (!dn.isQuote || dn.quoteIndent !== indent) break;
-                    end++;
+            if (openPos < 0) continue;
+            const closer = kind === "\\(" ? "\\)" : "\\]";
+            let endLine = -1;
+            let closeEnd = -1;
+            for (let j = ln; j <= toLine; j++) {
+                const tj = doc.line(j).text;
+                let at = j === ln ? openPos + kind.length : 0;
+                while ((at = tj.indexOf(closer, at)) >= 0) {
+                    if (tj[at - 1] !== "\\") break;
+                    at += closer.length;
                 }
-                // 竖线(盒左边界)= 容器标记列右缘 + 1:圆点 5.3 + 空隙 1。
-                // 容器层级模型:标记列 = 6px 基线 + depth×步长(行首空白已折叠,
-                // 标记从首行起点起排,几何确定,无测量反馈)。
-                const qDepth = Math.round(d0.indentW / HANG_STEP);
-                const bar = 6 + qDepth * HANG_STEP + 6.3;
-                // 只记录,统一在下面的 lineStyleFor 出口生成行装饰 —— 引述竖线要与
-                // 列表引导线合并进同一个 style,否则两个 line deco 的 style 互相覆盖
-                // 标注行(callout)整段走旧竖线样式:标注类自带底色,不用容器盒 gradient
-                const callout = RE_QUOTE_CALLOUT_LINE.test(line.text);
-                for (let k = ln; k <= end; k++) {
-                    quoteLines.add(k);
-                    quoteBarByLine.set(k, bar);
-                    if (callout) quoteCalloutLines.add(k);
-                }
-                ln = end;
+                if (at >= 0) { endLine = j; closeEnd = at + closer.length; break; }
             }
-
-            // ===== 行级样式的唯一出口 =====
-            // CM6 对同一行多个 line decoration 依次 setAttribute("style"),后者覆盖
-            // 前者;所以引述竖线 + 列表引导线必须合并成一条 style。引述 gradient
-            // 在 inline 里复刻 theme 规则(不新增/修改任何 CSS 文件),引导线叠加其后。
-            const QUOTE_GRADIENT =
-                "linear-gradient(to right, transparent var(--syfe-quote-bar), " +
-                "var(--b3-border-color, rgba(128,128,128,.45)) var(--syfe-quote-bar), " +
-                "var(--b3-border-color, rgba(128,128,128,.45)) calc(var(--syfe-quote-bar) + 3px), " +
-                "transparent calc(var(--syfe-quote-bar) + 3px))";
-            // 引述容器盒:从盒左边界起画 [透明 → 2px 竖线 → 盒底色]。竖线贴盒内
-            // 左边界,边界之外不再有引述底色(下层露出列表盒/页面背景)——
-            // 盒左边界 = 容器标记列右缘 + 1(静态推导)。
-            const QUOTE_BOX_GRADIENT =
-                "linear-gradient(to right, transparent var(--syfe-quote-bar), " +
-                "var(--b3-border-color, rgba(128,128,128,.45)) var(--syfe-quote-bar), " +
-                "var(--b3-border-color, rgba(128,128,128,.45)) calc(var(--syfe-quote-bar) + 2px), " +
-                "var(--b3-theme-surface, var(--b3-theme-background)) calc(var(--syfe-quote-bar) + 2px))";
-            const lineStyleFor = (k: number): string => {
-                const decls: string[] = [];
-                const images: string[] = [];
-                const sizes: string[] = [];
-                const positions: string[] = [];
-                // 列表悬挂缩进(静态推导):续行对齐正文,不越出圆点列。
-                // 排在最前 —— 引述行走自己的盒几何(引述行无悬挂),引导线
-                // gradient 叠加其后,互不覆盖。
-                const hang = hangByLine.get(k);
-                if (hang) {
-                    decls.push(`padding-left:${hang.pad.toFixed(1)}px`);
-                    decls.push(`text-indent:${hang.indent.toFixed(1)}px`);
-                }
-                const bar = quoteBarByLine.get(k);
-                if (bar !== undefined) {
-                    decls.push(`--syfe-quote-bar:${bar}px`);
-                    // 引述行内容约束在盒右(边界 + 竖线 2px + 内容 padding 5px):
-                    // 静态容器几何,无测量反馈(实测反馈与 tab 停靠耦合会振荡)
-                    decls.push(`padding-left:calc(var(--syfe-quote-bar) + 7px)`);
-                    decls.push(`--syfe-quote-math-pull:7px`);
-                    images.push(quoteCalloutLines.has(k) ? QUOTE_GRADIENT : QUOTE_BOX_GRADIENT);
-                    sizes.push("100% 100%");
-                    positions.push("0 0");
-                }
-                for (const g of guideStops.get(k) || []) {
-                    const top = g.first ? GUIDE_GAP : 0;
-                    const bottom = g.last ? GUIDE_GAP : 0;
-                    images.push(`linear-gradient(${GUIDE_COLOR}, ${GUIDE_COLOR})`);
-                    sizes.push(`${GUIDE_WIDTH}px calc(100% - ${top + bottom}px)`);
-                    positions.push(`${g.x}px ${top}px`);
-                }
-                if (images.length > 0) {
-                    decls.push(`background-image:${images.join(",")}`);
-                    decls.push(`background-size:${sizes.join(",")}`);
-                    decls.push(`background-position:${positions.join(",")}`);
-                    decls.push("background-repeat:no-repeat");
-                }
-                return decls.join(";");
-            };
-            for (const k of quoteLines) {
-                lineDecos.push(Decoration.line({
-                    class: "syfe-cm-quote-line",
-                    attributes: {style: lineStyleFor(k)},
-                }).range(doc.line(k).from));
+            if (endLine < 0) continue;
+            const firstText = doc.line(ln).text;
+            const lastText = doc.line(endLine).text;
+            const segs: string[] = [];
+            if (endLine === ln) {
+                segs.push(firstText.slice(openPos + kind.length, closeEnd - closer.length));
+            } else {
+                segs.push(firstText.slice(openPos + kind.length));
+                for (let k = ln + 1; k < endLine; k++) segs.push(doc.line(k).text);
+                segs.push(lastText.slice(0, closeEnd - closer.length));
             }
-            for (const k of guideStops.keys()) {
-                if (quoteLines.has(k)) continue;
-                lineDecos.push(Decoration.line({
-                    class: "syfe-cm-listguide",
-                    attributes: {style: lineStyleFor(k)},
-                }).range(doc.line(k).from));
+            const tex = segs.join("\n").trim();
+            if (!tex) continue;
+            const from = line.from;
+            const to = doc.line(endLine).to;
+            usedRanges.push({from, to});
+            if (cursorInBlock(from, to)) {
+                for (let k = ln; k <= endLine; k++) lineDecos.push(mathSrcLineDeco.range(doc.line(k).from));
+            } else {
+                const widget = new MathWidget(tex, [], (window as any).__syfeKatex || null,
+                    firstText.slice(0, openPos).trim(), lastText.slice(closeEnd).trim());
+                ranges.push(Decoration.replace({widget}).range(from, to));
             }
-            // 悬挂行中不在引导线/引述覆盖内的(普通列表项行):单独出行装饰
-            for (let ln = 1; ln <= doc.lines; ln++) {
-                if (quoteLines.has(ln) || guideStops.has(ln)) continue;
-                if (!hangByLine.has(ln)) continue;
-                lineDecos.push(Decoration.line({
-                    attributes: {style: lineStyleFor(ln)},
-                }).range(doc.line(ln).from));
-            }
-
-            // 3) GFM 表格(≥2 行:表头 + 分隔行;光标在块内时只加底色)
-            //    先占位,后面的行内图片/公式不会误落到表格 widget 的替换区里
-            for (let ln = 1; ln <= doc.lines; ln++) {
-                const d0 = digest[ln];
-                if (!d0.isTableRow) continue;
-                if (overlapsUsed(d0.from, d0.to)) continue;
-                // 分隔行必须是下一行
-                if (!RE_TABLE_SEP.test(doc.line(Math.min(ln + 1, doc.lines)).text)) continue;
-                // 向上收表头以上(表格只有表头+分隔+数据;表头就是当前行)
-                let end = ln + 1;
-                while (end + 1 <= doc.lines && digest[end + 1].isTableRow) end++;
-                const from = d0.from;
-                const to = doc.line(end).to;
-                if (overlapsUsed(from, to)) continue;
-                usedRanges.push({from, to});
-                const tableLines: string[] = [];
-                for (let k = ln; k <= end; k++) tableLines.push(doc.line(k).text);
-                if (cursorInBlock(from, to)) {
-                    for (let k = ln; k <= end; k++) {
-                        lineDecos.push(tableSrcLineDeco.range(doc.line(k).from));
-                    }
-                } else {
-                    // 列表内的表格:卡片同款,缩进到所属项正文列 + 盒带背景接管
-                    const indent = listBlockIndent(doc, ln, false, (l) => hangByLine.get(l)?.pad ?? 0, indentWidth);
-                    const span = topListBoxSpan(state, doc.line(ln).from);
-                    const endLn = doc.line(end).number;
-                    let listBoxCls = "";
-                    if (span && ln <= span.toLine && endLn >= span.fromLine) {
-                        listBoxCls = "syfe-cm-list-box-extend";
-                        if (ln <= span.fromLine) listBoxCls += " is-box-first";
-                        if (endLn >= span.toLine) listBoxCls += " is-box-last";
-                    }
-                    const gutterNums: number[] = [];
-                    for (let k = ln; k <= end; k++) gutterNums.push(k);
-                    const decoReplace = Decoration.replace({widget: new TableWidget(tableLines, indent, listBoxCls, gutterNums), block: true});
-                    ranges.push(decoReplace.range(from, to));
-                    atomicRanges.push(decoReplace.range(from, to));
-                }
-                ln = end;
-            }
-
-            // 4) 行内图片:逐处替换,覆盖列表项内图片、一行多图、与文字混排。
-            //    光标在该行时整行保持源码态,便于编辑地址。
-            for (let ln = 1; ln <= doc.lines; ln++) {
-                const line = doc.line(ln);
-                if (overlapsUsed(line.from, line.to)) continue;
-                if (cursorOnLine(line.from, line.to)) continue;
-                const text = line.text;
-                const hits: Array<{from: number; to: number; src: string; alt: string}> = [];
-                for (const m of text.matchAll(RE_IMAGE_INLINE)) {
-                    hits.push({
-                        from: m.index,
-                        to: m.index + m[0].length,
-                        src: m[2].replace(/^<|>$/g, ""),
-                        alt: m[1],
-                    });
-                }
-                for (const m of text.matchAll(RE_IMG_TAG_INLINE)) {
-                    hits.push({from: m.index, to: m.index + m[0].length, src: m[2] || m[3] || "", alt: ""});
-                }
-                hits.sort((a, b) => a.from - b.from);
-                for (const hit of hits) {
-                    if (!hit.src) continue;
-                    const from = line.from + hit.from;
-                    const to = line.from + hit.to;
-                    if (overlapsUsed(from, to)) continue;
-                    ranges.push(Decoration.replace({
-                        widget: new ImageWidget(hit.src, hit.alt, opts),
-                    }).range(from, to));
-                }
-            }
-
-            // 5) 行内公式 $...$ / $$...$$ → KaTeX inline。
-            //    光标落在某个公式的源码区间内时,只有该公式回源码(可编辑),
-            //    同行其余公式保持渲染 —— 早期是"光标在该行就整行回源码",
-            //    长段落里多个公式会一起闪成源码(用户实测反馈)。
-            //    KaTeX 只在 widget.toDOM(可见视口)里跑,且按 tex 缓存 —— 数百个公式
-            //    的大文档按键重建装饰也不会逐个重渲。
-            for (let ln = 1; ln <= doc.lines; ln++) {
-                const line = doc.line(ln);
-                if (overlapsUsed(line.from, line.to)) continue;
-                if (line.text.indexOf("$") < 0 && line.text.indexOf("\\(") < 0) continue;
-                for (const part of splitCellMath(line.text)) {
-                    if (part.math === undefined || part.from === undefined || part.to === undefined) continue;
-                    const from = line.from + part.from;
-                    const to = line.from + part.to;
-                    if (overlapsUsed(from, to)) continue;
-                    if (cursorInBlock(from, to)) continue;
-                    ranges.push(Decoration.replace({
-                        widget: new InlineMathWidget(part.math, part.text),
-                    }).range(from, to));
-                }
-            }
-
-            return Decoration.set([...ranges, ...lineDecos], true);
+            ln = endLine;
+        }
     }
+
+    // 4) 行内图片 + 5) 行内公式(块内非替换行;光标在该行时保持源码)
+    for (let ln = fromLine; ln <= toLine; ln++) {
+        const line = doc.line(ln);
+        if (overlapsUsed(line.from, line.to)) continue;
+        if (cursorOnLine(line.from, line.to)) continue;
+        const text = line.text;
+        const hits: Array<{from: number; to: number; src: string; alt: string}> = [];
+        if (!digests[ln].inFence) {
+            for (const m of text.matchAll(RE_IMAGE_INLINE)) {
+                hits.push({from: m.index, to: m.index + m[0].length, src: m[2].replace(/^<|>$/g, ""), alt: m[1]});
+            }
+            for (const m of text.matchAll(RE_IMG_TAG_INLINE)) {
+                hits.push({from: m.index, to: m.index + m[0].length, src: m[2] || m[3] || "", alt: ""});
+            }
+        }
+        hits.sort((a, b) => a.from - b.from);
+        for (const hit of hits) {
+            if (!hit.src) continue;
+            const from = line.from + hit.from;
+            const to = line.from + hit.to;
+            if (overlapsUsed(from, to)) continue;
+            ranges.push(Decoration.replace({
+                widget: new ImageWidget(hit.src, hit.alt, opts),
+            }).range(from, to));
+        }
+        if (text.indexOf("$") < 0 && text.indexOf("\\(") < 0) continue;
+        for (const part of splitCellMath(text)) {
+            if (part.math === undefined || part.from === undefined || part.to === undefined) continue;
+            const from = line.from + part.from;
+            const to = line.from + part.to;
+            if (overlapsUsed(from, to)) continue;
+            if (cursorInBlock(from, to)) continue;
+            ranges.push(Decoration.replace({
+                widget: new InlineMathWidget(part.math, part.text),
+            }).range(from, to));
+        }
+    }
+
+    // ===== 行级样式唯一出口 =====
+    const QUOTE_GRADIENT =
+        "linear-gradient(to right, transparent var(--syfe-quote-bar), " +
+        "var(--b3-border-color, rgba(128,128,128,.45)) var(--syfe-quote-bar), " +
+        "var(--b3-border-color, rgba(128,128,128,.45)) calc(var(--syfe-quote-bar) + 3px), " +
+        "transparent calc(var(--syfe-quote-bar) + 3px))";
+    const QUOTE_BOX_GRADIENT =
+        "linear-gradient(to right, transparent var(--syfe-quote-bar), " +
+        "var(--b3-border-color, rgba(128,128,128,.45)) var(--syfe-quote-bar), " +
+        "var(--b3-border-color, rgba(128,128,128,.45)) calc(var(--syfe-quote-bar) + 2px), " +
+        "var(--b3-theme-surface, var(--b3-theme-background)) calc(var(--syfe-quote-bar) + 2px))";
+    const lineStyleFor = (k: number): string => {
+        const decls: string[] = [];
+        const images: string[] = [];
+        const sizes: string[] = [];
+        const positions: string[] = [];
+        const hang = hangByLine.get(k);
+        if (hang) {
+            decls.push(`padding-left:${hang.pad.toFixed(1)}px`);
+            decls.push(`text-indent:${hang.indent.toFixed(1)}px`);
+        }
+        const bar = quoteBarByLine.get(k);
+        if (bar !== undefined) {
+            decls.push(`--syfe-quote-bar:${bar}px`);
+            decls.push(`padding-left:calc(var(--syfe-quote-bar) + 7px)`);
+            decls.push(`--syfe-quote-math-pull:7px`);
+            images.push(quoteCalloutLines.has(k) ? QUOTE_GRADIENT : QUOTE_BOX_GRADIENT);
+            sizes.push("100% 100%");
+            positions.push("0 0");
+        }
+        for (const g of guideStops.get(k) || []) {
+            const top = g.first ? GUIDE_GAP : 0;
+            const bottom = g.last ? GUIDE_GAP : 0;
+            images.push(`linear-gradient(${GUIDE_COLOR}, ${GUIDE_COLOR})`);
+            sizes.push(`${GUIDE_WIDTH}px calc(100% - ${top + bottom}px)`);
+            positions.push(`${g.x}px ${top}px`);
+        }
+        if (images.length > 0) {
+            decls.push(`background-image:${images.join(",")}`);
+            decls.push(`background-size:${sizes.join(",")}`);
+            decls.push(`background-position:${positions.join(",")}`);
+            decls.push("background-repeat:no-repeat");
+        }
+        return decls.join(";");
+    };
+    for (const k of quoteLines) {
+        lineDecos.push(Decoration.line({
+            class: "syfe-cm-quote-line",
+            attributes: {style: lineStyleFor(k)},
+        }).range(doc.line(k).from));
+    }
+    for (const k of guideStops.keys()) {
+        if (quoteLines.has(k)) continue;
+        lineDecos.push(Decoration.line({
+            class: "syfe-cm-listguide",
+            attributes: {style: lineStyleFor(k)},
+        }).range(doc.line(k).from));
+    }
+    for (let ln = fromLine; ln <= toLine; ln++) {
+        if (quoteLines.has(ln) || guideStops.has(ln)) continue;
+        if (!hangByLine.has(ln)) continue;
+        lineDecos.push(Decoration.line({
+            attributes: {style: lineStyleFor(ln)},
+        }).range(doc.line(ln).from));
+    }
+
+    return {ranges, lineDecos};
+}
+
+const blockDecoCache = new WeakMap<Text, Map<number, BlockDecorations>>();
+
+/** 单个装饰 range 的位移映射(@codemirror/state 6.7 的 Range 没有 .map,
+ *  用 Decoration 自带的 startSide/endSide 作 assoc 走 changes.mapPos,
+ *  与 RangeSet.map 内部逐 range 的映射一致) */
+function mapDecoRange(r: Range<Decoration>, changes: ChangeDesc): Range<Decoration> {
+    const d = r.value as Decoration;
+    return d.range(changes.mapPos(r.from, d.startSide, true), changes.mapPos(r.to, d.endSide, true));
+}
+
+function buildDecorations(state: EditorState, opts: Cm6RenderOptions, tr?: Transaction): DecorationSet {
+    const doc = state.doc;
+    const cursor = state.readOnly ? 0 : state.selection.main.head;
+    const cursorLine = cursor > 0 ? doc.lineAt(cursor).number : 0;
+    const blocks = docBlocksOf(state);
+    const digests = lineDigestsOf(state);
+    const oldMap = tr ? blockDecoCache.get(tr.startState.doc) : undefined;
+    const newMap = new Map<number, BlockDecorations>();
+    const allRanges: Range<Decoration>[] = [];
+    const allLineDecos: Range<Decoration>[] = [];
+    const docChanged = tr ? tr.docChanged : false;
+    const consumedOld = new Set<number>();
+    for (const block of blocks) {
+        const content = state.sliceDoc(block.from, block.to);
+        // 光标是否在本块行范围内(缓存复用条件:光标进出会翻转渲染态)
+        const near = cursor >= block.from && cursor <= block.to;
+        let entry: BlockDecorations | undefined;
+        if (oldMap) {
+            const oldPos = docChanged ? tr!.changes.mapPos(block.from, -1) : block.from;
+            const oldLine = tr!.startState.doc.lineAt(oldPos).number;
+            if (!consumedOld.has(oldLine)) {
+                const cand = oldMap.get(oldLine);
+                if (cand && cand.content === content && cand.near === near) {
+                    consumedOld.add(oldLine);
+                    entry = docChanged
+                        ? {
+                            fromLine: block.fromLine,
+                            content: cand.content,
+                            near: cand.near,
+                            ranges: cand.ranges.map(r => mapDecoRange(r, tr!.changes)),
+                            lineDecos: cand.lineDecos.map(r => mapDecoRange(r, tr!.changes)),
+                        }
+                        : cand;
+                }
+            }
+        }
+        if (!entry) {
+            const built = buildBlockDeco(state, block, digests, cursor, opts);
+            entry = {fromLine: block.fromLine, content, near, ranges: built.ranges, lineDecos: built.lineDecos};
+        }
+        newMap.set(block.fromLine, entry);
+        allRanges.push(...entry.ranges);
+        allLineDecos.push(...entry.lineDecos);
+    }
+    blockDecoCache.set(doc, newMap);
+    return Decoration.set([...allRanges, ...allLineDecos], true);
 }
 
 /** 预加载 KaTeX(公式首次渲染前调用;结果挂 window.__syfeKatex 供 widget 同步取用) */
