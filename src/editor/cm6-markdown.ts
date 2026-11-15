@@ -26,7 +26,7 @@ import {Menu} from "siyuan";
 import {cm6MarkdownRender, preloadCm6Katex, registerCopyLineHandler} from "./cm6-render";
 import {cm6InlineWysiwyg, mdParserExtensions} from "./cm6-inline";
 import {cm6SelectionBubble} from "./cm6-selection-bubble";
-import {cm6LineMenu, listIndentCommand, moveBlockCommand} from "./cm6-line-menu";
+import {cm6LineMenu, listBackspaceCommand, listIndentCommand, moveBlockCommand} from "./cm6-line-menu";
 import {cm6BlockPreview} from "./cm6-block-preview";
 import {BLOCK_FONT_FAMILY, BLOCK_FONT_SIZE, BLOCK_LINE_HEIGHT} from "./monaco-block";
 import {getLinkIndex} from "../utils/wikilink";
@@ -909,6 +909,13 @@ export function createCm6MarkdownEditor(
             // defaultKeymap 但命令不命中即穿透,不影响补全弹层的 Tab。
             // Alt+↑/↓:块移动(列表项/段落/标题节与相邻同级块换位,Logseq 同款);
             // 无同级块时吞键不动,只读态/不可移动行穿透
+            // ⚠ Backspace 必须单独挂 Prec.highest:@codemirror/lang-markdown 自带的
+            // deleteMarkupBackward 也绑 Backspace,同为 Prec.high 且注册更早,会先
+            // 命中并把 "- " 替换成等长空格以保留缩进列(实测事务 userEvent:"delete")。
+            // 只提这一个键,Tab 等仍留 Prec.high —— 免得压过补全弹层的 Tab。
+            Prec.highest(keymap.of([
+                {key: "Backspace", run: listBackspaceCommand()},
+            ])),
             Prec.high(keymap.of([
                 {key: "Tab", run: listIndentCommand(1)},
                 {key: "Shift-Tab", run: listIndentCommand(-1)},

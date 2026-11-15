@@ -38,6 +38,9 @@ function lineTextStart(state: EditorState, line: Line): number {
         enter: (node) => {
             if (
                 (node.name === "ListMark" ||
+                    // lezer-markdown 的任务框节点名是 TaskMarker(不是 TaskState);
+                    // 漏掉它会把任务行的「文本起点」算成 "- " 之后,任务框被当成正文
+                    node.name === "TaskMarker" ||
                     node.name === "TaskState" ||
                     node.name === "QuoteMark") &&
                 node.from >= line.from &&
@@ -391,7 +394,10 @@ export function listBackspaceCommand(): Command {
         if (!m) return false;
         let markerLen = m[0].length;
         if (ctx.kind === "task" && ctx.taskState) {
-            markerLen = ctx.taskState.to + 1 - line.from; // 含任务框后随空格
+            // 删到任务框后随空白结束(可能是多个空格),别把空白留在行首
+            const after = ctx.taskState.to - line.from;
+            const rest = line.text.slice(after);
+            markerLen = after + (rest.length - rest.trimStart().length);
         }
         view.dispatch({
             changes: {from: line.from, to: line.from + markerLen, insert: ""},
