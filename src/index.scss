@@ -5681,10 +5681,13 @@ button.syfe-editor__arrow--exp:hover {
 }
 
 /* 阅读态横向条带定高(与编辑态 Monaco 横条 10px 等高) */
-// 横向滚动条自定义(2026-11-15):⚠ 必须与内嵌 CM6 的滚动条(cm6-block-editor
-// gutterTheme 里的 .cm-scroller::-webkit-scrollbar 同款)成对存在 —— 只删
-// 阅读态的,编辑态会被思源对 .cm-scroller 的另一层覆盖成不同高度
-// (用户反馈「进编辑滚动条高度又变了」)。两态显式同款才恒一致。
+// 横向滚动条自定义(2026-11-15):⚠ 必须保留,且与内嵌 CM6 的滚动条
+// (cm6-block-editor gutterTheme 里的 .cm-scroller::-webkit-scrollbar 同款)
+// 成对存在 —— Windows 11 下 Chromium 用自动隐藏(overlay 式)滚动条,
+// 没有显式 ::-webkit-scrollbar 样式的元素静止时滚动条整个隐藏、交互时
+// 以系统深灰粗条浮现;有显式样式的元素强制经典常驻渲染。两态只有一边
+// 定义时,进出编辑滚动条「高度会变/样式没有恢复」(用户 2026-11-15 两轮
+// 截图)。两边都显式同款 → 恒常驻、恒一致。
 .syfe-cm-codeblock-body::-webkit-scrollbar {
     height: 10px;
     width: 10px;
