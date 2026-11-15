@@ -355,6 +355,51 @@ export function moveBlockCommand(dir: -1 | 1): Command {
 }
 
 /**
+ * Backspace 在列表项/任务行「文本起点」处(Logseq/Obsidian 同款):
+ * 嵌套项 → 反缩进到父级列;顶层项 → 去掉标记(整行变段落)。任务行的标记
+ * 含任务框一并去掉。光标不在文本起点时返回 false,回落普通删除。
+ */
+export function listBackspaceCommand(): Command {
+    return (view) => {
+        const state = view.state;
+        if (state.readOnly || state.facet(EditorView.editable) === false) return false;
+        const range = state.selection.main;
+        if (!range.empty) return false;
+        const line = state.doc.lineAt(range.head);
+        const ctx = lineContext(state, line.number);
+        if (ctx.kind !== "list" && ctx.kind !== "task") return false;
+        if (!ctx.listMark) return false;
+        // 光标必须恰在行文本起点(标记/任务框 + 空格之后)
+        if (range.head !== ctx.start) return false;
+        const markOffset = ctx.listMark.from - line.from;
+        const parentOffset = parentMarkOffset(state, line, ctx.listMark);
+        if (markOffset > parentOffset) {
+            // 嵌套项 → 反缩进到父级列(子树随行,结构不破坏)
+            const remove = markOffset - parentOffset;
+            view.dispatch({
+                changes: {from: line.from, to: line.from + remove, insert: ""},
+                selection: EditorSelection.cursor(line.from),
+                userEvent: "delete.backward",
+            } as TransactionSpec);
+            return true;
+        }
+        // 顶层项 → 去标记(任务行连任务框)
+        const m = RE_LIST.exec(line.text);
+        if (!m) return false;
+        let markerLen = m[0].length;
+        if (ctx.kind === "task" && ctx.taskState) {
+            markerLen = ctx.taskState.to + 1 - line.from; // 含任务框后随空格
+        }
+        view.dispatch({
+            changes: {from: line.from, to: line.from + markerLen, insert: ""},
+            selection: EditorSelection.cursor(line.from),
+            userEvent: "delete.backward",
+        } as TransactionSpec);
+        return true;
+    };
+}
+
+/**
  * 块的结束行(不含):
  *  - 标题:到下一个级别 ≤ 自身的标题(或文档尾)——即整节
  *  - 列表项:后续缩进更深的行为子块;空行只有当其后仍接更深缩进延续行时才属于块
