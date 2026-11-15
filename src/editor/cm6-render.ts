@@ -340,15 +340,12 @@ class CodeBlockWidget extends WidgetType {
         // 被吞行的行号:原生行号槽对 widget 块不画号,卡片把数字列绝对定位
         // 覆盖到槽列上(负偏移 = 卡片左缘到槽列左缘),高度随卡片内部行分布
         if (this.gutterNums.length) {
-            // ⚠ 补画行号必须严格按宿主行高排:原来 height:100% 随卡片高度
-            // flex 均分,编辑态卡片被压矮(is-editing padding:0 + 内嵌编辑器
-            // 21px)时,行号仍按 23px 的自然高度撑到卡片外,压到宿主后续行
-            // 的行号上(用户反馈「编辑时行号重叠」)。这里把列高钉成
-            // 行数 × view.defaultLineHeight,并给卡片同样的 minHeight。
-            const lineH = view.defaultLineHeight || 23;
-            const colH = this.gutterNums.length * lineH;
+            // ⚠ 不要用 view.defaultLineHeight 算列高/卡片 minHeight:它在首帧
+            // 还是默认 14px、量完才变 23.09px,而 widget eq 相等不会重建 →
+            // 阅读态拿到 42px、编辑态拿到 69px,卡片高度两态不一致(用户反馈
+            // 「进编辑会收缩/抖动」)。改为列高 100% 跟随卡片 + 行 min-height:0
+            // 可压缩,既不会溢出压到宿主行号,也不依赖测量时机。
             wrap.style.position = "relative";
-            wrap.style.minHeight = `${colH.toFixed(2)}px`;
             // toDOM 可能跑在宿主 .cm-gutters 进 DOM 之前(首帧测量),此时拿不到
             // 槽列几何就只能放弃补画,而 widget eq 相等又不会重建 → 阅读态常见
             // 「3~6 行号整段消失」。改成拿到几何后重挂,最多重试 5 帧。
@@ -366,7 +363,6 @@ class CodeBlockWidget extends WidgetType {
                 // z-index 高过 .cm-gutters(sticky, z=200):槽列有不透明背景,
                 // 不抬层数字被盖住不可见
                 col.style.zIndex = "300";
-                col.style.height = `${colH.toFixed(2)}px`;
                 col.style.overflow = "hidden";
                 col.style.left = `${(-Math.max(0, offset)).toFixed(1)}px`;
                 col.style.width = `${gRect.width.toFixed(1)}px`;

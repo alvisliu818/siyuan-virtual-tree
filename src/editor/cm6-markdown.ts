@@ -257,11 +257,11 @@ const syfeCmTheme = EditorView.theme({
         fontVariantLigatures: "none",
         tabSize: 4,
     },
-    // 编辑态:body 不再当滚动容器(条带由 Monaco 横条提供),内边距清零 ——
-    // 水平 0.9em 挂在 editorhost 上(左与阅读态对齐;右 0,滚动条贴右缘,
-    // 与工具条右缘对齐 —— 右内边距会把滚动条右侧挤出一条空白,lgp 同款论证)
+    // 编辑态:只换滚动容器(条带由内嵌 CM6 提供),**内边距与阅读态完全相同**。
+    // 原来这里 padding:0 会把 body 从 37px 压到 21px、代码行整体上移 8px,
+    // 卡片随之收缩 —— 用户反馈的「进编辑会收缩/抖动」根因就在这里。
     ".syfe-cm-codeblock-body.is-editing": {
-        padding: "0",
+        padding: "8px 0.9em 8px 0",
         overflow: "hidden",
     },
     ".syfe-cm-codeblock-body.is-editing .syfe-cm-codeblock-colorize": {display: "none"},
@@ -341,6 +341,10 @@ const syfeCmTheme = EditorView.theme({
         display: "flex",
         alignItems: "center",
         justifyContent: "flex-end",
+        // ⚠ 原生 .cm-gutterElement 的 line-height 会撑出 ~23px 的 min-content
+        // 高度,列高 100% 时行不肯压缩就溢出卡片、压到宿主后续行号上。
+        // 归零后行严格按 flex 均分卡片高度,两态一致且不重叠。
+        minHeight: "0",
         // 列 pointer-events none,行自己开:每个数字可右键弹「复制第 N 行链接」
         pointerEvents: "auto",
     },

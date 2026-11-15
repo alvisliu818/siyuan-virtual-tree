@@ -101,6 +101,24 @@ AGPL-3.0 已生效,允许引用/派生 Logseq 代码,但技术上仍以「读源
     view.defaultLineHeight` 并给卡片同值 `minHeight`;内嵌行号槽左内边距
     归零与阅读态对齐;`toDOM` 早于宿主 `.cm-gutters` 时改为 rAF 重试挂载,
     修掉阅读态补画行号偶发整段消失。
+- 再修(用户截图反馈「编辑代码块会收缩 / 进出编辑样式要一样,不要抖动」):
+  - 根因① `is-editing` 把 body 的 `padding: 8px 0.9em 8px 0` 归零 →
+    body 37px→21px、代码行 y 209→201、卡片收缩。改为两态内边距完全相同,
+    只保留 `overflow:hidden` 的差异(滚动容器换内嵌 CM6)。
+  - 根因② 上一轮用 `view.defaultLineHeight` 算补画列高与卡片 `minHeight`:
+    首帧仍是默认 14px、量完才变 23.09px,而 widget eq 相等不重建 →
+    阅读态 42px / 编辑态 69px。改为**列高 100% 跟随卡片 + 行
+    `min-height:0` 可压缩**,既不溢出压宿主行号,也不依赖测量时机。
+  - 实测两态:卡片 y=175 h=67、body y=201 h=37(pad 8/8)、代码行 y=209、
+    内槽 x=444,逐项完全相同;切到已安装的 GitHub Dark 扩展主题后同样成立。
+- 主题链路核对(用户「代码颜色用安装激活的 vscode 扩展主题」):扩展主题
+  JSON 经 `theme-loader` → `monaco.editor.defineTheme` 注册 tokenColors,
+  `safeSetTheme` → `setGlobalCodeTheme` → `monaco.editor.setTheme` 激活;
+  `colorizeCached` 用当前全局主题出 HTML,内嵌 CM6 复用同一份 HTML 装饰,
+  **两态都取激活的扩展主题**。实测 GitHub Light `support=#005cc5` /
+  GitHub Dark `support=#79b8ff`,切换后 `print` 随之变化且两态一致。
+  上一轮删掉的 `getActiveCodeTheme()` 只是「自建 scope→CM6 tag 映射」,
+  不是扩展主题来源;删它是为了去掉第二套分词,不是改回 Monaco 默认主题。
 - **未做(刻意,非遗漏)**:blur 自动退出编辑态 —— 本 Electron 下极易误退出
   (点结果列/复制按钮都会触发),按前期调研结论保持 Esc / 点击卡外退出。
 - 广义移植主线 M2(键盘)/M3(光标管理)/M4(块操作)本轮未动;按用户此前

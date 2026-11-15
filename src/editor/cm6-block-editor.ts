@@ -284,10 +284,11 @@ export function mountBlockEditor(o: MountOptions): void {
                         // ⚠ 宿主 syfeCmTheme 的 .cm-scroller{padding:0 16px 45vh}
                         // 是后代选择器,会串到内嵌编辑器上:一行代码被 45vh
                         // 底部留白撑出整屏空白(839px 视口实测 377px)。这里
-                        // 显式重置,去掉底部滚动留白。左内边距归零让内嵌行号槽
+                        // 显式重置,去掉底部滚动留白。内边距全归零让内嵌行号槽
                         // 与阅读态 .syfe-cm-cl-n 同一起点(否则进编辑整个行号 +
-                        // 代码右移 27px,观感像「换了主题」);右侧 16px 保留。
-                        padding: "0 16px 0 0",
+                        // 代码右移 27px,观感像「换了主题」);右侧由 body 的
+                        // 0.9em 统一提供。挂载后还会写一次内联样式兜底。
+                        padding: "0",
                     },
                     "&.cm-focused": {outline: "none"},
                     ".cm-selectionBackground, .cm-content ::selection": {
@@ -355,9 +356,10 @@ export function mountBlockEditor(o: MountOptions): void {
     // 宿主 syfeCmTheme 的 ".cm-scroller{padding:0 16px 45vh}" 是后代选择器,
     // 会串到内嵌编辑器;theme 里同名规则与它特异性打平、实测被宿主盖过(左
     // 内边距仍 16px)。直接写内联样式定死:左 0 让行号槽与阅读态对齐,
-    // 底部 0 去掉 45vh 留白,右侧 16px 保留。
+    // 底部 0 去掉 45vh 留白。右也归零 —— 右内边距由 body 与阅读态同款
+    // 0.9em 提供,避免两态代码可用宽度不同。
     const scroller = view.dom.querySelector(".cm-scroller") as HTMLElement | null;
-    if (scroller) scroller.style.padding = "0 16px 0 0";
+    if (scroller) scroller.style.padding = "0";
     refreshColorize(view, o.lang);
     view.focus();
     setTimeout(() => view.focus(), 0);
