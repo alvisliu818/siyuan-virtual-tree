@@ -5821,6 +5821,41 @@ button.syfe-editor__arrow--exp:hover {
     }
 }
 
+/* ===== 行级菜单手柄(cm6-line-menu.ts,scroller 的绝对定位子元素) =====
+   样式对齐 SB .sb-line-handle:悬浮行时淡入,盖住行号槽(Logseq 块控件
+   同款——数字被 ⋮ 换掉),hover 全亮;键入/离开即淡出。 */
+.syfe-line-handle {
+    position: absolute;
+    z-index: 200;
+    width: 20px;
+    padding: 0;
+    border: 0;
+    border-radius: 3px;
+    background: var(--b3-theme-background);
+    color: var(--b3-theme-on-surface-light, var(--b3-theme-on-surface));
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0;
+    transition: opacity .12s ease;
+    user-select: none;
+    -webkit-user-select: none;
+
+    &:hover {
+        color: var(--b3-theme-primary);
+        opacity: 1;
+    }
+}
+
+.syfe-line-handle--shown {
+    opacity: .7;
+
+    &:hover {
+        opacity: 1;
+    }
+}
+
 // ===== 思源文档属性面板(侧边 dock / 文档标题下共用一份组件) =====
 .syfe-dp {
     display: flex;

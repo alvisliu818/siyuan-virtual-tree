@@ -26,6 +26,7 @@ import {Menu} from "siyuan";
 import {cm6MarkdownRender, preloadCm6Katex, registerCopyLineHandler} from "./cm6-render";
 import {cm6InlineWysiwyg, mdParserExtensions} from "./cm6-inline";
 import {cm6SelectionBubble} from "./cm6-selection-bubble";
+import {cm6LineMenu} from "./cm6-line-menu";
 import {cm6BlockPreview} from "./cm6-block-preview";
 import {BLOCK_FONT_FAMILY, BLOCK_FONT_SIZE, BLOCK_LINE_HEIGHT} from "./monaco-block";
 import {getLinkIndex} from "../utils/wikilink";
@@ -111,6 +112,9 @@ const syfeCmTheme = EditorView.theme({
     ".cm-scroller": {
         fontFamily: "var(--b3-font-family, var(--b3-font-family-code))",
         lineHeight: "1.65",
+        // 行级菜单手柄(cm6-line-menu)是 scroller 的绝对定位子元素,
+        // 需要 scroller 作为包含块(sticky 行号槽不受影响)
+        position: "relative",
         // ⚠ 行号槽对齐:CM6 的 measure() 只按 contentDOM 的 padding 计算
         // gutter spacer。给 scroller 加 10px padding-top 会让行号整体比内容
         // 行低约 10px(实测 19 行仅 1 行对齐);把 padding 挪到 content 又会
@@ -866,6 +870,9 @@ export function createCm6MarkdownEditor(
             // 选中气泡工具条:选中文本浮出格式按钮(SB 同款;只读态插件内部早退,
             // 两态同挂保持扩展一致)。点击按钮执行与 Mod+B/I/E 同源的 toggle 命令
             cm6SelectionBubble(),
+            // 行级菜单:gutter 悬浮 ⋮ 手柄 + 行上下文操作(SB line_handle/line_menu
+            // 移植;只读态内部早退)。手柄是 scroller 的绝对定位子元素
+            cm6LineMenu(),
             // [[ 混合补全(文件 + 思源块)+ (( 思源块引用补全(override = 本编辑器仅有的
             // 补全源;TTL 缓存索引/SQL 搜索,键入不重扫)——两态同挂,只读态无键入自然不触发
             autocompletion({override: [
