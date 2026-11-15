@@ -290,18 +290,28 @@ class CodeBlockWidget extends WidgetType {
         btn.className = "syfe-cm-codeblock-copy";
         btn.title = "复制代码";
         btn.innerHTML = COPY_ICON_SVG;
-        // 抢在 CM/点击进源码之前消费头部事件:点复制不动光标、不触发移动端键盘
+        // ⚠ 本 Electron 实测:mousedown 上 preventDefault 会抑制后续 click
+        // 派生(SB 行级菜单同款坑)。只把复制挂在 onclick 的话,真实鼠标点击
+        // 根本不会复制;改为 mousedown 直接执行,onclick 仅兜底程序化 click,
+        // 用旗标保证一次点击只复制一次。
+        let copyHandled = false;
+        const runCopy = () => {
+            if (copyHandled) return;
+            copyHandled = true;
+            void copyTextCompat(getActiveBlockValue() ?? this.code)
+                .then(() => this.markCopied(btn))
+                .catch(() => undefined);
+        };
         btn.onmousedown = (e) => {
             e.stopPropagation();
             e.preventDefault();
+            copyHandled = false;
+            runCopy();
         };
         btn.onclick = (e) => {
             e.stopPropagation();
             e.preventDefault();
-            // 编辑中的卡片复制最新内容(挂载中取 Monaco 实时值,否则取快照)
-            void copyTextCompat(getActiveBlockValue() ?? this.code)
-                .then(() => this.markCopied(btn))
-                .catch(() => undefined);
+            runCopy();
         };
         head.appendChild(btn);
         return head;
@@ -1180,6 +1190,11 @@ const indentWidth = (text: string): number => {
 interface FencedCodeInfo {
     from: number;
     to: number;
+    /** 代码内容在文档中的真实跨度(不含开/闭围栏行,含内容行之间的换行)。
+     *  编辑写回直接用它定位,别再用 firstLine.to + code.length 反推 —— 多行
+     *  编辑后反推会把位置算到文档外(实测 Enter 触发 RangeError)。 */
+    contentFrom: number;
+    contentTo: number;
     /** CodeInfo 节点文本(``` 后的语言名) */
     lang: string;
     /** 围栏之间的代码内容原文(编辑写回跨度按其长度定位,绝不能变形) */
@@ -1247,7 +1262,7 @@ function fencedCodeInfos(state: EditorState): FencedCodeInfo[] {
             while (n < fenceCol && n < l.length && (l[n] === " " || l[n] === "\t")) n++;
             return l.slice(n);
         }).join("\n");
-        out.push({from: line.from + fenceCol, to: last.to, lang, code, codeView});
+        out.push({from: line.from + fenceCol, to: last.to, lang, code, codeView, contentFrom, contentTo});
         ln = closeLine > 0 ? closeLine : doc.lines;
     }
     return out;
@@ -1347,6 +1362,8 @@ function toggleFenceReveal(view: EditorView, key: string): void {
 const forceRenderEffect = StateEffect.define<null>();
 // 编辑态同步状态:块 key + 最近一次同步进文档的内容(monaco ↔ cm6 回写定位用)
 let activeSync: {key: string; viewValue: string} | null = null;
+// 写回宿主会触发装饰重建,防重入(否则一次 Enter 可能被同步两次)
+let syncingFromBlock = false;
 
 /** 围栏代码块信息(按文档版本记忆化;行级菜单的卡片菜单也用) */
 export function fencedCodeInfosOfState(state: EditorState): FencedCodeInfo[] {
@@ -1443,7 +1460,18 @@ export function cm6MarkdownRender(opts: Cm6RenderOptions): Extension {
             if (!tr.docChanged && !tr.selection && syntaxTree(tr.startState) === syntaxTree(tr.state)) {
                 return value;
             }
-            return buildDecorations(tr.state, opts, tr);
+            // 增量重建读的是旧 doc 的块缓存,文档被外部写回缩短时个别位置可能
+            // 越界:退回不带 tr 的全量重建(重算缓存),再不行给空集保命 ——
+            // 装饰 StateField 抛异常会让整笔事务失效(编辑器卡死)。
+            try {
+                return buildDecorations(tr.state, opts, tr);
+            } catch {
+                try {
+                    return buildDecorations(tr.state, opts);
+                } catch {
+                    return Decoration.none;
+                }
+            }
         },
         provide: (f) => [
             EditorView.decorations.from(f),
@@ -1554,19 +1582,28 @@ export function cm6MarkdownRender(opts: Cm6RenderOptions): Extension {
     // 文件里的结构缩进保持不变(用户 2026-11-14「代码块编辑态有空格」—— 编辑态
     // 与渲染态看同一份去缩进视图)。空行不加前缀。
     const syncFromMonaco = (view: EditorView) => (v: string) => {
-        if (!activeSync) return;
+        if (!activeSync || syncingFromBlock) return;
         const nv = v.replace(/\r\n/g, "\n");
         const from = parseInt(activeSync.key, 10);
-        if (Number.isNaN(from) || from >= view.state.doc.length) return;
+        const docLen = view.state.doc.length;
+        if (Number.isNaN(from) || from >= docLen) return;
         const info = fencedCodeInfos(view.state).find(i => i.from === from);
         if (!info) return;
-        const firstLine = view.state.doc.lineAt(from);
-        const innerFrom = firstLine.to + 1;
-        const innerTo = Math.min(innerFrom + info.code.length, view.state.doc.length);
+        const firstLine = view.state.doc.lineAt(Math.min(from, docLen));
+        // 直接用文本扫描算出的内容跨度,不再用 firstLine.to + info.code.length
+        // 反推:多行编辑(Enter/删除整行)后反推位置会超出文档长度,CM6 抛
+        // "Invalid position N in document of length M",写回整笔丢失(实测)。
+        const innerFrom = Math.min(info.contentFrom, docLen);
+        const innerTo = Math.max(innerFrom, Math.min(info.contentTo, docLen));
         const reindent = view.state.doc.sliceString(firstLine.from, from).replace(/\S/g, " ");
         const raw = nv.split("\n").map(l => (l.trim() ? reindent + l : l)).join("\n");
         activeSync.viewValue = nv;
-        view.dispatch({changes: {from: innerFrom, to: innerTo, insert: raw}});
+        syncingFromBlock = true;
+        try {
+            view.dispatch({changes: {from: innerFrom, to: innerTo, insert: raw}});
+        } finally {
+            syncingFromBlock = false;
+        }
     };
     // 退出编辑态:flush 最终内容 → 卸载单例 → 重建回渲染卡片
     const exitEditing = (view: EditorView) => () => {
@@ -2303,7 +2340,10 @@ function mapDecoRange(r: Range<Decoration>, changes: ChangeDesc): Range<Decorati
 
 function buildDecorations(state: EditorState, opts: Cm6RenderOptions, tr?: Transaction): DecorationSet {
     const doc = state.doc;
-    const cursor = state.readOnly ? 0 : state.selection.main.head;
+    // 选区位置必须钳到当前文档:内嵌编辑器写回会让宿主文档一次性缩短,
+    // 此时若直接 lineAt(selection.head) 会抛 "Invalid position N in document
+    // of length M",整笔写回连同装饰重建一起被 CM6 吞掉(实测代码块内 Enter)。
+    const cursor = state.readOnly ? 0 : Math.max(0, Math.min(state.selection.main.head, doc.length));
     const cursorLine = cursor > 0 ? doc.lineAt(cursor).number : 0;
     const blocks = docBlocksOf(state);
     const digests = lineDigestsOf(state);
