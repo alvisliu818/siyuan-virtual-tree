@@ -48,7 +48,8 @@ AGPL-3.0 已生效,允许引用/派生 Logseq 代码,但技术上仍以「读源
 - [x] README 许可证章节
 - [~] 每个 Logseq 派生文件头标注派生来源:`src/editor/cm6-block-editor.ts` 已标
      两处(事件隔离 ← `extensions/code.cljs`;选项注入 ← `:editor/extra-codemirror-options`),
-     其余移植/派生文件待补,做 M3/M4 / calc 块时逐文件加
+     `src/editor/cm6-calc.ts` 已标三处来源(calc.cljc / grammar/calc.bnf / code.cljs);
+     其余早期移植/派生文件待补,做 M3/M4 时逐文件加
 - [x] README 补充 AGPL 义务说明(修改版分发需提供对应源码、§13 网络服务同样适用,`e0d3ea6`)
 
 ## 5. 里程碑
@@ -77,9 +78,19 @@ AGPL-3.0 已生效,允许引用/派生 Logseq 代码,但技术上仍以「读源
       (默认开,Obsidian 同款)。配对判据与 `fencedCodeInfos` 同源;卡片模式下
       原子范围会把块内光标挤到边界,故命中后直接 `beginCodeEdit` 进内嵌 CM6
     - 同笔提交补齐 README 的 AGPL 义务说明
-- 未做(待用户确认范围):
-  - **calc 计算块**(`extensions/calc.cljc`,235 行 instaparse + bignumber):
-    instaparse/bignumber 不能直接用,须先定表达式解析器选型,成本最高。
-    落点:新增 ```` ```calc ```` 语言块卡片,渲染态右侧出结果
+  - `2537897` **calc 计算块**(`extensions/calc.cljc` 235 行 +
+    `grammar/calc.bnf`)—— 最后一项 Logseq 代码块特性,至此「移植 logseq
+    代码块」全部收尾:
+    - instaparse 不能进 webpack,改用**递归下降解析器**重写 calc.bnf;
+      bignumber.js 9.3.1 作为新运行依赖引入(与 Logseq 同款,保证十进制精度)
+    - 支持四则 / 幂 / 阶乘 / 百分数 / 带分数 / 0x 0o 0b / 科学计数、
+      变量赋值、PI/E/last、11 个数学函数、`#` 注释、
+      `:format fix|sci|normal|frac|imp` 与 `:hex/:oct/:bin/:dec` 指令
+    - 卡片 = 源码 + 右对齐逐行结果;编辑态结果常驻并逐键刷新
+      (Logseq 的 CM5 change → eval-lines 等价);失败行显示 `?`
+    - 同笔提交补内嵌 CM6 编辑手感:Tab/Shift-Tab 缩进、括号引号自动闭合、
+      配对高亮、输入自动缩进、4 空格缩进单元
+- **未做(刻意,非遗漏)**:blur 自动退出编辑态 —— 本 Electron 下极易误退出
+  (点结果列/复制按钮都会触发),按前期调研结论保持 Esc / 点击卡外退出。
 - 广义移植主线 M2(键盘)/M3(光标管理)/M4(块操作)本轮未动;按用户此前
-  排序,**M3 优先级高于代码块**,但代码块这批收尾后应先与用户确认再排期
+  排序,**M3 优先级高于代码块**,代码块收尾后应先与用户确认再排期
