@@ -5593,6 +5593,48 @@ button.syfe-editor__arrow--exp:hover {
     line-height: 21px;
 }
 
+/* Logseq calc 计算块:源码 + 右对齐逐行结果。两列行高都继承 21px;编辑态
+   源码层被隐藏、内嵌 CM6 的 .cm-line 同为 21px,结果列仍逐行对齐并常驻。 */
+.syfe-cm-codeblock-body.is-calc {
+    display: flex;
+    align-items: flex-start;
+}
+
+.syfe-cm-calc-main {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.syfe-cm-calc-out {
+    flex: 0 0 auto;
+    box-sizing: content-box;
+    min-width: 8ch;
+    max-width: 40ch;
+    padding: 0 0.9em 0 1.2em;
+    border-left: 1px solid var(--b3-border-color);
+    color: var(--b3-theme-primary, #4285f4);
+    text-align: right;
+    white-space: pre;
+    overflow: hidden;
+    user-select: text;
+}
+
+.syfe-cm-calc-out-line {
+    height: 21px;
+    line-height: 21px;
+    white-space: pre;
+    overflow: hidden;
+    text-overflow: ellipsis;
+
+    &.is-error {
+        color: var(--b3-theme-error, #d23f31);
+    }
+
+    &.is-empty {
+        opacity: 0;
+    }
+}
+
 /* CM6 图表代码块:Vditor 渲染器把 SVG/Canvas 写进 .language-xxx 元素,
    自实现三类(mindmap tree JSON / markmap 固定尺寸 SVG / plantuml 内核代理)
    也把图放进同一层。容器居中、可横向滚动;源码占位与失败降级左对齐。

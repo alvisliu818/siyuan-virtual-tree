@@ -16,8 +16,9 @@
 
 import {EditorView, keymap, lineNumbers, drawSelection, highlightActiveLine, highlightActiveLineGutter} from "@codemirror/view";
 import {EditorState, Compartment, Extension} from "@codemirror/state";
-import {defaultKeymap, history, historyKeymap} from "@codemirror/commands";
-import {LanguageDescription, syntaxHighlighting, defaultHighlightStyle, HighlightStyle, indentUnit} from "@codemirror/language";
+import {defaultKeymap, history, historyKeymap, indentWithTab} from "@codemirror/commands";
+import {LanguageDescription, syntaxHighlighting, defaultHighlightStyle, HighlightStyle, indentUnit, bracketMatching, indentOnInput} from "@codemirror/language";
+import {closeBrackets, closeBracketsKeymap} from "@codemirror/autocomplete";
 import {tags as highlightTags, Tag} from "@lezer/highlight";
 import {languages} from "@codemirror/language-data";
 import {getActiveCodeTheme, TmTokenRule} from "../extensions/theme-loader";
@@ -102,7 +103,9 @@ function extraOptionExtensions(o: ExtraCm6Options): Extension[] {
     const out: Extension[] = [];
     if (o.lineWrapping === true) out.push(EditorView.lineWrapping);
     if (typeof o.tabSize === "number") out.push(EditorState.tabSize.of(o.tabSize));
-    if (o.indentUnit) out.push(indentUnit.of(o.indentUnit));
+    // 缩进单元默认 4 空格(与宿主 tabSize=4 一致);CM6 原生默认是 2 空格,
+    // 不显式给会让 Tab 缩进与源码态围栏行对不上。用户可用 indentUnit 覆盖。
+    out.push(indentUnit.of(o.indentUnit ?? "    "));
     if (o.readOnly === true) {
         out.push(EditorState.readOnly.of(true), EditorView.editable.of(false));
     }
@@ -199,14 +202,22 @@ export function mountBlockEditor(o: MountOptions): void {
                 ...(extra.highlightActiveLine === false ? [] : [highlightActiveLine()]),
                 syntaxHighlighting(buildTokenHighlight() ?? defaultHighlightStyle, {fallback: true}),
                 gutterTheme,
+                // 代码块编辑手感(2026-11-15):Tab/Shift-Tab 多行缩进、括号/
+                // 引号自动闭合 + 配对高亮、换行自动缩进。此前只有默认键位,
+                // Tab 会走浏览器默认行为把焦点踢出内嵌编辑器。
+                closeBrackets(),
+                bracketMatching(),
+                indentOnInput(),
                 keymap.of([
                     // Esc 退出编辑回 colorize
                     {key: "Escape", run: () => {
                         o.onExit();
                         return true;
                     }},
+                    ...closeBracketsKeymap,
                     ...defaultKeymap,
                     ...historyKeymap,
+                    indentWithTab,
                 ]),
                 // 卡片观感:透明底(露出盒带), 等宽字体/行高与卡片正文一致
                 EditorView.theme({
@@ -279,7 +290,9 @@ export function mountBlockEditor(o: MountOptions): void {
     // 点击卡片外 → 退出编辑回 colorize(document 捕获, monaco-block 同款)
     const outsideListener = (e: MouseEvent) => {
         const t = e.target as Node | null;
-        const inCard = !!o.container.contains(t) || !!view.dom.contains(t);
+        // calc 结果列属于同一张卡:点它选结果不该退出编辑(Logseq 同款隔离)
+        const inResults = !!(t as Element | null)?.closest?.(".syfe-cm-calc-out");
+        const inCard = inResults || !!o.container.contains(t) || !!view.dom.contains(t);
         if (!inCard) o.onExit();
     };
     document.addEventListener("mousedown", outsideListener, true);

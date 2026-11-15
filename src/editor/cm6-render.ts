@@ -54,6 +54,7 @@ import {
     unmountBlockEditor,
 } from "./cm6-block-editor";
 import {isDiagramLang, renderDiagram} from "./cm6-diagram";
+import {isCalcLang, refreshCalcResults, renderCalc} from "./cm6-calc";
 
 export interface Cm6RenderOptions {
     /** 解析图片地址 → 可加载 URL(blob URL / 绝对路径);返回 null 表示不处理 */
@@ -380,29 +381,49 @@ class CodeBlockWidget extends WidgetType {
         const body = document.createElement("div");
         body.className = "syfe-cm-codeblock-body";
         wrap.appendChild(body);
+        // calc 计算块(Logseq 同款):源码 + 右对齐逐行结果双列。main 把「阅读态
+        // 源码 / 编辑态内嵌 CM6」两层包成一列,结果列与它同起点(行高均 21px),
+        // 所以编辑态结果仍逐行对齐、常驻可见。
+        const calc = isCalcLang(this.lang);
+        if (calc) body.classList.add("is-calc");
+        const main = calc ? document.createElement("div") : null;
+        if (main) {
+            main.className = "syfe-cm-calc-main";
+            body.appendChild(main);
+        }
+        const slot: HTMLElement = main ?? body;
         // 渲染正文:Monaco colorize(异步,先纯文本占位)。编辑态由 CSS 隐藏此层。
         // colorize 结果重建为带行号的逐行结构(行号列 sticky,随卡片横向滚动
         // 保持可见 —— 见 buildNumberedLines)
         const colorizeDiv = document.createElement("div");
         colorizeDiv.className = "syfe-cm-codeblock-colorize";
-        body.appendChild(colorizeDiv);
-        // 图表类语言(mermaid/flowchart/graphviz/echarts/markmap/plantuml/abc/
-        // wavedrom/mindmap/smiles)走 Vditor 本地图表资源渲染成图;其余仍走
-        // Monaco colorize 源码卡片。两者都异步完成 → 重测卡片高度。
-        const isDiagram = isDiagramLang(this.lang) &&
-            renderDiagram(colorizeDiv, this.lang, this.code, () => view.requestMeasure());
-        if (!isDiagram) {
-            colorizeDiv.textContent = this.code;
-            void colorizeCached(this.lang, this.code).then(html => {
-                if (!colorizeDiv.isConnected) return;
-                colorizeDiv.innerHTML = buildNumberedLines(html);
-                view.requestMeasure();
-            });
+        slot.appendChild(colorizeDiv);
+        if (calc) {
+            const resultEl = document.createElement("div");
+            resultEl.className = "syfe-cm-calc-out";
+            // 结果可选中复制:阻断冒泡,别让卡片点击处理器把光标送进源码
+            resultEl.onmousedown = e => e.stopPropagation();
+            body.appendChild(resultEl);
+            renderCalc(colorizeDiv, resultEl, this.code);
+        } else {
+            // 图表类语言(mermaid/flowchart/graphviz/echarts/markmap/plantuml/abc/
+            // wavedrom/mindmap/smiles)走 Vditor 本地图表资源渲染成图;其余仍走
+            // Monaco colorize 源码卡片。两者都异步完成 → 重测卡片高度。
+            const isDiagram = isDiagramLang(this.lang) &&
+                renderDiagram(colorizeDiv, this.lang, this.code, () => view.requestMeasure());
+            if (!isDiagram) {
+                colorizeDiv.textContent = this.code;
+                void colorizeCached(this.lang, this.code).then(html => {
+                    if (!colorizeDiv.isConnected) return;
+                    colorizeDiv.innerHTML = buildNumberedLines(html);
+                    view.requestMeasure();
+                });
+            }
         }
         // 编辑态宿主:点击卡片后由 editMounter 把全局单例 Monaco 安置进来
         const host = document.createElement("div");
         host.className = "syfe-cm-codeblock-editorhost";
-        body.appendChild(host);
+        slot.appendChild(host);
         if (this.editingFlag) body.classList.add("is-editing");
         return wrap;
     }
@@ -1498,8 +1519,8 @@ export function cm6MarkdownRender(opts: Cm6RenderOptions): Extension {
                 // 复制按钮自带 onmousedown 且 stopPropagation,仍可正常复制
                 if (view.state.readOnly) return false;
                 const target = event.target as HTMLElement;
-                // 复制按钮是独立交互区
-                if (target.closest(".syfe-cm-codeblock-copy")) return false;
+                // 复制按钮 / calc 结果列是独立交互区(结果可选中复制)
+                if (target.closest(".syfe-cm-codeblock-copy, .syfe-cm-calc-out")) return false;
                 const wrap = target.closest(
                     ".syfe-cm-codeblock, .syfe-cm-table, .syfe-cm-math, .syfe-cm-inline-math, " +
                     ".syfe-cm-img, .syfe-cm-properties, .syfe-cm-quote",
@@ -1609,6 +1630,12 @@ export function cm6MarkdownRender(opts: Cm6RenderOptions): Extension {
         } finally {
             syncingFromBlock = false;
         }
+        // calc 块:编辑态 eq 刻意不比较 code(widget 不重建,避免打断内嵌编辑器),
+        // 所以逐键主动刷新右侧结果列 —— 等价 Logseq CM5 的 change → eval-lines。
+        const resultEl = view.dom.querySelector(
+            `.syfe-cm-codeblock[data-block-key="${activeSync.key}"] .syfe-cm-calc-out`,
+        ) as HTMLElement | null;
+        if (resultEl) refreshCalcResults(resultEl, nv);
     };
     // 退出编辑态:flush 最终内容 → 卸载单例 → 重建回渲染卡片
     const exitEditing = (view: EditorView) => () => {
