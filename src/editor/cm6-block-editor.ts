@@ -21,7 +21,7 @@ import {LanguageDescription, indentUnit, bracketMatching, indentOnInput} from "@
 import {closeBrackets, closeBracketsKeymap} from "@codemirror/autocomplete";
 import {languages} from "@codemirror/language-data";
 import {getSetting} from "../settings/user-settings";
-import {colorizeCached, getMonacoThemeName} from "./monaco-block";
+import {BLOCK_FONT_FAMILY, colorizeCached, getMonacoThemeName} from "./monaco-block";
 
 interface MountOptions {
     container: HTMLElement;
@@ -121,21 +121,23 @@ function extraOptionExtensions(o: ExtraCm6Options): Extension[] {
 // 现在 token 颜色只由下方 colorizeField 的 Monaco 同源装饰提供(单一真源),
 // 语言包 langSlot 仍保留给缩进/括号匹配/输入重排。
 
-// 行号列样式(复刻 colorize 的 .syfe-cm-cl-n: on-surface 0.45、右对齐)
+// 行号列样式(与阅读态 .syfe-cm-cl-n 同一套规格:on-surface-light 弱化字色、
+// surface 不透明背景、右对齐)。⚠ 整列 opacity 半透明会让横向滚动时内容
+// 从行号下透出(用户反馈「行号和内容重叠显示」),必须不透明。
 const gutterTheme = EditorView.theme({
     ".cm-gutters": {
         backgroundColor: "transparent",
         border: "none",
-        color: "var(--b3-theme-on-surface)",
-        opacity: "0.45",
+        color: "var(--b3-theme-on-surface-light)",
+        opacity: "1",
     },
     ".cm-lineNumbers .cm-gutterElement": {
         // ⚠ padding 不在这里定:宿主 syfeCmTheme 的
         // ".cm-lineNumbers .cm-gutterElement{padding:0 12px 0 5px}" 特异性更高,
         // 实测以它为准 —— 与阅读态 .syfe-cm-cl-n 同规格,两态行号零抖动的关键。
         // 此前这里写 0 0.9em 实测被盖过(量到 5/12),留着会误导后人。
-        color: "var(--b3-theme-on-surface)",
-        opacity: "0.45",
+        color: "var(--b3-theme-on-surface-light)",
+        opacity: "1",
     },
     ".cm-activeLineGutter": {backgroundColor: "transparent"},
 });
@@ -358,11 +360,30 @@ export function mountBlockEditor(o: MountOptions): void {
     S.onContentChange = o.onContentChange;
     // 宿主 syfeCmTheme 的 ".cm-scroller{padding:0 16px 45vh}" 是后代选择器,
     // 会串到内嵌编辑器;theme 里同名规则与它特异性打平、实测被宿主盖过(左
-    // 内边距仍 16px)。直接写内联样式定死:左 0 让行号槽与阅读态对齐,
-    // 底部 0 去掉 45vh 留白。右也归零 —— 右内边距由 body 与阅读态同款
-    // 0.9em 提供,避免两态代码可用宽度不同。
+    // 内边距仍 16px)。直接写内联样式定死:左右 0(行号槽/代码列与阅读态
+    // .syfe-cm-cl-n / .syfe-cm-cl-c 同一起点),底部 8px 把 CM6 的横向滚动条
+    // 推到与阅读态 body 滚动条同一高度(编辑态 body padding-bottom 归 0,
+    // 见 cm6-markdown .is-editing)。
     const scroller = view.dom.querySelector(".cm-scroller") as HTMLElement | null;
-    if (scroller) scroller.style.padding = "0";
+    if (scroller) {
+        scroller.style.padding = "0 0 8px 0";
+        // ⚠ 字体也要定死:思源全局样式把行号格字体设成了自己的链
+        // ("Emojis Additional"...),与阅读态 cl-n 的 Consolas 不同
+        // (用户反馈「行号的字体不一样」),内联覆盖为 body 同款。
+        scroller.style.fontFamily = BLOCK_FONT_FAMILY;
+    }
+    // 行号列背景与阅读态 .syfe-cm-cl-n 同色:宿主 syfeCmTheme 给 .cm-gutters
+    // 设的是 --b3-theme-background(页面底色),与卡片 body 的 surface 不同,
+    // 编辑态行号列会显出一块色差(用户反馈「行号列背景色不一样」)。
+    // 不透明(半透明会让横向滚动的内容从行号下透出,用户反馈「重叠显示」),
+    // 数字弱化用字色(on-surface-light)而非整列 opacity —— 与阅读态同规格。
+    const gutters = view.dom.querySelector(".cm-gutters") as HTMLElement | null;
+    if (gutters) {
+        gutters.style.backgroundColor = "var(--b3-theme-surface)";
+        gutters.style.color = "var(--b3-theme-on-surface-light)";
+        gutters.style.opacity = "1";
+    }
+    view.dom.style.setProperty("--syfe-cm-gutter-opacity", "1");
     refreshColorize(view, o.lang);
     view.focus();
     setTimeout(() => view.focus(), 0);
@@ -418,4 +439,20 @@ export function getMountedContainer(): HTMLElement | null {
 
 export function getMountedLanguage(): string {
     return S.lang;
+}
+
+// 光标穿透:把点击卡片的屏幕坐标映射为内嵌编辑器的光标位置。
+// 点击进入编辑的 mousedown 发生在宿主,内嵌编辑器挂载后几何与阅读态对齐
+// (行号列宽 = gutter 宽),同一屏幕坐标即同一字符 —— posAtCoords 直接映射。
+export function setMountedCursorAtPoint(x: number, y: number): void {
+    if (!S.view) return;
+    try {
+        // 本版 CM6 的 posAtCoords 直接返回数字位置(非 {pos, inside} 包装)
+        const pos = S.view.posAtCoords({x, y});
+        if (pos == null) return;
+        S.view.dispatch({selection: {anchor: pos}});
+        S.view.focus();
+    } catch {
+        // 坐标失效(挂载异常/布局未就绪)时保持默认光标,不影响进入编辑
+    }
 }

@@ -51,6 +51,7 @@ import {
     getMountedLanguage,
     mountBlockEditor,
     remountBlockEditor,
+    setMountedCursorAtPoint,
     unmountBlockEditor,
 } from "./cm6-block-editor";
 import {isDiagramLang, renderDiagram} from "./cm6-diagram";
@@ -1540,6 +1541,15 @@ export function cm6MarkdownRender(opts: Cm6RenderOptions): Extension {
                 // 复制按钮自带 onmousedown 且 stopPropagation,仍可正常复制
                 if (view.state.readOnly) return false;
                 const target = event.target as HTMLElement;
+                // 点击横向滚动条(Chromium 下 target = 滚动容器本身、命中其底部
+                // 滚动条带)不进入编辑 —— 否则拖阅读态的横向滚动条会把卡片拉进
+                // 编辑态,滚动位置还被清零(用户反馈「点滚动条会进入编辑」)
+                const pane = (target as HTMLElement | null)?.closest?.(
+                    ".syfe-cm-codeblock-body, .cm-scroller") as HTMLElement | null;
+                if (pane && target === pane) {
+                    const r = pane.getBoundingClientRect();
+                    if (event.clientY >= r.top + pane.clientHeight) return false;
+                }
                 // 复制按钮 / calc 结果列是独立交互区(结果可选中复制)
                 if (target.closest(".syfe-cm-codeblock-copy, .syfe-cm-calc-out")) return false;
                 const wrap = target.closest(
@@ -1569,6 +1579,17 @@ export function cm6MarkdownRender(opts: Cm6RenderOptions): Extension {
                         if (info) {
                             activeSync = {key, viewValue: info.codeView};
                             setEditingKey(key);
+                            // 横向滚动位置必须在 is-editing 生效**前**抓取:
+                            // colorize 行隐藏后 body 的 scrollWidth 塌缩,
+                            // scrollLeft 会被钳回 0(实测 120 → 0)
+                            const scrollBody = wrap.querySelector(".syfe-cm-codeblock-body") as HTMLElement | null;
+                            // 光标穿透:记住点击的屏幕位置,内嵌编辑器挂载后用
+                            // posAtCoords 映射成光标位置(用户反馈「光标位置
+                            // 没有穿透」—— 此前挂载后光标固定在文档开头)
+                            pendingBlockCursor = {
+                                key, x: event.clientX, y: event.clientY,
+                                scrollLeft: scrollBody ? scrollBody.scrollLeft : 0,
+                            };
                             view.dispatch({effects: forceRenderEffect.of(null)});
                         }
                     }
@@ -1660,13 +1681,31 @@ export function cm6MarkdownRender(opts: Cm6RenderOptions): Extension {
     };
     // 退出编辑态:flush 最终内容 → 卸载单例 → 重建回渲染卡片
     const exitEditing = (view: EditorView) => () => {
+        // 横向滚动位置写回阅读态(与进编辑的继承对称)。
+        // ⚠ 读 sc.scrollLeft 必须在卸载前;赋值 body.scrollLeft 必须在
+        // forceRender(移除 is-editing、colorize 行恢复)之后 —— 编辑态下
+        // body scrollWidth 被压平,提前赋值会被钳回 0(实测 120 → 0)。
+        const exitKey = getEditingKey();
+        const sc = exitKey ? view.dom.querySelector(
+            `.syfe-cm-codeblock[data-block-key="${exitKey}"] .syfe-cm-codeblock-editorhost .cm-scroller`
+        ) as HTMLElement | null : null;
+        const savedScroll = sc ? sc.scrollLeft : 0;
         flushActiveBlock();
         unmountBlockEditor();
         setEditingKey(null);
         activeSync = null;
         view.dispatch({effects: forceRenderEffect.of(null)});
+        const bodyEl = exitKey ? view.dom.querySelector(
+            `.syfe-cm-codeblock[data-block-key="${exitKey}"] .syfe-cm-codeblock-body`
+        ) as HTMLElement | null : null;
+        if (bodyEl) bodyEl.scrollLeft = savedScroll;
         view.focus();
     };
+
+    // 待穿透的光标:点击代码卡片进入编辑时的屏幕位置(editMounter 挂载后
+    // 映射为内嵌编辑器光标 —— 此前挂载后光标固定在文档开头,用户反馈
+    // 「光标位置没有穿透」)。带 key,挂载失败也不会污染下一个块。
+    let pendingBlockCursor: {key: string; x: number; y: number; scrollLeft: number} | null = null;
 
     // 编辑态挂载器:CM6 重建会销毁/克隆 widget DOM,编辑器绝不在 toDOM 里挂载。
     // 每次更新后把单例编辑器安置进「当前编辑块」的真实宿主(过滤测量克隆):
@@ -1720,6 +1759,18 @@ export function cm6MarkdownRender(opts: Cm6RenderOptions): Extension {
                 onContentChange: syncFromMonaco(this.view),
                 onExit: exitEditing(this.view),
             });
+            // ① 横向滚动位置继承:用进编辑**前**抓的 body scrollLeft ——
+            //    is-editing 生效后 colorize 行隐藏、scrollWidth 塌缩,body 的
+            //    scrollLeft 已被钳回 0,不能现读(否则右缘截断的字符变化,
+            //    用户反馈「遮掉的内容不一样/滚动条位置抖动」)。
+            // ② 光标穿透:点击卡片的屏幕位置映射为内嵌编辑器光标。
+            const cardEl = this.view.dom.querySelector(`.syfe-cm-codeblock[data-block-key="${key}"]`);
+            const sc = cardEl?.querySelector(".syfe-cm-codeblock-editorhost .cm-scroller") as HTMLElement | null;
+            if (sc) sc.scrollLeft = pendingBlockCursor?.scrollLeft ?? 0;
+            if (pendingBlockCursor && pendingBlockCursor.key === key) {
+                setMountedCursorAtPoint(pendingBlockCursor.x, pendingBlockCursor.y);
+                pendingBlockCursor = null;
+            }
         }
     });
 

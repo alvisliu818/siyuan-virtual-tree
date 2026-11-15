@@ -5713,13 +5713,12 @@ button.syfe-editor__arrow--exp:hover {
     // 此前是 0 0.9em(盒 23.4px、字形左缘 = 盒x+11.7),内嵌 CM6 是 5/12
     // (盒 24.2px、字形左缘 = 盒x+5),进出编辑行号字形横跳 6.7px、
     // 代码起点横移 0.8px(用户反馈「行号会抖动」)。统一后两态逐像素同位。
-    // 不写内联/固定宽度:盒宽 = 数字内容 + padding,位数自适应,
-    // 与 CM6/Monaco 的行号格同规则(monaco 路径 lineDecorationsWidth 校准
-    // 仅服务 structured 引擎,其阅读态无行号列,不受此影响)。
+    // 不写内联/固定宽度:盒宽 = 数字内容 + padding,位数自适应。
+    // ⚠ 数字弱化用字色(on-surface-light)而非 opacity —— opacity 会让整格
+    // 半透明,横向滚动时内容从行号下透出、和行号重叠(用户反馈)。
     padding: 0 12px 0 5px;
     text-align: right;
-    color: var(--b3-theme-on-surface);
-    opacity: 0.45;
+    color: var(--b3-theme-on-surface-light);
     background: var(--b3-theme-surface);
     user-select: none;
 }
