@@ -130,7 +130,10 @@ const gutterTheme = EditorView.theme({
         opacity: "0.45",
     },
     ".cm-lineNumbers .cm-gutterElement": {
-        padding: "0 0.9em",
+        // ⚠ padding 不在这里定:宿主 syfeCmTheme 的
+        // ".cm-lineNumbers .cm-gutterElement{padding:0 12px 0 5px}" 特异性更高,
+        // 实测以它为准 —— 与阅读态 .syfe-cm-cl-n 同规格,两态行号零抖动的关键。
+        // 此前这里写 0 0.9em 实测被盖过(量到 5/12),留着会误导后人。
         color: "var(--b3-theme-on-surface)",
         opacity: "0.45",
     },

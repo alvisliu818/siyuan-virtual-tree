@@ -195,17 +195,18 @@ const COPY_ICON_SVG =
 
 // colorize HTML → 带行号的逐行结构。
 // 行号是卡片滚动视图的一部分:每行 = 行号格(sticky left,横向滚动时钉在卡内
-// 左缘、始终可见)+ 代码格(pre,跟随横向滚动)。宽度按最大行号的位数用 ch
-// 定宽,等宽字体下各行的代码起始 x 严格对齐。
+// 左缘、始终可见)+ 代码格(pre,跟随横向滚动)。
+// ⚠ 行号格不再写内联 width:宽度交给内容 + .syfe-cm-cl-n 的统一规格
+// (padding 5/12 + min-width 2ch,与内嵌 CM6/Monaco 的行号格同款)——
+// 两态行号列宽、字形位置逐像素一致,进出编辑不抖(用户 2026-11-15)。
 function buildNumberedLines(html: string): string {
     // colorize 以 <br> 分行;colorize 失败的兜底是 \n 分行的转义文本,一并支持
     const lines = html.split(/<br\s*\/?>|\n/);
-    const widthCh = String(Math.max(lines.length, 1)).length + 1;
     const rows: string[] = [];
     for (let i = 0; i < lines.length; i++) {
         rows.push(
             '<div class="syfe-cm-cl">' +
-            '<span class="syfe-cm-cl-n" style="width:' + widthCh + 'ch">' + (i + 1) + '</span>' +
+            '<span class="syfe-cm-cl-n">' + (i + 1) + '</span>' +
             '<span class="syfe-cm-cl-c">' + (lines[i] || "") + '</span>' +
             '</div>',
         );

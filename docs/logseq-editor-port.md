@@ -119,6 +119,18 @@ AGPL-3.0 已生效,允许引用/派生 Logseq 代码,但技术上仍以「读源
   GitHub Dark `support=#79b8ff`,切换后 `print` 随之变化且两态一致。
   上一轮删掉的 `getActiveCodeTheme()` 只是「自建 scope→CM6 tag 映射」,
   不是扩展主题来源;删它是为了去掉第二套分词,不是改回 Monaco 默认主题。
+- 再修(用户「进入/退出编辑,代码块里的行号会抖动」+「使用同一套渲染」):
+  - 根因:两套行号格 padding 规格不同 —— 阅读态 `.syfe-cm-cl-n` 是
+    `0 0.9em`(盒 23.4px、字形左缘 = 盒x+11.7),内嵌 CM6 的 gutter 格继承
+    宿主 syfeCmTheme 的原生 `0 12px 0 5px`(盒 24.2px、字形左缘 = 盒x+5),
+    行号字形横跳 6.7px、代码起点横移 0.8px。Range 量字形定位。
+  - 统一:行号格一律用 CM6 原生规格 `padding: 0 12px 0 5px`、盒宽由
+    数字内容 + padding 自适应(去掉 buildNumberedLines/renderCalc 的
+    内联 `width: Nch`);`syfe-cm-cl-n` 与内嵌 gutter 同规格同位。
+  - 附带:①内嵌 gutterTheme 里实测被宿主盖过的 `padding: 0 0.9em` 死声明
+    删除,防误导;②body `overflow-x: scroll`(常驻 10px 条带,Monaco 时代
+    对齐手段)改 `auto` —— 编辑态 padding 与阅读态相同后常驻条带反而让
+    阅读态多 10px,auto 下短/超宽代码两态都恒等高(超宽实测 98/98)。
 - **未做(刻意,非遗漏)**:blur 自动退出编辑态 —— 本 Electron 下极易误退出
   (点结果列/复制按钮都会触发),按前期调研结论保持 Esc / 点击卡外退出。
 - 广义移植主线 M2(键盘)/M3(光标管理)/M4(块操作)本轮未动;按用户此前

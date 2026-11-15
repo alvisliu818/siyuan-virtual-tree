@@ -391,13 +391,12 @@ export function evalCalcLines(code: string): CalcRow[] {
 
 function buildSourceRows(el: HTMLElement, rows: CalcRow[]): void {
     el.replaceChildren();
-    const widthCh = String(Math.max(rows.length, 1)).length + 1;
+    // 行号格不写内联宽度:与 .syfe-cm-cl-n 统一规格(padding 5/12 + min-width 2ch)
     for (let i = 0; i < rows.length; i++) {
         const row = document.createElement("div");
         row.className = "syfe-cm-cl";
         const n = document.createElement("span");
         n.className = "syfe-cm-cl-n";
-        n.style.width = `${widthCh}ch`;
         n.textContent = String(i + 1);
         const c = document.createElement("span");
         c.className = "syfe-cm-cl-c";
