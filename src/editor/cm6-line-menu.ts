@@ -25,6 +25,7 @@ import {BlockType, type Command, EditorView, ViewPlugin} from "@codemirror/view"
 import {syntaxTree} from "@codemirror/language";
 import type {SyntaxNode} from "@lezer/common";
 import {Menu} from "siyuan";
+import {beginCodeEdit, fencedCodeInfosOfState} from "./cm6-render";
 
 // ===== 1. 行上下文(SB lineTextStart / lineContexts 行级用法) =====
 
@@ -333,6 +334,27 @@ export function listIndentCommand(dir: 1 | -1): Command {
 }
 
 /**
+ * Alt+↑/↓ 块移动(Logseq 同款键盘行为):光标所在的可移动块(列表项/任务/
+ * 段落/标题节)与相邻同级块整块换位。无同级块时吞键不动(不回落光标移动,
+ * 避免按了移动键却跳光标的意外);只读态/不可移动行返回 false 回落默认行为。
+ */
+export function moveBlockCommand(dir: -1 | 1): Command {
+    return (view) => {
+        const state = view.state;
+        if (state.readOnly || state.facet(EditorView.editable) === false) return false;
+        const n = state.doc.lineAt(state.selection.main.head).number;
+        const ctx = lineContext(state, n);
+        if (ctx.kind !== "heading" && ctx.kind !== "list" && ctx.kind !== "task" && ctx.kind !== "paragraph") {
+            return false;
+        }
+        const end = blockEnd(state, n, ctx);
+        if (sibling(state, ctx, n, end, dir) == null) return true; // 吞键不动
+        moveBlock(dir)(view, n);
+        return true;
+    };
+}
+
+/**
  * 块的结束行(不含):
  *  - 标题:到下一个级别 ≤ 自身的标题(或文档尾)——即整节
  *  - 列表项:后续缩进更深的行为子块;空行只有当其后仍接更深缩进延续行时才属于块
@@ -577,6 +599,136 @@ function listEntries(ctx: LineContext, state: EditorState, n: number, isTask: bo
     return out;
 }
 
+// ===== 6. 卡片菜单(SB block_menu/widget_menu 移植) =====
+// 渲染卡片(代码卡片/表格/公式/属性面板)旁的 ⋮ 打开卡片级菜单:编辑源码 /
+// 复制 Markdown / 删除块。SB 同款语义:卡片菜单只读态也保留(仅剩只读条目);
+// 手柄与行级菜单共用,悬浮目标在「文本行」与「卡片」间自动切换。
+
+/** 自绘卡片根元素的统一选择器(与 cm6-render 的卡片类名一致) */
+const WIDGET_SELECTOR = ".syfe-cm-codeblock, .syfe-cm-table, .syfe-cm-math, .syfe-cm-properties, .syfe-cm-quote";
+
+const RE_TABLE_ROW_MENU = /^\s{0,3}\|.*\|\s*$/;
+const RE_MATH_DELIM = /^\s*\$\$\s*$/;
+
+/** 覆盖第 n 行的渲染块区间(卡片菜单的编辑/复制/删除都作用于它) */
+function blockSpanAt(state: EditorState, n: number): {from: number; to: number; kind: "code" | "table" | "math" | "props"} | null {
+    const doc = state.doc;
+    const line = doc.line(n);
+    // 属性面板 = 文首闭合 frontmatter
+    if (doc.lines >= 2 && /^\s*---\s*$/.test(doc.line(1).text)) {
+        let end = 2;
+        while (end <= doc.lines && !/^\s*---\s*$/.test(doc.line(end).text)) end++;
+        if (end <= doc.lines && n <= end) {
+            return {from: doc.line(1).from, to: doc.line(end).to, kind: "props"};
+        }
+    }
+    // 围栏代码块
+    for (const info of fencedCodeInfosOfState(state)) {
+        const fromLine = doc.lineAt(info.from).number;
+        const toLine = doc.lineAt(Math.max(info.from, info.to - 1)).number;
+        if (n >= fromLine && n <= toLine) {
+            return {from: info.from, to: info.to, kind: "code"};
+        }
+    }
+    // 表格
+    if (RE_TABLE_ROW_MENU.test(line.text)) {
+        let head = n;
+        while (head > 1 && RE_TABLE_ROW_MENU.test(doc.line(head - 1).text)) head--;
+        let tail = n;
+        while (tail + 1 <= doc.lines && RE_TABLE_ROW_MENU.test(doc.line(tail + 1).text)) tail++;
+        return {from: doc.line(head).from, to: doc.line(tail).to, kind: "table"};
+    }
+    // 公式 $$ 对(含内容行)
+    const isDelim = (k: number) => k >= 1 && k <= doc.lines && RE_MATH_DELIM.test(doc.line(k).text);
+    let head = -1;
+    let tail = -1;
+    if (isDelim(n)) {
+        let j = n + 1;
+        while (j <= doc.lines && !isDelim(j)) j++;
+        if (j <= doc.lines) {
+            head = n;
+            tail = j;
+        } else {
+            let i = n - 1;
+            while (i >= 1 && !isDelim(i)) i--;
+            if (i >= 1) {
+                head = i;
+                tail = n;
+            }
+        }
+    } else {
+        let i = n;
+        while (i >= 1 && !isDelim(i)) i--;
+        if (i >= 1) {
+            let j = i + 1;
+            while (j <= doc.lines && !isDelim(j)) j++;
+            if (j <= doc.lines && n >= i && n <= j) {
+                head = i;
+                tail = j;
+            }
+        }
+    }
+    if (head > 0) {
+        return {from: doc.line(head).from, to: doc.line(tail).to, kind: "math"};
+    }
+    return null;
+}
+
+/** 卡片菜单条目;只读态只剩 复制 Markdown(SB:widget 菜单只读态也保留只读条目) */
+function cardMenuEntries(state: EditorState, span: {from: number; to: number; kind: string}): LineMenuEntry[] {
+    const writable = !state.readOnly && state.facet(EditorView.editable) !== false;
+    const out: LineMenuEntry[] = [];
+    if (writable) {
+        out.push({
+            label: "编辑源码",
+            icon: featherIcon('<path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>'),
+            run: (view) => {
+                if (span.kind === "code") {
+                    // 代码卡片:与点击卡片同一编辑流(editingKey + 内嵌 CM6)
+                    beginCodeEdit(view, span.from);
+                    return;
+                }
+                // 表格/公式/属性:光标进块,渲染层翻回源码态
+                view.dispatch({selection: EditorSelection.cursor(span.from + 1), scrollIntoView: true});
+            },
+        });
+    }
+    out.push({
+        label: "复制 Markdown",
+        icon: featherIcon('<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>'),
+        run: (view) => {
+            const text = view.state.sliceDoc(span.from, span.to);
+            void navigator.clipboard.writeText(text).catch(() => {});
+        },
+    });
+    if (writable) {
+        out.push({
+            label: "删除块",
+            icon: ICONS.trash,
+            run: (view) => {
+                const doc = view.state.doc;
+                const fromLine = doc.lineAt(span.from).number;
+                const toLine = doc.lineAt(span.to).number;
+                let end = toLine;
+                // 尾随空行一并删,不留双空行
+                if (end + 1 <= doc.lines && doc.line(end + 1).text.trim() === "" &&
+                    fromLine > 1 && doc.line(fromLine - 1).text.trim() === "") {
+                    end++;
+                }
+                const from = doc.line(fromLine).from;
+                const to = doc.line(end).to;
+                // 整文档仅此块 → 清空
+                if (fromLine === 1 && end >= doc.lines) {
+                    view.dispatch({changes: {from: 0, to: doc.length, insert: ""}, userEvent: "syfe.indent"});
+                    return;
+                }
+                view.dispatch({changes: {from, to, insert: ""}, userEvent: "input"});
+            },
+        });
+    }
+    return out;
+}
+
 // ===== 5. 手柄插件(SB line_handle.ts 移植) =====
 
 // Feather "more-vertical"
@@ -614,26 +766,31 @@ export function cm6LineMenu(): Extension {
         handle.tabIndex = -1;
         // 鼠标悬停期间键入不隐藏(SB handleHovered)
         let handleHovered = false;
-        // 鼠标下的行 / 菜单钉住的行(编辑后按变更映射)
-        let hovered: number | undefined;
-        let pinned: number | undefined;
+        // 悬浮目标:文本行 / 渲染卡片(SB Target);菜单钉住态同构
+        let hovered: {line: number; card: HTMLElement | null} | undefined;
+        let pinned: {line: number; card: HTMLElement | null} | undefined;
         let menuOpen = false;
 
-        const available = () =>
+        // 行级菜单需要可写;卡片菜单只读态也保留只读条目(SB 同款)
+        const writable = () =>
             !view.state.readOnly && view.state.facet(EditorView.editable) !== false;
 
         const show = () =>
             view.requestMeasure({
                 key: handle,
                 read: () => {
-                    if (!available()) return null;
-                    const n = pinned ?? hovered;
-                    if (!n || n > view.state.doc.lines) return null;
-                    const line = view.state.doc.line(n);
+                    const t = pinned ?? hovered;
+                    if (!t || t.line > view.state.doc.lines) return null;
+                    // 行级目标需要可写;卡片目标只读态保留(只读条目)
+                    if (!t.card && !writable()) return null;
+                    const line = view.state.doc.line(t.line);
                     if (line.text.trim() === "") return null;
-                    const el = lineElement(view, line);
-                    if (lineIsReplaced(view, line, el)) return null;
-                    if (!lineMenuEntries(view.state, n).length) return null;
+                    // 卡片目标跳过「整行被替换」检查(被替换正是卡片的前提)
+                    if (!t.card) {
+                        const el = lineElement(view, line);
+                        if (lineIsReplaced(view, line, el)) return null;
+                        if (!lineMenuEntries(view.state, t.line).length) return null;
+                    }
                     // 位置:行文本左缘左侧 2px,盖住行号槽(Logseq 块控件同款)
                     const coords = view.coordsAtPos(line.from, 1);
                     if (!coords) return null;
@@ -651,7 +808,7 @@ export function cm6LineMenu(): Extension {
                     if (!at) {
                         handle.classList.remove("syfe-line-handle--shown");
                         delete handle.dataset.line;
-                        if (!available()) handle.hidden = true;
+                        if (!writable()) handle.hidden = true;
                         return;
                     }
                     handle.style.left = `${at.left}px`;
@@ -662,11 +819,29 @@ export function cm6LineMenu(): Extension {
                 },
             });
 
-        // 鼠标移动 → 悬浮行(SB onMove:elementAtHeight 只认文本行)
+        // 鼠标移动 → 悬浮目标(SB onMove:卡片优先,其次文本行)
         const onMove = (e: PointerEvent) => {
             if (e.pointerType !== "mouse") return;
             if (e.target instanceof Node && handle.contains(e.target)) return;
-            let next: number | undefined;
+            let next: {line: number; card: HTMLElement | null} | undefined;
+            // 1) 悬浮在渲染卡片上(SB cardUnder)
+            const cardEl = e.target instanceof Element
+                ? (e.target.closest(WIDGET_SELECTOR) as HTMLElement | null)
+                : null;
+            if (cardEl && cardEl.isConnected) {
+                try {
+                    const block = view.elementAtHeight(e.clientY - view.documentTop);
+                    const n = view.state.doc.lineAt(block.from).number;
+                    next = {line: n, card: cardEl};
+                } catch {
+                    next = undefined;
+                }
+                if (hovered && hovered.card === cardEl) return;
+                hovered = next;
+                show();
+                return;
+            }
+            // 2) 文本行(elementAtHeight 只认文本行)
             const top = view.scrollDOM.getBoundingClientRect().top;
             let docBottom: number;
             try {
@@ -677,10 +852,11 @@ export function cm6LineMenu(): Extension {
             if (e.clientY >= top && e.clientY <= docBottom) {
                 const block = view.elementAtHeight(e.clientY - view.documentTop);
                 if (block.type === BlockType.Text) {
-                    next = view.state.doc.lineAt(block.from).number;
+                    next = {line: view.state.doc.lineAt(block.from).number, card: null};
                 }
             }
-            if (next === hovered) return;
+            const same = hovered && next && hovered.line === next.line && !hovered.card && !next.card;
+            if (same) return;
             hovered = next;
             show();
         };
@@ -734,11 +910,17 @@ export function cm6LineMenu(): Extension {
                     return;
                 }
             }
-            const n = pinned ?? hovered;
-            if (!n || n > view.state.doc.lines) return;
-            const entries = lineMenuEntries(view.state, n);
+            const t = pinned ?? hovered;
+            if (!t || t.line > view.state.doc.lines) return;
+            // 卡片目标 → 卡片菜单(编辑/复制/删除,作用于覆盖该行的渲染块)
+            const entries = t.card
+                ? (() => {
+                    const span = blockSpanAt(view.state, t.line);
+                    return span ? cardMenuEntries(view.state, span) : [];
+                })()
+                : lineMenuEntries(view.state, t.line);
             if (!entries.length) return;
-            pinned = n;
+            pinned = t;
             menuOpen = true;
             armClose();
             const menu = new Menu();
@@ -749,7 +931,7 @@ export function cm6LineMenu(): Extension {
                     iconHTML: entry.icon,
                     label: entry.label,
                     checked: entry.current,
-                    click: () => onRun(n, entry.run),
+                    click: () => onRun(t.line, entry.run),
                 });
             }
             const r = handle.getBoundingClientRect();
@@ -792,8 +974,8 @@ export function cm6LineMenu(): Extension {
                                 ).from,
                             ),
                         ).number;
-                    if (hovered !== undefined) hovered = mapLine(hovered);
-                    if (pinned !== undefined) pinned = mapLine(pinned);
+                    if (hovered) hovered = {line: mapLine(hovered.line), card: hovered.card};
+                    if (pinned) pinned = {line: mapLine(pinned.line), card: pinned.card};
                     if (
                         update.transactions.some(
                             (tr) => tr.isUserEvent("input") || tr.isUserEvent("delete"),

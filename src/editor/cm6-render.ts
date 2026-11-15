@@ -1345,6 +1345,26 @@ const forceRenderEffect = StateEffect.define<null>();
 // 编辑态同步状态:块 key + 最近一次同步进文档的内容(monaco ↔ cm6 回写定位用)
 let activeSync: {key: string; viewValue: string} | null = null;
 
+/** 围栏代码块信息(按文档版本记忆化;行级菜单的卡片菜单也用) */
+export function fencedCodeInfosOfState(state: EditorState): FencedCodeInfo[] {
+    return fencedCodeInfosOf(state);
+}
+
+/**
+ * 卡片菜单「编辑源码」入口:与点击代码卡片同一编辑流(设置 editingKey +
+ * 同步快照 + 强制重建,正文区换内嵌 CM6)。菜单侧(cm6-line-menu)拿不到
+ * 模块内的 editingKey 机制,经此入口进入。
+ */
+export function beginCodeEdit(view: EditorView, from: number): boolean {
+    const info = fencedCodeInfosOf(view.state).find(i => i.from === from);
+    if (!info) return false;
+    const key = String(from);
+    activeSync = {key, viewValue: info.codeView};
+    setEditingKey(key);
+    view.dispatch({effects: forceRenderEffect.of(null)});
+    return true;
+}
+
 // 开关:CM6 代码块 Monaco 渲染(markdown.cm6CodeBlockMonaco,默认开)。
 // 关闭后围栏代码块回落编辑器原生源码行(不渲染卡片、不可 Monaco 编辑),
 // 与点语言标签的围栏态同观感;数学/表格/图片等非 Monaco 渲染不受影响。
