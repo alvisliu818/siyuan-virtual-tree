@@ -67,6 +67,8 @@ import {loadStartPage, itemFromPath, itemFromDoc, toggleInGroup, START_PAGE_CHAN
 import {isVirtualPath, virtualId, initMountStore, getMountList, dropSyDocMounts} from "./utils/virtual-tree";
 import {initBaiduPanStore} from "./api/baidu-pan";
 import {openBaiduPanDialog} from "./components/baidu-pan-dialog";
+import {startLanSyncServer, stopLanSyncServer, isLanSyncServerRunning} from "./api/lan-sync";
+import {openLanSyncDialog} from "./components/lan-sync-dialog";
 import {openOneDriveDialog} from "./components/onedrive-dialog";
 import {initOneDriveStore} from "./api/onedrive";
 import {initOutlookMailStore} from "./api/outlook-mail";
@@ -202,6 +204,12 @@ export default class FileEditorPlugin extends Plugin {
     private cm6GutterOpacityInput?: HTMLInputElement;
     private cm6HighlightActiveLineInput?: HTMLInputElement;
     private newTabReplacePlusInput?: HTMLInputElement;
+    private openHomeOnStartupInput?: HTMLInputElement;
+    private startSearchBlocksInput?: HTMLInputElement;
+    private startSearchWebUrlInput?: HTMLInputElement;
+    private lanSyncEnabledInput?: HTMLInputElement;
+    private lanSyncPortInput?: HTMLInputElement;
+    private lanSyncTokenInput?: HTMLInputElement;
     private newTabShowPinnedInput?: HTMLInputElement;
     private newTabShowRecentInput?: HTMLInputElement;
     private newTabShowFavoritesInput?: HTMLInputElement;
@@ -400,6 +408,8 @@ export default class FileEditorPlugin extends Plugin {
     async onload(): Promise<void> {
         // 换届自愈(与入口 banner 双保险):摘掉上一轮 bundle 残留的全局资源。
         disposeAllGlobal();
+        // 全局插件引用:局域网同步的服务端共享根/客户端令牌兜底都从这里读
+        (window as any).syfePlugin = this;
         // 移动端走独立的注册链:桌面 onload 里的 addTab / Monaco / 终端 / Python LSP
         // 在移动端要么空实现要么没有 Node,中途抛错会让思源跳过 kernelInit 与
         // onLayoutReady,连移动端官方支持的 dock 都注册不上(见 utils/platform.ts)。
@@ -829,6 +839,21 @@ export default class FileEditorPlugin extends Plugin {
         } catch (e) {
             console.error("[siyuan-file-editor] 加载插件库失败:", e);
         }
+        // HOME 页:按配置在启动时自动打开(桌面端)。已有起始页(布局恢复带回来的)
+        // 会被聚焦而不是重复开一个
+        if (this.config.openHomeOnStartup === true) {
+            try {
+                openStartTab(this as any);
+            } catch (e) {
+                console.error("[siyuan-file-editor] 启动打开 HOME 页失败:", e);
+            }
+        }
+        // 局域网同步服务端:按配置启动(端口占用等失败只记日志,不影响其他功能)
+        if (this.config.lanSyncEnabled === true) {
+            void startLanSyncServer(this).catch(e => {
+                console.error("[siyuan-file-editor] 局域网同步服务端启动失败:", e);
+            });
+        }
         // 记录最近使用的思源文档(必须在 loadRecents 之后注册,否则会被加载结果覆盖)
         this.eventBus.on("switch-protyle", (e: any) => {
             const protyle = e?.detail?.protyle;
@@ -936,6 +961,12 @@ export default class FileEditorPlugin extends Plugin {
     onunload(): void {
         // 摘掉本轮登记的全局监听器/observer(入口 banner 会在下一轮再兜一次)
         disposeAllGlobal();
+        // 局域网同步服务端:停监听(重载/卸载后端口才能被新一轮占用)
+        try {
+            stopLanSyncServer();
+        } catch {
+            // ignore
+        }
         // 习惯与目标:停计时引擎、强制落盘(planner.json 数据保留)
         try {
             destroyPlanner();
@@ -1828,6 +1859,48 @@ export default class FileEditorPlugin extends Plugin {
         this.newTabReplacePlusInput.className = "b3-switch";
         addRow("newTab", "接管顶部「+」", "开启后,点击思源顶部的「+」不再新建文档,而是打开插件「新标签页」(搜索文件 + 固定 + 最近打开 + 收藏)。页内「新建思源文档」按钮保留原生新建能力", this.newTabReplacePlusInput);
 
+        this.openHomeOnStartupInput = document.createElement("input");
+        this.openHomeOnStartupInput.type = "checkbox";
+        this.openHomeOnStartupInput.className = "b3-switch";
+        addRow("newTab", "启动时自动打开 HOME 页", "开启后,思源启动完成时自动打开(或聚焦)插件的「新标签页」(HOME 页)", this.openHomeOnStartupInput);
+
+        this.startSearchBlocksInput = document.createElement("input");
+        this.startSearchBlocksInput.type = "checkbox";
+        this.startSearchBlocksInput.className = "b3-switch";
+        addRow("newTab", "搜索框搜思源块", "开启后,HOME 页搜索框除了文件名还会查思源块内容(结果点击落到所在文档)", this.startSearchBlocksInput);
+
+        this.startSearchWebUrlInput = document.createElement("input");
+        this.startSearchWebUrlInput.className = "b3-text-field";
+        this.startSearchWebUrlInput.type = "text";
+        this.startSearchWebUrlInput.placeholder = "https://www.bing.com/search?q={q}";
+        addRow("newTab", "网页搜索 URL", "HOME 页搜索框建议列表末尾的「网页搜索」入口使用的 URL 模板,{q} 为关键词。经思源浏览器插件打开(未安装时用系统浏览器)", this.startSearchWebUrlInput);
+
+        // ---------- 局域网同步 ----------
+        this.lanSyncEnabledInput = document.createElement("input");
+        this.lanSyncEnabledInput.type = "checkbox";
+        this.lanSyncEnabledInput.className = "b3-switch";
+        addRow("lanSync", "启用同步服务端", "开启后本机监听同步端口,对端设备通过「http://本机IP:端口」连接并同步(仅桌面端;保存设置后立即生效)", this.lanSyncEnabledInput);
+
+        this.lanSyncPortInput = document.createElement("input");
+        this.lanSyncPortInput.className = "b3-text-field";
+        this.lanSyncPortInput.type = "number";
+        this.lanSyncPortInput.placeholder = "39099";
+        addRow("lanSync", "监听端口", "同步服务端的 TCP 端口(默认 39099);两端防火墙需放行", this.lanSyncPortInput);
+
+        this.lanSyncTokenInput = document.createElement("input");
+        this.lanSyncTokenInput.className = "b3-text-field";
+        this.lanSyncTokenInput.type = "text";
+        this.lanSyncTokenInput.placeholder = "(留空 = 首次启用时自动生成)";
+        addRow("lanSync", "同步令牌", "对端连接本机时必须携带的令牌(请求头 x-lansync-token);把它填到对端任务的「对端令牌」里", this.lanSyncTokenInput);
+
+        const lanSyncTaskBtn = document.createElement("button");
+        lanSyncTaskBtn.className = "b3-button b3-button--outline";
+        lanSyncTaskBtn.textContent = "同步任务管理…";
+        lanSyncTaskBtn.addEventListener("click", () => {
+            openLanSyncDialog(this);
+        });
+        addRow("lanSync", "同步任务", "配置要同步的目录(支持 /data/... 内核路径或系统绝对路径)、对端地址、方向与白/黑名单正则;支持预览差异后手动同步", lanSyncTaskBtn);
+
         this.newTabShowPinnedInput = document.createElement("input");
         this.newTabShowPinnedInput.type = "checkbox";
         this.newTabShowPinnedInput.className = "b3-switch";
@@ -1933,6 +2006,7 @@ export default class FileEditorPlugin extends Plugin {
         addRowsPage("library", "插件库");
         addRowsPage("terminal", "终端");
         addRowsPage("newTab", "新标签页");
+        addRowsPage("lanSync", "局域网同步");
         addRowsPage("docProperties", "文档属性");
         addRowsPage("jupyter", "运行内核");
     }
@@ -1976,6 +2050,12 @@ export default class FileEditorPlugin extends Plugin {
         if (this.mediaHotkeyMarkInput) this.mediaHotkeyMarkInput.value = formatHotkey(this.config.mediaHotkeyMark);
         if (this.mediaHotkeyInsertInput) this.mediaHotkeyInsertInput.value = formatHotkey(this.config.mediaHotkeyInsert);
         if (this.newTabReplacePlusInput) this.newTabReplacePlusInput.checked = this.config.newTabReplacePlus !== false;
+        if (this.openHomeOnStartupInput) this.openHomeOnStartupInput.checked = this.config.openHomeOnStartup === true;
+        if (this.startSearchBlocksInput) this.startSearchBlocksInput.checked = this.config.startSearchBlocks !== false;
+        if (this.startSearchWebUrlInput) this.startSearchWebUrlInput.value = this.config.startSearchWebUrl || DEFAULT_CONFIG.startSearchWebUrl;
+        if (this.lanSyncEnabledInput) this.lanSyncEnabledInput.checked = this.config.lanSyncEnabled === true;
+        if (this.lanSyncPortInput) this.lanSyncPortInput.value = String(this.config.lanSyncPort || 39099);
+        if (this.lanSyncTokenInput) this.lanSyncTokenInput.value = this.config.lanSyncToken || "";
         if (this.marketTopBarIconInput) this.marketTopBarIconInput.checked = this.config.marketTopBarIcon !== false;
         if (this.newTabShowPinnedInput) this.newTabShowPinnedInput.checked = this.config.newTabShowPinned !== false;
         if (this.newTabShowRecentInput) this.newTabShowRecentInput.checked = this.config.newTabShowRecent !== false;
@@ -2093,6 +2173,14 @@ export default class FileEditorPlugin extends Plugin {
             mediaHotkeyMark: normalizeHotkeyText(this.mediaHotkeyMarkInput?.value ?? ""),
             mediaHotkeyInsert: normalizeHotkeyText(this.mediaHotkeyInsertInput?.value ?? ""),
             newTabReplacePlus: this.newTabReplacePlusInput?.checked ?? true,
+            openHomeOnStartup: this.openHomeOnStartupInput?.checked ?? false,
+            startSearchBlocks: this.startSearchBlocksInput?.checked ?? true,
+            startSearchWebUrl: (this.startSearchWebUrlInput?.value || "").trim() || DEFAULT_CONFIG.startSearchWebUrl,
+            lanSyncEnabled: this.lanSyncEnabledInput?.checked ?? false,
+            lanSyncPort: Math.max(1, parseInt(this.lanSyncPortInput?.value || "39099", 10) || 39099),
+            lanSyncToken: (this.lanSyncTokenInput?.value || "").trim(),
+            // 任务列表由「同步任务管理」对话框维护,设置保存时原样保留
+            lanSyncTasks: this.config.lanSyncTasks || "",
             newTabShowPinned: this.newTabShowPinnedInput?.checked ?? true,
             newTabShowRecent: this.newTabShowRecentInput?.checked ?? true,
             newTabShowFavorites: this.newTabShowFavoritesInput?.checked ?? true,
@@ -2145,6 +2233,16 @@ export default class FileEditorPlugin extends Plugin {
             // 解析失败保留原默认
         }
         await saveConfig(this, this.config);
+        // 局域网同步服务端跟随设置即时生效(启用/停用/端口/令牌变更都重启)
+        try {
+            if (this.config.lanSyncEnabled === true) {
+                await startLanSyncServer(this);
+            } else if (isLanSyncServerRunning()) {
+                stopLanSyncServer();
+            }
+        } catch (e) {
+            showMessage(`局域网同步服务端启动失败: ${(e as Error)?.message || e}`, 4000, "error");
+        }
         // 面板值即用户值:回写 settings.json(只写与默认不同的项,与 VS Code 一致)
         syncUserSettingsFromConfig(this.config);
         await flushUserSettings();

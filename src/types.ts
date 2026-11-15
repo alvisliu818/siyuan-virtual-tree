@@ -78,6 +78,14 @@ export interface EditorConfig {
     newTabSectionOrder: string;      // 分区顺序,逗号分隔:pinned,recent,favorites,planner
     newTabItemSort: "time" | "name" | "type"; // 分区内条目排序:时间倒序 / 名称 / 类型
     newTabPlannerOrder: string;      // 速览卡片顺序:goals,habits,countdowns,calendar
+    openHomeOnStartup: boolean;      // 启动思源时自动打开新标签页(HOME 页)
+    startSearchBlocks: boolean;      // 新标签页搜索框启用思源块搜索(内容 LIKE 查询)
+    startSearchWebUrl: string;       // 网页搜索 URL 模板,{q} 为关键词(经思源浏览器插件打开)
+    // 局域网同步(桌面端):本机作为服务端/客户端,把选定目录按白/黑名单正则与对端双向同步
+    lanSyncEnabled: boolean;         // 启用局域网同步服务端(思源启动后监听端口)
+    lanSyncPort: number;             // 服务端监听端口
+    lanSyncToken: string;            // 同步令牌(空 = 首次使用自动生成)
+    lanSyncTasks: string;            // 同步任务列表(JSON 数组,见 api/lan-sync.ts LanSyncTask)
     docPropertiesShowInDoc: boolean; // 是否在思源文档标题下插入属性面板(侧边 dock 常驻)
     docPropertiesSchema: string;     // 属性名 → 类型/选项 全局配置(每行 名称=类型:选项)
     // 导入 Markdown 到思源时,是否把源文件作为资源插入到文档顶部的引述块(保留出处,便于回溯原文件)
@@ -345,6 +353,13 @@ export const DEFAULT_CONFIG: EditorConfig = {
     newTabSectionOrder: "pinned,recent,favorites,planner",
     newTabItemSort: "time",          // 条目默认按加入/打开时间倒序(旧行为)
     newTabPlannerOrder: "goals,habits,countdowns,calendar",
+    openHomeOnStartup: false,        // 启动自动打开 HOME 页:默认关,设置里开启
+    startSearchBlocks: true,         // 起始页搜索框默认启用思源块搜索
+    startSearchWebUrl: "https://www.bing.com/search?q={q}",
+    lanSyncEnabled: false,           // 局域网同步服务端默认关
+    lanSyncPort: 39099,
+    lanSyncToken: "",
+    lanSyncTasks: "",                // 空 = 无任务
     docPropertiesShowInDoc: false,   // 文档内面板默认隐藏(侧边 dock 常驻可用)
     docPropertiesSchema: "",         // 未配置的属性按文本处理
     importMdSourceAsset: false,      // 默认不插入源文件资源引述块

@@ -134,6 +134,102 @@ span.syfe-mount__icon {
     color: var(--b3-theme-on-surface-light);
 }
 
+/* 局域网同步任务管理对话框:左侧任务列表 + 右侧编辑/报告 */
+.syfe-lansync__layout {
+    display: flex;
+    gap: 14px;
+    align-items: stretch;
+    min-height: 380px;
+}
+
+.syfe-lansync__side {
+    flex-shrink: 0;
+    width: 180px;
+    display: flex;
+    flex-direction: column;
+    border-right: 1px solid var(--b3-border-color);
+    padding-right: 12px;
+}
+
+.syfe-lansync__tasks {
+    flex: 1;
+    overflow: auto;
+}
+
+.syfe-lansync__empty {
+    font-size: 12px;
+    color: var(--b3-theme-on-surface-light);
+    padding: 8px 4px;
+}
+
+.syfe-lansync__task {
+    padding: 6px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    overflow: hidden;
+
+    &:hover {
+        background: var(--b3-list-hover);
+    }
+}
+
+.syfe-lansync__task--on {
+    background: var(--b3-list-selected);
+
+    &:hover {
+        background: var(--b3-list-selected);
+    }
+}
+
+.syfe-lansync__task-name {
+    font-size: 13px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.syfe-lansync__task-sub {
+    font-size: 11px;
+    color: var(--b3-theme-on-surface-light);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.syfe-lansync__side-actions {
+    flex-shrink: 0;
+    display: flex;
+    gap: 6px;
+    padding-top: 8px;
+    border-top: 1px solid var(--b3-border-color);
+}
+
+.syfe-lansync__main {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.syfe-lansync__report {
+    flex: 1;
+    min-height: 120px;
+    max-height: 200px;
+    overflow: auto;
+    font-size: 12px;
+    line-height: 1.6;
+    background: var(--b3-theme-surface);
+    border: 1px solid var(--b3-border-color);
+    border-radius: 4px;
+    padding: 8px;
+    margin-top: 8px;
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+
 .syfe-file-tree-dock {
     height: 100%;
 }
@@ -3741,6 +3837,35 @@ button.syfe-editor__arrow--exp:hover {
     border-bottom: 1px solid var(--b3-border-color);
     max-height: 96px;
     overflow: auto;
+}
+
+// 底部路径栏:悬停行显示该行完整路径,空闲显示当前目录;点击复制。
+// 与 chips 同视觉层级:固定在面板底部,单行省略。
+// 容器 direction:rtl + 内部 span dir=ltr:超宽时省略号出现在**左侧**,保留右端当前段
+.syfe-mtree__pathbar {
+    flex-shrink: 0;
+    padding: 3px 8px;
+    border-top: 1px solid var(--b3-border-color);
+    font-size: 12px;
+    line-height: 18px;
+    color: var(--b3-theme-on-surface);
+    background: var(--b3-theme-surface);
+    white-space: nowrap;
+    overflow: hidden;
+    cursor: pointer;
+    user-select: none;
+    direction: rtl;
+
+    .syfe-mtree__pathbar-text {
+        direction: ltr;
+        unicode-bidi: embed;
+        display: inline-block;
+        max-width: 100%;
+        vertical-align: top;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
 }
 
 .syfe-mtree__chip {

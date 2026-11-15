@@ -2,6 +2,7 @@
 // 内容:顶部文件搜索框(索引文件名,↑↓ 选择、回车打开)+ 固定区 + 最近打开 + 收藏。
 // 固定/收藏数据来自 src/start-page.ts;最近打开来自 src/recent-files.ts(含思源文档)。
 import {openTab, showMessage} from "siyuan";
+import {getNativeRequire} from "../utils/native-require";
 import {isMobileFrontend} from "../utils/platform";
 import {openFileOnMobile} from "./mobile-open";
 import {START_TAB_TYPE} from "../constants";
@@ -11,7 +12,8 @@ import {isDirectory} from "../utils/path-kind";
 import {fileIconHTML, folderIconHTML} from "../utils/icons";
 import {docTreeIconHTML, cachedDocIcon, ensureDocIcons, getNotebookIcon, isNotebookId} from "../utils/siyuan-icon";
 import {enumerateAll} from "../components/search-panel";
-import {openEntry, showEntryMenu} from "../components/entry-menu";
+import {openEntry, showEntryMenu, openSiyuanDoc} from "../components/entry-menu";
+import {querySQL} from "../api/file";
 import {virtualListDir, VIRTUAL_PREFIX} from "../utils/virtual-tree";
 import {getRecentEntries, RECENTS_CHANGED_EVENT} from "../recent-files";
 import {
@@ -72,16 +74,26 @@ interface PageItem {
     group: StartGroup | "recent";
 }
 
-// 搜索建议条目
+// 搜索建议条目:文件名命中 / 思源块命中 / 网页搜索入口
 interface SuggestItem {
-    path: string;
-    name: string;
-    isDir: boolean;
+    kind: "file" | "block" | "web";
+    // file
+    path?: string;
+    name?: string;
+    isDir?: boolean;
+    // block:思源块搜索结果(打开落在其所在文档)
+    blockId?: string;
+    rootId?: string;
+    content?: string;
+    hpath?: string;
+    // web:网页搜索入口(URL 模板已代入关键词)
+    webUrl?: string;
 }
 
 // 各区显示条数上限
 const RECENT_LIMIT = 20;
 const SUGGEST_LIMIT = 40;
+const BLOCK_SUGGEST_LIMIT = 12;
 
 // kind=doc 条目里可能混着笔记本 id(固定时没区分)。判定的结果缓存在这里:
 // string = 笔记本(值为它的自定义图标,""=未设置);null = 已判定为普通文档。
@@ -552,17 +564,86 @@ export function createStartTabConfig(plugin: IPluginForStartTab) {
                     self._suggestIndex = -1;
                     return;
                 }
-                suggestEl.innerHTML = list.map((it, i) => `
-                    <div class="syfe-start__suggest-item${i === (self._suggestIndex ?? -1) ? " syfe-start__suggest-item--active" : ""}" data-i="${i}">
-                        ${it.isDir ? folderIconHTML(it.name, false) : fileIconHTML(it.name)}
-                        <span class="syfe-start__suggest-name">${escapeHTML(it.name)}</span>
-                        <span class="syfe-start__suggest-path">${escapeHTML(dirname(it.path))}</span>
-                    </div>`).join("");
+                suggestEl.innerHTML = list.map((it, i) => {
+                    const active = i === (self._suggestIndex ?? -1) ? " syfe-start__suggest-item--active" : "";
+                    if (it.kind === "block") {
+                        return `
+                    <div class="syfe-start__suggest-item${active}" data-i="${i}">
+                        ${docTreeIconHTML("", "file")}
+                        <span class="syfe-start__suggest-name syfe-start__suggest-block">${escapeHTML((it.content || "").slice(0, 80))}</span>
+                        <span class="syfe-start__suggest-path">${escapeHTML(it.hpath || "思源块")}</span>
+                    </div>`;
+                    }
+                    if (it.kind === "web") {
+                        return `
+                    <div class="syfe-start__suggest-item${active}" data-i="${i}">
+                        <svg><use xlink:href="#iconGlobe"></use></svg>
+                        <span class="syfe-start__suggest-name">${escapeHTML(it.name || "网页搜索")}</span>
+                        <span class="syfe-start__suggest-path">${escapeHTML(it.hpath || "")}</span>
+                    </div>`;
+                    }
+                    return `
+                    <div class="syfe-start__suggest-item${active}" data-i="${i}">
+                        ${it.isDir ? folderIconHTML(it.name || "", false) : fileIconHTML(it.name || "")}
+                        <span class="syfe-start__suggest-name">${escapeHTML(it.name || "")}</span>
+                        <span class="syfe-start__suggest-path">${escapeHTML(dirname(it.path || ""))}</span>
+                    </div>`;
+                }).join("");
                 suggestEl.style.display = "";
             };
 
-            const runSearch = () => {
-                const keyword = inputEl.value.trim().toLowerCase();
+            // 思源块搜索:content LIKE 查询(SQL LIKE 通配符做基础转义,防通配全表)
+            const escapeLike = (s: string): string =>
+                s.replace(/[\\%_]/g, ch => "\\" + ch);
+            async function searchBlocks(keyword: string): Promise<SuggestItem[]> {
+                try {
+                    const kw = escapeLike(keyword).replace(/'/g, "''");
+                    const rs = await querySQL(
+                        `SELECT id, root_id, content, hpath FROM blocks WHERE content LIKE '%${kw}%' ESCAPE '\\' ` +
+                        `ORDER BY root_id DESC LIMIT ${BLOCK_SUGGEST_LIMIT}`);
+                    const rows = Array.isArray(rs) ? rs : [];
+                    return rows.map(r => ({
+                        kind: "block" as const,
+                        blockId: String(r.id || ""),
+                        rootId: String(r.root_id || r.id || ""),
+                        content: String(r.content || "").trim(),
+                        hpath: String(r.hpath || "思源块"),
+                    })).filter(it => it.blockId);
+                } catch {
+                    return [];
+                }
+            }
+
+            // 网页搜索 URL:配置模板代入关键词;经思源浏览器插件打开,未装/未就绪时回落系统浏览器
+            function webSearchUrl(keyword: string): string {
+                const tpl = (plugin.config?.startSearchWebUrl || "https://www.bing.com/search?q={q}").trim() || "https://www.bing.com/search?q={q}";
+                return tpl.includes("{q}")
+                    ? tpl.replace(/\{q\}/g, encodeURIComponent(keyword))
+                    : tpl + encodeURIComponent(keyword);
+            }
+            function openWebSearch(url: string): void {
+                const bp = (window as any).browserPlugin;
+                if (bp && typeof bp.openUrl === "function") {
+                    try {
+                        bp.openUrl(url, {force: true});
+                        return;
+                    } catch { /* 落兜底 */ }
+                }
+                // 兜底:electron shell 打系统浏览器;再不行 window.open
+                try {
+                    const req = getNativeRequire();
+                    const shell = req?.("electron")?.shell;
+                    if (shell?.openExternal) {
+                        void shell.openExternal(url);
+                        return;
+                    }
+                } catch { /* 忽略 */ }
+                window.open(url, "_blank");
+            }
+
+            const runSearch = async () => {
+                const keyword = inputEl.value.trim();
+                const kwLower = keyword.toLowerCase();
                 if (!keyword) {
                     hideSuggest();
                     return;
@@ -574,20 +655,37 @@ export function createStartTabConfig(plugin: IPluginForStartTab) {
                 for (const it of local) {
                     if (out.length >= SUGGEST_LIMIT) break;
                     const name = basename(it.path!).toLowerCase();
-                    if (!name.includes(keyword) || seen.has(it.path!)) continue;
+                    if (!name.includes(kwLower) || seen.has(it.path!)) continue;
                     seen.add(it.path!);
-                    out.push({path: it.path!, name: basename(it.path!), isDir: false});
+                    out.push({kind: "file", path: it.path!, name: basename(it.path!), isDir: false});
                 }
                 // 再补全盘索引结果
                 for (const e of self._entries || []) {
                     if (out.length >= SUGGEST_LIMIT) break;
-                    if (seen.has(e.path) || !e.name.toLowerCase().includes(keyword)) continue;
+                    if (seen.has(e.path) || !e.name.toLowerCase().includes(kwLower)) continue;
                     seen.add(e.path);
-                    out.push(e);
+                    out.push({kind: "file", path: e.path, name: e.name, isDir: e.isDir});
                 }
+                // 末尾固定一个网页搜索入口(本地无命中时也能一键出去)
+                out.push({
+                    kind: "web",
+                    webUrl: webSearchUrl(keyword),
+                    name: `在网页中搜索「${keyword}」`,
+                    hpath: (plugin.config?.startSearchWebUrl || "").trim() || "默认 Bing",
+                });
+                const fileCount = out.length;
                 self._suggest = out;
                 self._suggestIndex = out.length > 0 ? 0 : -1;
                 renderSuggest(out, keyword);
+                // 思源块搜索(设置开关控制):异步查询,回来后插到网页入口之前重绘
+                if (plugin.config?.startSearchBlocks !== false) {
+                    const blocks = await searchBlocks(keyword);
+                    if (blocks.length > 0 && inputEl.value.trim() === keyword && self._suggest?.length) {
+                        const webEntry = self._suggest[self._suggest.length - 1];
+                        self._suggest = [...self._suggest.slice(0, fileCount - 1), ...blocks, webEntry];
+                        renderSuggest(self._suggest, keyword);
+                    }
+                }
             };
 
             let searchTimer: any = null;
@@ -620,11 +718,17 @@ export function createStartTabConfig(plugin: IPluginForStartTab) {
                 if (e.key === "Enter") {
                     const cur = self._suggestIndex ?? -1;
                     const target = list[cur] || list[0];
-                    if (!target || target.isDir) return;
+                    if (!target) return;
                     e.preventDefault();
                     hideSuggest();
                     inputEl.value = "";
-                    openFileTab(plugin as any, target.path);
+                    if (target.kind === "web") {
+                        openWebSearch(target.webUrl!);
+                    } else if (target.kind === "block") {
+                        void openSiyuanDoc(target.rootId || target.blockId!, plugin.app);
+                    } else if (target.path && !target.isDir) {
+                        openFileTab(plugin as any, target.path);
+                    }
                 }
             };
             this._keyHandler = keyHandler;
@@ -635,10 +739,16 @@ export function createStartTabConfig(plugin: IPluginForStartTab) {
                 const el = (e.target as HTMLElement).closest("[data-i]") as HTMLElement | null;
                 if (!el) return;
                 const target = (self._suggest || [])[Number(el.dataset.i)];
-                if (!target || target.isDir) return;
+                if (!target) return;
                 hideSuggest();
                 inputEl.value = "";
-                openFileTab(plugin as any, target.path);
+                if (target.kind === "web") {
+                    openWebSearch(target.webUrl!);
+                } else if (target.kind === "block") {
+                    void openSiyuanDoc(target.rootId || target.blockId!, plugin.app);
+                } else if (target.path && !target.isDir) {
+                    openFileTab(plugin as any, target.path);
+                }
             });
 
             // ---- 数据变化自动重绘 ----

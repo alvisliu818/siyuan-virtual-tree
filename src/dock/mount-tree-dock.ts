@@ -4,7 +4,7 @@
 // 数据层 src/mount-tree.ts(virtual-tree.json);结构变化派发 syfe:mount-tree-changed 自动重绘。
 import {Menu, Dialog, confirm, showMessage} from "siyuan";
 import {MOUNT_TREE_DOCK_TYPE, IMAGE_EXTENSIONS, getMediaKind} from "../constants";
-import {readDir, querySQL} from "../api/file";
+import {readDir, querySQL, getHPathByID, readTextFile, createDocWithMd, lsNotebooks} from "../api/file";
 import {clearGitRepoCache} from "../api/git-repo";
 import {DirEntry} from "../types";
 import {basename, dirname, joinPath, extname} from "../utils/path";
@@ -56,6 +56,7 @@ import {
     reorderAutoChildren,
     getAutoOrder,
     getParentUid,
+    addMountItem,
     mountTreeEmptyHint,
     MOUNT_TREE_CHANGED_EVENT,
     SYFE_RELATION_TREE_CHANGED_EVENT,
@@ -198,6 +199,8 @@ export interface IPluginForMountTree {
     openFileSplit(path: string, position: "right" | "bottom"): void;
     loadData(key: string): Promise<any>;
     saveData(key: string, data: any): Promise<void>;
+    /** 文件树根目录(底部路径栏空闲态显示用) */
+    getFileTreeRoot(): string;
     /** 新建思源文档对话框(实现见 src/index.ts 插件类) */
     openNewSiyuanDocDialog(
         path: string,
@@ -448,11 +451,13 @@ export function mountTreePanelInit(self: MountTreeDockInstance, plugin: IPluginF
                 <div class="fn__flex-1 syfe-mtree__scroll">
                     <div class="syfe-mtree__chips" style="display:none;"></div>
                     <ul class="syfe-mtree__list"></ul>
-                </div>`;
+                </div>
+                <div class="syfe-mtree__pathbar"></div>`;
 
             const listEl = self.element.querySelector(".syfe-mtree__list") as HTMLElement;
             const chipsEl = self.element.querySelector(".syfe-mtree__chips") as HTMLElement;
             const scrollEl = self.element.querySelector(".syfe-mtree__scroll") as HTMLElement;
+            const pathbarEl = self.element.querySelector(".syfe-mtree__pathbar") as HTMLElement;
             self._listEl = listEl;
             self._scrollEl = scrollEl;
             self._rows = [];
@@ -478,6 +483,64 @@ export function mountTreePanelInit(self: MountTreeDockInstance, plugin: IPluginF
             let typeSel = new Set<string>();          // 选中的类型 key(空 = 全部)
             let typeFilesCache: {ts: number; files: {path: string; name: string; size: number; updated: string}[]} | null = null;
             let typeViewLoading = false;
+
+            // ===== 底部路径栏:悬停行显示完整路径,空闲时显示当前目录;点击复制 =====
+            const hpathCache = new Map<string, string>(); // 文档 id → hpath(异步取,缓存)
+            let pathbarHoverKey = "";                     // 当前悬停的思源 id(异步 hpath 回来后仅同行才刷新)
+            const setPathbar = (text: string): void => {
+                // span dir=ltr 嵌在 rtl 容器里:路径从左到右正常渲染,超宽时省略号出现在**左侧**,
+                // 保留最右端的当前文件/文档段(纯 textContent + rtl 会把分隔符路径段打乱)
+                pathbarEl.innerHTML = `<span dir="ltr" class="syfe-mtree__pathbar-text">${escapeHTML(text || "")}</span>`;
+                pathbarEl.title = (text || "") + "\n点击复制路径";
+            };
+            const pathbarDefault = (): string => currentDir || plugin.getFileTreeRoot();
+            const rowPathOf = (row: Row | undefined): string => {
+                if (!row) return "";
+                switch (row.kind) {
+                    case "file": return row.path;
+                    case "mount":
+                        return row.item.kind === "file" ? (row.item.path || "") : (row.item.targetId || "");
+                    case "auto": return row.hpath || row.docId;
+                    case "doc": return row.docId;
+                    case "block": return `块 ${row.blockId}`;
+                    default: return "";
+                }
+            };
+            // 思源文档 id → hpath 异步补齐(挂载文档行 / doc 行;块行只显示块 id)
+            const ensureHPath = (id: string): void => {
+                if (!id || hpathCache.has(id)) return;
+                hpathCache.set(id, ""); // 占位防并发重复请求
+                void getHPathByID(id).then(hp => {
+                    hpathCache.set(id, hp || "");
+                    if (pathbarHoverKey === id) setPathbar(hp || id);
+                }).catch(() => hpathCache.delete(id));
+            };
+            scrollEl.addEventListener("mouseover", (e: MouseEvent) => {
+                const rowEl = (e.target as HTMLElement).closest(".syfe-mtree__row") as HTMLElement | null;
+                if (!rowEl || !scrollEl.contains(rowEl)) return;
+                const idx = rowEl.dataset.idx;
+                if (idx === undefined) return;
+                const row = (self._rows || [])[Number(idx)];
+                const text = rowPathOf(row);
+                if (!text) return;
+                const id = row && row.kind === "mount" && row.item.kind !== "file" ? (row.item.targetId || "")
+                    : row && (row.kind === "auto" || row.kind === "doc") ? row.docId : "";
+                if (id) {
+                    pathbarHoverKey = id;
+                    ensureHPath(id);
+                    setPathbar(hpathCache.get(id) || text);
+                } else {
+                    pathbarHoverKey = "";
+                    setPathbar(text);
+                }
+            });
+            scrollEl.addEventListener("mouseleave", () => {
+                pathbarHoverKey = "";
+                setPathbar(pathbarDefault());
+            });
+            pathbarEl.addEventListener("click", () => {
+                copyWithToast(pathbarEl.textContent || "", "路径已复制", "复制失败");
+            });            setPathbar(pathbarDefault());
 
             // ===== 引用关系树(设置开关控制,只读派生视图)=====
             // 与手动挂载共存:关系树排在手动挂载**上方**,两者互不影响。
@@ -2556,6 +2619,51 @@ export function mountTreePanelInit(self: MountTreeDockInstance, plugin: IPluginF
                                 render();
                                 void load("f:" + fPath, async () => await readDir(fPath));
                             },
+                        });
+                    }
+                    // 文本类文件:导入为思源文档,并把它挂载到原文件**相邻位置**(同层)。
+                    // 挂载行挂回其父层;虚拟文件行挂到所在文件夹对应的挂载项(沿显示父链逐级落位)
+                    const IMPORTABLE_EXTS = new Set([".md", ".markdown", ".txt", ".log", ".csv", ".tsv", ".ini", ".conf", ".cfg", ".env"]);
+                    if (!fIsDir && IMPORTABLE_EXTS.has(extname(fPath).toLowerCase())) {
+                        const importAsDocAndMount = async (): Promise<void> => {
+                            try {
+                                const md = await readTextFile(fPath);
+                                // 目标笔记本:设置里配置的(若仍打开)或第一个已打开笔记本
+                                let notebook = plugin.config?.newDocNotebook || "";
+                                try {
+                                    const nbs = await lsNotebooks();
+                                    const openNbs = (nbs || []).filter((n: any) => n && n.id && !n.closed);
+                                    if (!openNbs.some((n: any) => n.id === notebook)) notebook = openNbs[0]?.id || "";
+                                } catch { /* 枚举失败保留配置值,createDocWithMd 会给出错误 */ }
+                                if (!notebook) {
+                                    showMessage("没有已打开的笔记本,无法导入", 3500, "error");
+                                    return;
+                                }
+                                const title = basename(fPath).replace(/\.[^.]+$/, "") || "导入文档";
+                                const docId = await createDocWithMd(notebook, "/" + title, md);
+                                if (!docId) {
+                                    showMessage("导入失败: 未返回文档 ID", 4000, "error");
+                                    return;
+                                }
+                                // 相邻落点:挂载行 → 其父层(顶层挂载行挂到顶层);
+                                // 虚拟文件行 → 所在文件夹(stepsAt 去掉文件自身那一步,逐级落位)
+                                let parentUid: string | null = null;
+                                if (row.kind === "mount") {
+                                    parentUid = getParentUid(row.uid);
+                                } else {
+                                    parentUid = await ensureAlongChain(stepsAt.slice(0, -1), true);
+                                }
+                                const item = await addMountItem(plugin as any, {kind: "doc", name: title, targetId: docId}, parentUid);
+                                if (item) self._expanded!.add(mountExpandKeyOf(item));
+                                showMessage(`已导入为思源文档「${title}」并挂载到原文件相邻位置`, 3500, "info");
+                            } catch (err) {
+                                showMessage(`导入失败: ${(err as Error)?.message || err}`, 4000, "error");
+                            }
+                        };
+                        fileExtra.push({
+                            icon: "iconFile",
+                            label: "导入为思源文档并挂载",
+                            click: () => void importAsDocAndMount(),
                         });
                     }
                     showFileTreeMenu(e, fPath, fIsDir, rootEl, rootEl?.dataset.path || "", {
