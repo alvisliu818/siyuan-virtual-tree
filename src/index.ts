@@ -2069,6 +2069,10 @@ export default class FileEditorPlugin extends Plugin {
             markdownEditor: (this.markdownEditorSelect?.value as "vditor" | "cm6" | "structured") || "vditor",
             markdownReadingEngine: (this.markdownReadingEngineSelect?.value as "vditor" | "cm6" | "structured") || "vditor",
             cm6CodeBlockMonaco: this.cm6CodeBlockMonacoInput?.checked ?? true,
+            // 这两项只在「代码编辑器 / settings.json」里配置,旧版面板无控件;
+            // 保存时从生效值回写,避免整份 config 重建把它们抹回默认值
+            cm6AutoCloseFence: getResolved("markdown.cm6AutoCloseFence") !== false,
+            cm6CodeBlockExtraOptions: String(getResolved("markdown.cm6CodeBlockExtraOptions") ?? ""),
             cm6GutterOpacity: Math.min(1, Math.max(0, parseFloat(this.cm6GutterOpacityInput?.value || "0.4") || 0.4)),
             cm6HighlightActiveLine: this.cm6HighlightActiveLineInput?.checked ?? false,
             globalReadingMode: this.globalReadingModeInput?.checked ?? true,

@@ -54,6 +54,12 @@ export interface EditorConfig {
     // CM6 编辑面代码块是否用 Monaco 渲染/编辑(colorize 卡片 + 单例编辑器);
     // 关闭后代码块回落为 CM6 原生源码行(与点语言标签的围栏态一致)
     cm6CodeBlockMonaco: boolean;
+    // CM6 源码态:输入围栏标记后按 Enter 自动补出闭合围栏、光标落在中间空行
+    // (Obsidian 同款);只对「尚未配对的开栅栏」生效,块内/闭栅栏行不拦 Enter
+    cm6AutoCloseFence: boolean;
+    // 代码块内嵌 CM6 编辑器的附加选项(JSON 字符串,行为参考 Logseq OG 的
+    // :editor/extra-codemirror-options);支持的键见 cm6-block-editor.ts
+    cm6CodeBlockExtraOptions: string;
     // CM6 行号不透明度(0-1,越小越浅)
     cm6GutterOpacity: number;
     // CM6 高亮当前行与当前行号(默认关,避免干扰正文阅读)
@@ -324,6 +330,8 @@ export const DEFAULT_CONFIG: EditorConfig = {
     markdownEditor: "structured",    // 结构化内核为唯一 markdown 编辑引擎
     markdownReadingEngine: "structured", // 阅读态引擎:structured(只读实时编辑态)默认;vditor/cm6 备选
     cm6CodeBlockMonaco: true,     // CM6 代码块 Monaco 渲染/编辑默认开
+    cm6AutoCloseFence: true,      // 围栏 + Enter 自动补闭合围栏(默认开)
+    cm6CodeBlockExtraOptions: "", // 代码块内嵌 CM6 附加选项(默认空)
     cm6GutterOpacity: 0.4,
     cm6HighlightActiveLine: false,
     newTabReplacePlus: true,        // 默认接管顶部「+」

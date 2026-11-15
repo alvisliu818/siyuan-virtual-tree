@@ -7,17 +7,21 @@
 // 内嵌编辑器的事件隔离(2026-11-15)行为参考 Logseq OG
 // (E:/HOME/Code/logseq/og, src/main/frontend/extensions/code.cljs 的 render!,
 // AGPL-3.0),按本插件的 Electron + CM6 环境重新实现。
+// 附加编辑器选项注入(2026-11-15)行为参考 Logseq OG 的
+// :editor/extra-codemirror-options(AGPL-3.0),按 CM6 facet 白名单重实现;
+// 两处均为行为级移植,未引入 Logseq 源码。
 //
 // 视图值 = codeView(去结构缩进), 写回按栅栏列重新缩进(与 Monaco 版契约
 // 一致, 见 cm6-render 的 syncFromMonaco)。Esc / 点击卡片外退出回 colorize。
 
 import {EditorView, keymap, lineNumbers, drawSelection, highlightActiveLine, highlightActiveLineGutter} from "@codemirror/view";
-import {EditorState, Compartment} from "@codemirror/state";
+import {EditorState, Compartment, Extension} from "@codemirror/state";
 import {defaultKeymap, history, historyKeymap} from "@codemirror/commands";
-import {LanguageDescription, syntaxHighlighting, defaultHighlightStyle, HighlightStyle} from "@codemirror/language";
+import {LanguageDescription, syntaxHighlighting, defaultHighlightStyle, HighlightStyle, indentUnit} from "@codemirror/language";
 import {tags as highlightTags, Tag} from "@lezer/highlight";
 import {languages} from "@codemirror/language-data";
 import {getActiveCodeTheme, TmTokenRule} from "../extensions/theme-loader";
+import {getSetting} from "../settings/user-settings";
 
 interface MountOptions {
     container: HTMLElement;
@@ -45,6 +49,66 @@ const S: {
     outsideListener: null,
     onContentChange: null,
 };
+
+// 参考 Logseq OG 的 :editor/extra-codemirror-options(AGPL-3.0)按本插件的
+// CM6 基座重实现:CM6 没有 CM5 那种「一整个 options 对象」入口,选项必须映射成
+// facet / 扩展。只放行白名单键 —— 未知键忽略(与 VS Code 未知设置一致),
+// JSON 非法一律回落默认,绝不让一段坏配置把整块编辑器挂掉。
+// 支持:lineWrapping / lineNumbers / tabSize / indentUnit /
+//       highlightActiveLine / highlightActiveLineGutter / readOnly /
+//       allowMultipleSelections(布尔型 false = 关掉对应内置扩展)。
+interface ExtraCm6Options {
+    lineWrapping?: boolean;
+    lineNumbers?: boolean;
+    tabSize?: number;
+    indentUnit?: string;
+    highlightActiveLine?: boolean;
+    highlightActiveLineGutter?: boolean;
+    readOnly?: boolean;
+    allowMultipleSelections?: boolean;
+}
+
+function readExtraOptions(): ExtraCm6Options {
+    const raw = getSetting("markdown.cm6CodeBlockExtraOptions");
+    if (typeof raw !== "string" || !raw.trim()) return {};
+    let parsed: any;
+    try {
+        parsed = JSON.parse(raw);
+    } catch {
+        return {};
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const b = (k: string): boolean | undefined =>
+        typeof parsed[k] === "boolean" ? parsed[k] : undefined;
+    const out: ExtraCm6Options = {
+        lineWrapping: b("lineWrapping"),
+        lineNumbers: b("lineNumbers"),
+        highlightActiveLine: b("highlightActiveLine"),
+        highlightActiveLineGutter: b("highlightActiveLineGutter"),
+        readOnly: b("readOnly"),
+        allowMultipleSelections: b("allowMultipleSelections"),
+    };
+    if (typeof parsed.tabSize === "number" && Number.isFinite(parsed.tabSize)) {
+        out.tabSize = Math.max(1, Math.min(16, Math.round(parsed.tabSize)));
+    }
+    if (typeof parsed.indentUnit === "string" && parsed.indentUnit.length <= 16) {
+        out.indentUnit = parsed.indentUnit;
+    }
+    return out;
+}
+
+/** additive facet;「关掉某内置扩展」的开关在 mount 里直接条件拼装 */
+function extraOptionExtensions(o: ExtraCm6Options): Extension[] {
+    const out: Extension[] = [];
+    if (o.lineWrapping === true) out.push(EditorView.lineWrapping);
+    if (typeof o.tabSize === "number") out.push(EditorState.tabSize.of(o.tabSize));
+    if (o.indentUnit) out.push(indentUnit.of(o.indentUnit));
+    if (o.readOnly === true) {
+        out.push(EditorState.readOnly.of(true), EditorView.editable.of(false));
+    }
+    if (o.allowMultipleSelections === true) out.push(EditorState.allowMultipleSelections.of(true));
+    return out;
+}
 
 /** TextMate 顶层 scope → CM6 tag(常见子集; 主题规则按最长前缀探测取色) */
 const SCOPE_TAGS: [string, Tag][] = [
@@ -117,6 +181,7 @@ const gutterTheme = EditorView.theme({
 
 export function mountBlockEditor(o: MountOptions): void {
     unmountBlockEditor();
+    const extra = readExtraOptions();
     const langSlot = new Compartment();
     // 语言匹配:language-data 的 LanguageDescription(与 markdown codeLanguages
     // 同一套 —— 源码态围栏行的语法渲染就是它, 颜色天然一致)
@@ -126,11 +191,12 @@ export function mountBlockEditor(o: MountOptions): void {
         state: EditorState.create({
             doc: o.value,
             extensions: [
-                lineNumbers({}),
+                // 附加选项的「关掉内置扩展」类开关(extra-codemirror-options)
+                ...(extra.lineNumbers === false ? [] : [lineNumbers({})]),
                 history(),
                 drawSelection(),
-                highlightActiveLineGutter(),
-                highlightActiveLine(),
+                ...(extra.highlightActiveLineGutter === false ? [] : [highlightActiveLineGutter()]),
+                ...(extra.highlightActiveLine === false ? [] : [highlightActiveLine()]),
                 syntaxHighlighting(buildTokenHighlight() ?? defaultHighlightStyle, {fallback: true}),
                 gutterTheme,
                 keymap.of([
@@ -177,6 +243,7 @@ export function mountBlockEditor(o: MountOptions): void {
                     if (u.docChanged) o.onContentChange(u.state.doc.toString());
                 }),
                 langSlot.of(desc?.support ? [desc.support] : []),
+                ...extraOptionExtensions(extra),
             ],
         }),
     });

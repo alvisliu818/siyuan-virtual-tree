@@ -13,7 +13,7 @@
 import {EditorState, Prec} from "@codemirror/state";
 import {
     EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter,
-    drawSelection, dropCursor, placeholder,
+    drawSelection, dropCursor, placeholder, Command,
 } from "@codemirror/view";
 import {defaultKeymap, history, historyKeymap, indentWithTab} from "@codemirror/commands";
 import {indentOnInput, bracketMatching, syntaxHighlighting, HighlightStyle} from "@codemirror/language";
@@ -23,7 +23,7 @@ import {markdown, markdownLanguage} from "@codemirror/lang-markdown";
 import {languages} from "@codemirror/language-data";
 import {tags} from "@lezer/highlight";
 import {Menu} from "siyuan";
-import {cm6MarkdownRender, preloadCm6Katex, registerCopyLineHandler} from "./cm6-render";
+import {beginCodeEdit, cm6MarkdownRender, preloadCm6Katex, registerCopyLineHandler} from "./cm6-render";
 import {cm6InlineWysiwyg, mdParserExtensions} from "./cm6-inline";
 import {cm6SelectionBubble} from "./cm6-selection-bubble";
 import {cm6LineMenu, listBackspaceCommand, listIndentCommand, moveBlockCommand} from "./cm6-line-menu";
@@ -31,6 +31,7 @@ import {cm6BlockPreview} from "./cm6-block-preview";
 import {BLOCK_FONT_FAMILY, BLOCK_FONT_SIZE, BLOCK_LINE_HEIGHT} from "./monaco-block";
 import {getLinkIndex} from "../utils/wikilink";
 import {searchBlocksForRef} from "../utils/backlink";
+import {getBoolSetting} from "../settings/user-settings";
 
 export interface Cm6MarkdownOptions {
     /** 初始内容(Markdown 全文) */
@@ -789,6 +790,87 @@ function blockRefCompletionSource(format: BlockRefFormat) {
     };
 }
 
+// ===== Enter 自动补闭合围栏(Obsidian 同款体验增强,非 Logseq 代码引入) =====
+// 判据与 cm6-render 的 fencedCodeInfos 完全一致:开栅栏 = 空白(+可选列表
+// 标记)+ ```/~~~ (+信息串);闭栅栏 = 同字符、长度 ≥ 开、栅栏列相同、行尾无
+// 其它文本。列表项里的 "- ```py" 栅栏列是 2,闭栅栏必须补成 "  ```"
+// (把列表标记换成等长空格),补成 "- ```" 不会被配对。
+const RE_FENCE_OPEN = /^(\s*(?:[-*+]\s+|\d+[.)]\s+)?)(`{3,}|~{3,})(.*)$/;
+const RE_FENCE_CLOSE = /^(\s*)(`{3,}|~{3,})\s*$/;
+
+interface UnclosedFence {
+    /** 应补上的闭栅栏整行 */
+    closeText: string;
+    /** 该块的 FencedCodeInfo.from(开栅栏行首 + 栅栏列),供 beginCodeEdit 定位 */
+    from: number;
+}
+
+/** 判断当前行是否是「尚未配对的开栅栏」;配对规则与渲染层同源 */
+function unclosedFenceAt(state: EditorState, lineNo: number): UnclosedFence | null {
+    const doc = state.doc;
+    let ln = 1;
+    while (ln <= doc.lines) {
+        const line = doc.line(ln);
+        const open = RE_FENCE_OPEN.exec(line.text);
+        if (!open) { ln++; continue; }
+        const run = open[2];
+        const fenceCol = open[1].length;
+        let close = -1;
+        for (let j = ln + 1; j <= doc.lines; j++) {
+            const cm = RE_FENCE_CLOSE.exec(doc.line(j).text);
+            if (cm && cm[2][0] === run[0] && cm[2].length >= run.length && cm[1].length === fenceCol) {
+                close = j;
+                break;
+            }
+        }
+        if (close < 0) {
+            // 未闭合块延伸到文档尾(与 fencedCodeInfos 一致,见 dc42156)
+            return ln === lineNo
+                ? {closeText: open[1].replace(/\S/g, " ") + run, from: line.from + fenceCol}
+                : null;
+        }
+        // 当前行是已配对的开栅栏 / 块内内容 / 闭栅栏:一律不拦 Enter
+        if (lineNo === ln || (lineNo > ln && lineNo <= close)) return null;
+        ln = close + 1;
+    }
+    return null;
+}
+
+/** Enter 自动补闭合围栏:命中时一次事务插入中间空行 + 闭栅栏 */
+const autoCloseFenceCommand: Command = (view) => {
+    const {state} = view;
+    if (state.readOnly || !getBoolSetting("markdown.cm6AutoCloseFence", true)) return false;
+    const sel = state.selection.main;
+    if (!sel.empty) return false;
+    const line = state.doc.lineAt(sel.head);
+    if (sel.head !== line.to) return false; // 只在开栅栏行尾触发,行中 Enter 仍走原有逻辑
+    const info = unclosedFenceAt(state, line.number);
+    if (!info) return false;                // 其余场景回落列表续行 / 默认换行
+    const nl = state.lineBreak;
+    const insert = `${nl}${nl}${info.closeText}`;
+    view.dispatch({
+        changes: {from: line.to, insert},
+        selection: {anchor: line.to + nl.length}, // 中间空行
+        scrollIntoView: true,
+        // 自定义 userEvent:避开 indentOnInput 对 input/delete 事务的二次缩进
+        userEvent: "syfe.autoCloseFence",
+    });
+    if (getBoolSetting("markdown.cm6CodeBlockMonaco", true)) {
+        // 卡片模式下整块被块级 replace 吞掉,atomicRanges 会把块内光标挤到
+        // 边界 —— 直接声明进入该块编辑态(卡片内嵌 CM6 会自己 focus),才
+        // 等价于「光标停在中间空行」。卡片关掉时源码行本就可编辑,无需处理。
+        try {
+            if (!beginCodeEdit(view, info.from)) {
+                view.dispatch({selection: {anchor: line.to + insert.length}});
+            }
+        } catch {
+            // 进不了编辑态也不能让光标留在被吞掉的区间里
+            view.dispatch({selection: {anchor: line.to + insert.length}});
+        }
+    }
+    return true;
+};
+
 export function createCm6MarkdownEditor(
     container: HTMLElement,
     opts: Cm6MarkdownOptions,
@@ -915,6 +997,9 @@ export function createCm6MarkdownEditor(
             // 只提这一个键,Tab 等仍留 Prec.high —— 免得压过补全弹层的 Tab。
             Prec.highest(keymap.of([
                 {key: "Backspace", run: listBackspaceCommand()},
+                // Enter 自动补闭合围栏:只在「行尾 + 未配对的开栅栏」命中,
+                // 其余一律返回 false,让下方 cm6-inline 的列表续行/默认换行接管。
+                {key: "Enter", run: autoCloseFenceCommand},
             ])),
             Prec.high(keymap.of([
                 {key: "Tab", run: listIndentCommand(1)},

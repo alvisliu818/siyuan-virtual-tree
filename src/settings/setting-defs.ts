@@ -1137,6 +1137,33 @@ export const PLUGIN_DEFS: SettingDef[] = [
         get: (c) => c.cm6CodeBlockMonaco !== false,
         set: (c, v) => { c.cm6CodeBlockMonaco = v !== false; },
     },
+    {
+        key: "markdown.cm6AutoCloseFence",
+        kind: "boolean",
+        group: G_MD,
+        title: "围栏代码块自动闭合",
+        description: "仅 Markdown 编辑器 = cm6 的源码态生效。输入 ``` 后按 Enter,自动补出闭合围栏并让光标落在中间空行(Obsidian 同款);" +
+            "已闭合的围栏、代码块内部、闭栅栏行以及非行尾的 Enter 都不拦,列表续行等原有行为不受影响。关闭后按 Enter 只换行",
+        default: true,
+        // 消费方 = CM6 的 host keymap,不是 Monaco 选项
+        skipMonaco: true,
+        get: (c) => c.cm6AutoCloseFence !== false,
+        set: (c, v) => { c.cm6AutoCloseFence = v !== false; },
+    },
+    {
+        key: "markdown.cm6CodeBlockExtraOptions",
+        kind: "string",
+        group: G_MD,
+        title: "代码块编辑器附加选项",
+        description: "注入代码块内嵌 CM6 编辑器的选项(JSON 字符串;行为参考 Logseq OG 的 :editor/extra-codemirror-options)。" +
+            "支持 lineWrapping / lineNumbers / tabSize / indentUnit / highlightActiveLine / highlightActiveLineGutter / readOnly / allowMultipleSelections;" +
+            "未识别的键忽略、JSON 非法时按空处理。对新打开/重新进入编辑的代码块生效。例:{\"lineWrapping\":true,\"tabSize\":4}",
+        default: "",
+        skipMonaco: true,
+        placeholder: '{"lineWrapping":true}',
+        get: (c) => c.cm6CodeBlockExtraOptions || "",
+        set: (c, v) => { c.cm6CodeBlockExtraOptions = String(v || ""); },
+    },
 
     {
         key: "terminal.backend",
