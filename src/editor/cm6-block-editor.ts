@@ -366,10 +366,11 @@ export function mountBlockEditor(o: MountOptions): void {
     // 见 cm6-markdown .is-editing)。
     const scroller = view.dom.querySelector(".cm-scroller") as HTMLElement | null;
     if (scroller) {
-        scroller.style.padding = "0 0 8px 0";
-        // ⚠ 字体也要定死:思源全局样式把行号格字体设成了自己的链
-        // ("Emojis Additional"...),与阅读态 cl-n 的 Consolas 不同
-        // (用户反馈「行号的字体不一样」),内联覆盖为 body 同款。
+        // padding 全归零(与阅读态 body padding 8/0.9em/8/0 对称:滚动条
+        // 两态都落在 content 底部,同一位置)。⚠ 字体也要定死:思源全局
+        // 样式把行号格字体设成了自己的链("Emojis Additional"...),与
+        // 阅读态 cl-n 的 Consolas 不同(用户反馈「行号的字体不一样」)。
+        scroller.style.padding = "0";
         scroller.style.fontFamily = BLOCK_FONT_FAMILY;
     }
     // 行号列背景与阅读态 .syfe-cm-cl-n 同色:宿主 syfeCmTheme 给 .cm-gutters

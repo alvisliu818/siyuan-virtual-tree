@@ -261,13 +261,11 @@ const syfeCmTheme = EditorView.theme({
         fontVariantLigatures: "none",
         tabSize: 4,
     },
-    // 编辑态:只换滚动容器(条带由内嵌 CM6 提供),内边距与阅读态对齐 ——
+    // 编辑态:只换滚动容器(条带由内嵌 CM6 提供),**内边距与阅读态完全相同**。
     // 原来这里 padding:0 会把 body 从 37px 压到 21px、代码行整体上移 8px,
-    // 卡片随之收缩(用户反馈「进编辑会收缩/抖动」)。底部归 0 是因为内嵌
-    // CM6 的 scroller 自带 padding-bottom 8px(横向滚动条要落在与阅读态
-    // body 滚动条同一高度,否则进出编辑滚动条上下跳 8px)。
+    // 卡片随之收缩(用户反馈「进编辑会收缩/抖动」)。
     ".syfe-cm-codeblock-body.is-editing": {
-        padding: "8px 0.9em 0 0",
+        padding: "8px 0.9em 8px 0",
         overflow: "hidden",
     },
     ".syfe-cm-codeblock-body.is-editing .syfe-cm-codeblock-colorize": {display: "none"},
