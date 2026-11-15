@@ -26,7 +26,7 @@ import {Menu} from "siyuan";
 import {cm6MarkdownRender, preloadCm6Katex, registerCopyLineHandler} from "./cm6-render";
 import {cm6InlineWysiwyg, mdParserExtensions} from "./cm6-inline";
 import {cm6SelectionBubble} from "./cm6-selection-bubble";
-import {cm6LineMenu} from "./cm6-line-menu";
+import {cm6LineMenu, listIndentCommand} from "./cm6-line-menu";
 import {cm6BlockPreview} from "./cm6-block-preview";
 import {BLOCK_FONT_FAMILY, BLOCK_FONT_SIZE, BLOCK_LINE_HEIGHT} from "./monaco-block";
 import {getLinkIndex} from "../utils/wikilink";
@@ -904,6 +904,13 @@ export function createCm6MarkdownEditor(
                     return true;
                 },
             }])),
+            // Tab/Shift+Tab:列表项/任务行整行缩进/反缩进(Logseq 同款,M2 键盘
+            // 行为);非列表行返回 false,回落下方 indentWithTab。Prec.high 高于
+            // defaultKeymap 但命令不命中即穿透,不影响补全弹层的 Tab
+            Prec.high(keymap.of([
+                {key: "Tab", run: listIndentCommand(1)},
+                {key: "Shift-Tab", run: listIndentCommand(-1)},
+            ])),
             keymap.of([...defaultKeymap, ...historyKeymap, ...searchKeymap, indentWithTab]),
             placeholder(opts.placeholder ?? ""),
             EditorView.updateListener.of((u) => {

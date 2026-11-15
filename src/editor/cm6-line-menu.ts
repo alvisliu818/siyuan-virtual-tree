@@ -20,8 +20,8 @@
 //
 // 主题:思源 CSS 变量,样式在全局 index.scss(手柄是 scroller 直接子元素,
 // 不在 .cm-editor theme 作用域里);菜单用思源原生 Menu(平台惯例)。
-import {EditorSelection, EditorState, type Extension, type Line} from "@codemirror/state";
-import {BlockType, EditorView, ViewPlugin} from "@codemirror/view";
+import {EditorSelection, EditorState, type Extension, type Line, type TransactionSpec} from "@codemirror/state";
+import {BlockType, type Command, EditorView, ViewPlugin} from "@codemirror/view";
 import {syntaxTree} from "@codemirror/language";
 import type {SyntaxNode} from "@lezer/common";
 import {Menu} from "siyuan";
@@ -275,7 +275,7 @@ function indentItem(step: number): DocOp {
         if (step > 0) {
             view.dispatch({
                 changes: {from: line.from, to: line.from, insert: " ".repeat(step)},
-                userEvent: "input",
+                userEvent: "syfe.indent",
             });
             return;
         }
@@ -286,8 +286,49 @@ function indentItem(step: number): DocOp {
         if (remove <= 0) return;
         view.dispatch({
             changes: {from: line.from, to: line.from + remove, insert: ""},
-            userEvent: "input",
+            userEvent: "syfe.indent",
         });
+    };
+}
+
+/**
+ * Tab/Shift+Tab 列表感知缩进(Logseq/Obsidian 同款):选区(光标)落在列表项/
+ * 任务行上时整行缩进/反缩进,多光标一次事务完成;非列表行返回 false,
+ * 回落通用缩进(indentWithTab)。反缩进无可删层级时同样回落。
+ */
+export function listIndentCommand(dir: 1 | -1): Command {
+    return (view) => {
+        const state = view.state;
+        const targets: number[] = [];
+        for (const range of state.selection.ranges) {
+            const n = state.doc.lineAt(range.head).number;
+            const ctx = lineContext(state, n);
+            if (ctx.kind !== "list" && ctx.kind !== "task") return false;
+            targets.push(n);
+        }
+        if (!targets.length) return false;
+        // 单事务逐行收集;反缩进任一行无可删层级则整体回落
+        const changes: {from: number; to: number; insert?: string}[] = [];
+        for (const n of targets) {
+            const line = state.doc.line(n);
+            if (dir > 0) {
+                const m = RE_LIST.exec(line.text);
+                const step = m ? m[2].length + (m[3] === " " ? 1 : 0) : 2;
+                changes.push({from: line.from, to: line.from, insert: " ".repeat(step)});
+            } else {
+                const ctx = lineContext(state, n);
+                if (!ctx.listMark) return false;
+                const markOffset = ctx.listMark.from - line.from;
+                const remove = markOffset - parentMarkOffset(state, line, ctx.listMark);
+                if (remove <= 0) return false;
+                changes.push({from: line.from, to: line.from + remove, insert: ""});
+            }
+        }
+        // userEvent 不用 "input":lang-markdown 的 indentOnInput 会在 input 事务上
+        // 对列表行再缩进一次(实测 Tab 一次 +4、Shift+Tab 被顶回);自定义事件绕开,
+        // 撤销组照常记录
+        view.dispatch({changes, userEvent: "syfe.indent", scrollIntoView: true} as TransactionSpec);
+        return true;
     };
 }
 
