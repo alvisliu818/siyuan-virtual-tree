@@ -131,6 +131,24 @@ AGPL-3.0 已生效,允许引用/派生 Logseq 代码,但技术上仍以「读源
     删除,防误导;②body `overflow-x: scroll`(常驻 10px 条带,Monaco 时代
     对齐手段)改 `auto` —— 编辑态 padding 与阅读态相同后常驻条带反而让
     阅读态多 10px,auto 下短/超宽代码两态都恒等高(超宽实测 98/98)。
+- 再修(用户连续反馈的行号列观感与滚动行为,2026-11-15 18:2x):
+  - **背景色**:内嵌 `.cm-gutters` 被宿主规则盖成 `--b3-theme-background`,
+    与阅读态 cl-n 的 surface 不同 → 内联定死为 surface。
+  - **字体**:思源全局样式把行号格字体设为 "Emojis Additional"... 链,
+    与阅读态 Consolas 不同 → 内嵌 scroller 内联 fontFamily 同款。
+  - **不透明**:整列 opacity 0.45 让横向滚动的内容从行号下透出、与行号
+    重叠 → 两态行号格改不透明背景,数字弱化改用字色 on-surface-light
+    (无 opacity;cl-n 同步)。
+  - **滚动位置**:进出编辑横向滚动不同步(CM6 滚到光标处、退出弹回 0,
+    右缘截断字符随之变化)→ 进编辑继承 body.scrollLeft(⚠ is-editing
+    生效前抓取,colorize 隐藏会压平 scrollWidth 钳回 0)、退出写回
+    (⚠ forceRender 后赋值,编辑态下提前赋值同样被钳 0)。
+  - **滚动条垂直位置**:编辑态 body padding-bottom 归 0 + 内嵌 scroller
+    padding-bottom 8px,与阅读态滚动条同一高度(差 8px 消除)。
+  - **点滚动条误进编辑**:Chromium 下 target = 滚动容器本身 → clickHandler
+    排除滚动容器底部滚动条带的点击。
+  - **光标穿透**:点击卡片进入编辑时记录屏幕坐标,内嵌编辑器挂载后
+    posAtCoords 映射为光标位置(此前固定在文档开头)。
 - **未做(刻意,非遗漏)**:blur 自动退出编辑态 —— 本 Electron 下极易误退出
   (点结果列/复制按钮都会触发),按前期调研结论保持 Esc / 点击卡外退出。
 - 广义移植主线 M2(键盘)/M3(光标管理)/M4(块操作)本轮未动;按用户此前
