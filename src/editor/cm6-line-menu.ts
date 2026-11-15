@@ -69,6 +69,7 @@ interface LineContext {
 // 行形态正则(即时确定,不等异步语法树 —— 菜单在编辑后立刻打开,树可能滞后;
 // SB 为此专门写了 parse_ahead.ts,这里用正则绕开同一问题):
 const RE_TASK = /^(\s*)([-*+]|\d{1,9}[.)])\s+(\[[xX ]\])(\s|$)/;
+const RE_LIST_ITEM_LINE = /^(\s*)(?:[-*+]|\d{1,9}[.)])\s/;
 const RE_LIST = /^(\s*)([-*+]|\d{1,9}[.)])(\s|$)/;
 const RE_HEADING = /^(\s*)(#{1,6})\s/;
 const RE_QUOTE = /^\s*>\s/;
@@ -252,7 +253,13 @@ function parentMarkOffset(state: EditorState, line: Line, mark: {from: number; t
             const parentItem = list.parent;
             if (parentItem && parentItem.name === "ListItem") {
                 const pm = parentItem.getChild("ListMark");
-                if (pm) return pm.from - line.from;
+                if (pm) {
+                    // ⚠ 父级标记在更早的行上,列偏移必须以**父标记自身所在行**为基准;
+                    //   曾错误地减子行行首 → 恒为负 → 反缩进删除长度爆炸,吞掉子行到
+                    //   父行之间的全部内容(2026-11-15 实测)
+                    const pmLine = state.doc.lineAt(pm.from);
+                    return pm.from - pmLine.from;
+                }
             }
         }
     }
@@ -282,11 +289,6 @@ function indentItem(step: number): DocOp {
             userEvent: "input",
         });
     };
-}
-
-/** 标记的显示宽度(缩进插等宽空格,与悬挂容器模型同源) */
-function markTextWidth(state: EditorState, mark: {from: number; to: number}): number {
-    return state.sliceDoc(mark.from, mark.to).length;
 }
 
 /**
@@ -356,6 +358,9 @@ function linesText(state: EditorState, a: number, b: number): string[] {
 /** 同级前驱/后继块起始行 */
 function sibling(state: EditorState, ctx: LineContext, n: number, end: number, dir: -1 | 1): number | null {
     const total = state.doc.lines;
+    // 同级判定:缩进/层级**相等**才算兄弟;更浅 = 父级边界(停止,无兄弟);
+    // 更深 = 前面某个兄弟的子级(跳过继续找)。旧的 `<=` 判据会把父级当兄弟,
+    // 与其子块换位时区间重叠,产出损坏文档(2026-11-15 实测)。
     let c = dir === -1 ? n - 1 : end;
     while (c >= 1 && c <= total) {
         const t = state.doc.line(c).text;
@@ -364,12 +369,21 @@ function sibling(state: EditorState, ctx: LineContext, n: number, end: number, d
             continue;
         }
         if (ctx.kind === "heading") {
+            // 只认标题行:同级 = 兄弟;更浅 = 父级边界(无兄弟);更深/非标题 = 继续
             const m = /^\s*(#{1,6})\s/.exec(t);
-            if (m && m[1].length <= ctx.headingLevel) return c;
+            if (m) {
+                if (m[1].length === ctx.headingLevel) return c;
+                if (m[1].length < ctx.headingLevel) return null;
+            }
         } else {
+            // 只认列表项行:同缩进列表项 = 兄弟;更浅缩进的**列表项** = 父级边界;
+            // 非列表行(标题/段落,同缩进也算)= 列表边界(无兄弟) —— 曾把 H1 标题
+            // 当兄弟,换位横跨全部章节(2026-11-15 实测)
+            if (!RE_LIST_ITEM_LINE.test(t)) return null;
             const ind = t.length - t.trimStart().length;
             const indSelf = ctx.listMark ? ctx.listMark.from - state.doc.line(n).from : 0;
-            if (ind <= indSelf) return c;
+            if (ind === indSelf) return c;
+            if (ind < indSelf) return null;
         }
         c += dir;
     }
@@ -386,12 +400,15 @@ function moveBlock(dir: -1 | 1): DocOp {
         const end = blockEnd(state, n, ctx);
         const other = sibling(state, ctx, n, end, dir);
         if (other == null) return;
-        const otherEnd = blockEnd(state, other, ctx);
+        // ⚠ 兄弟块的边界必须用**它自己的** context 计算 —— 复用 self 的 ctx 时
+        //   listMark 跨行相减得负缩进,块边界膨胀到 EOF,换位吞掉整篇(2026-11-15 实测)
+        const otherCtx = lineContext(state, other);
+        const otherEnd = blockEnd(state, other, otherCtx);
         // 行区间(含):dir=-1 → [other..n-1 空行] + [other 块] 换到 self 后;
         // dir=1 → [self 块] 换到 [end..other-1 空行] + [other 块] 后
         let a: number, b: number, selfLines: string[], otherLines: string[], sepLines: string[];
         if (dir === -1) {
-            const otherEndX = blockEnd(state, other, ctx); // 不含
+            const otherEndX = otherEnd; // 不含
             a = other;
             b = end - 1;
             otherLines = linesText(state, other, otherEndX - 1);
@@ -499,9 +516,11 @@ function listEntries(ctx: LineContext, state: EditorState, n: number, isTask: bo
         const line = state.doc.line(n);
         const markOffset = ctx.listMark.from - line.from;
         const parentOffset = parentMarkOffset(state, line, ctx.listMark);
-        // 缩进:插标记宽度的空格(- → 2 格;1. → 3 格),有子级时禁(半树移动会破坏嵌套)
+        // 缩进:插「标记+后随空格」宽(- → 2 格;1. → 3 格),有子级时禁(半树移动会破坏嵌套)
         if (!ctx.hasChildren) {
-            out.push({label: "缩进", icon: ICONS.indent, run: indentItem(markTextWidth(state, ctx.listMark))});
+            const lm = RE_LIST.exec(line.text);
+            const step = lm ? lm[2].length + (lm[3] === " " ? 1 : 0) : 2;
+            out.push({label: "缩进", icon: ICONS.indent, run: indentItem(step)});
         }
         // 反缩进:删到父级列(顶层项 markOffset=parentOffset=0,不显示)
         if (markOffset > parentOffset) {
