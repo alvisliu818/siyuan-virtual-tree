@@ -140,6 +140,20 @@ const gutterTheme = EditorView.theme({
         opacity: "1",
     },
     ".cm-activeLineGutter": {backgroundColor: "transparent"},
+    // ⚠ 滚动条样式必须与阅读态 .syfe-cm-codeblock-body::-webkit-scrollbar
+    // (index.scss)成对且同款:思源全局/对 .cm-scroller 的覆盖会把编辑态
+    // 滚动条变成不同高度(用户反馈「进编辑滚动条高度又变了」)。
+    ".cm-scroller::-webkit-scrollbar": {
+        height: "10px",
+        width: "10px",
+    },
+    ".cm-scroller::-webkit-scrollbar-thumb": {
+        background: "var(--b3-border-color)",
+        borderRadius: "5px",
+    },
+    ".cm-scroller::-webkit-scrollbar-track": {
+        background: "transparent",
+    },
 });
 
 // ===== 与阅读态同源的 token 配色(2026-11-15 用户反馈「进出编辑主题不一样」)=====

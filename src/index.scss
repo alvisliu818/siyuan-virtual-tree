@@ -5681,9 +5681,23 @@ button.syfe-editor__arrow--exp:hover {
 }
 
 /* 阅读态横向条带定高(与编辑态 Monaco 横条 10px 等高) */
-// 横向滚动条样式不再自定义(2026-11-15):此前 10px 浅灰 thumb 与编辑态
-// 内嵌 CM6 用的思源全局滚动条(深灰圆角)不同款,进出编辑「滚动条样式
-// 没有恢复」(用户截图对比)。两态统一走思源全局 ::-webkit-scrollbar。
+// 横向滚动条自定义(2026-11-15):⚠ 必须与内嵌 CM6 的滚动条(cm6-block-editor
+// gutterTheme 里的 .cm-scroller::-webkit-scrollbar 同款)成对存在 —— 只删
+// 阅读态的,编辑态会被思源对 .cm-scroller 的另一层覆盖成不同高度
+// (用户反馈「进编辑滚动条高度又变了」)。两态显式同款才恒一致。
+.syfe-cm-codeblock-body::-webkit-scrollbar {
+    height: 10px;
+    width: 10px;
+}
+
+.syfe-cm-codeblock-body::-webkit-scrollbar-thumb {
+    background: var(--b3-border-color);
+    border-radius: 5px;
+}
+
+.syfe-cm-codeblock-body::-webkit-scrollbar-track {
+    background: transparent;
+}
 
 /* 代码块行号列(阅读态):行号是卡片滚动视图的一部分 —— sticky 钉在卡内
    左缘,横向滚动时数字始终可见、代码从其下滚过;纵向逐行对齐。
