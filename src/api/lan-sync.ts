@@ -21,9 +21,10 @@ import {isNativeFsAvailable} from "./native-fs";
 import {toSystemPath, getWorkspacePath} from "../utils/system-path";
 import {isKernelPath, joinPath} from "../utils/path";
 import {isMobileFrontend} from "../utils/platform";
-import {readDir, readBinaryFile} from "./file";
+import {readDir, readBinaryFile, removeFile} from "./file";
 import {localHttp} from "./search-service";
 import {DirEntry} from "../types";
+import {agentRootsAll, findAgentForRoot, forwardToAgent, handleAgentUpgrade} from "./lan-sync-agent";
 
 // Plugin 泛型上没有 config 字段(插件实例才有),统一收窄
 type PluginWithConfig = Plugin & {config: any};
@@ -225,6 +226,20 @@ async function handleRequest(plugin: Plugin, req: any, res: any): Promise<void> 
         return t ? t.abs : null;
     };
 
+    // 设备隧道:rootId 命中某个 agent 注册的根时,请求整条转发给该 agent 执行
+    // (移动端没有 Node,用内核 API 在隧道另一端执行,结果形状与本地实现一致)
+    const tryAgentRoute = async (op: string, rootId: string, args: Record<string, unknown>): Promise<boolean> => {
+        const agent = findAgentForRoot(rootId);
+        if (!agent) return false;
+        try {
+            const result = await forwardToAgent(agent, {op, rootId, ...args});
+            json(res, 200, result);
+        } catch (e) {
+            json(res, 502, {error: `设备隧道失败: ${(e as Error)?.message || e}`});
+        }
+        return true;
+    };
+
     if (req.method === "OPTIONS") {
         json(res, 200, {ok: true});
         return;
@@ -233,11 +248,13 @@ async function handleRequest(plugin: Plugin, req: any, res: any): Promise<void> 
     if (pathname === "/api/lan-sync/ping" && req.method === "GET") {
         json(res, 200, {
             device: "SiYuan",
-            roots: roots.map(r => ({id: r.id, name: r.name})),
+            // 本地任务根 + 各 agent 设备上报的根(移动端经隧道接入)
+            roots: [...roots.map(r => ({id: r.id, name: r.name})), ...agentRootsAll()],
         });
         return;
     }
     if (pathname === "/api/lan-sync/list" && req.method === "GET") {
+        if (await tryAgentRoute("list", query.get("rootId") || "", {})) return;
         const abs = findRoot(query.get("rootId") || "");
         if (!abs) {
             json(res, 404, {error: "共享根不存在(对端可能没有同名任务)"});
@@ -252,6 +269,7 @@ async function handleRequest(plugin: Plugin, req: any, res: any): Promise<void> 
         return;
     }
     if (pathname === "/api/lan-sync/read" && req.method === "GET") {
+        if (await tryAgentRoute("read", query.get("rootId") || "", {rel: query.get("path") || ""})) return;
         const abs = findRoot(query.get("rootId") || "");
         const rel = query.get("path") || "";
         if (!abs || !rel || rel.includes("..")) {
@@ -279,6 +297,11 @@ async function handleRequest(plugin: Plugin, req: any, res: any): Promise<void> 
     if (pathname === "/api/lan-sync/write" && req.method === "POST") {
         try {
             const body = JSON.parse((await readBody(req)).toString("utf8") || "{}");
+            if (await tryAgentRoute("write", String(body.rootId || ""), {
+                rel: String(body.path || ""),
+                dataBase64: String(body.data || ""),
+                mtimeMs: Number(body.mtimeMs) || 0,
+            })) return;
             const abs = findRoot(String(body.rootId || ""));
             const rel = String(body.path || "");
             if (!abs || !rel || rel.includes("..")) {
@@ -309,6 +332,7 @@ async function handleRequest(plugin: Plugin, req: any, res: any): Promise<void> 
     if (pathname === "/api/lan-sync/delete" && req.method === "POST") {
         try {
             const body = JSON.parse((await readBody(req)).toString("utf8") || "{}");
+            if (await tryAgentRoute("delete", String(body.rootId || ""), {rel: String(body.path || "")})) return;
             const abs = findRoot(String(body.rootId || ""));
             const rel = String(body.path || "");
             if (!abs || !rel || rel.includes("..")) {
@@ -353,6 +377,10 @@ export async function startLanSyncServer(plugin: PluginWithConfig): Promise<void
                 json(res, 500, {error: String((e as Error)?.message || e)});
             } catch { /* 响应已发出 */ }
         });
+    });
+    // 设备隧道:agent(移动端等跑不了服务端的端)经 WebSocket 升级接入
+    server.on("upgrade", (req: any, socket: any) => {
+        handleAgentUpgrade(req, socket, serverToken);
     });
     await new Promise<void>((resolve, reject) => {
         server.once("error", (e: any) => reject(new Error(`端口 ${port} 监听失败: ${e?.message || e}`)));
@@ -554,8 +582,46 @@ async function kernelEnsureDirs(root: string, rel: string): Promise<void> {
     }
 }
 
-const kernelSyncFs: SyncFs = {
-    async scan(root: string): Promise<Record<string, FileMeta>> {
+// agent 设备隧道执行器:把隧道请求落到本机内核 API。rootId 形如 "agent:<deviceId>:<taskId>",
+// 去前缀后按本机任务解析(本机任务通过 agent 注册为共享根)。结果形状与 server 各端点一致,
+// 对发起同步的客户端透明。
+export async function executeAgentOp(op: string, rootId: string, args: any): Promise<any> {
+    const plugin = (window as any).syfePlugin;
+    const taskId = String(rootId).replace(/^agent:[^:]*:/, "");
+    const task = parseLanSyncTasks(plugin?.config?.lanSyncTasks).find(t => t.id === taskId);
+    if (!task) throw new Error(`本机没有可共享的任务「${taskId}」(agent 只暴露本机同步任务)`);
+    if (op === "list") {
+        return {files: await kernelSyncFs.scan(task.localRoot)};
+    }
+    const rel = String(args?.rel || "");
+    if (!rel || rel.includes("..")) throw new Error("参数无效");
+    if (op === "read") {
+        const buf = await kernelSyncFs.read(task.localRoot, rel);
+        const st = await kernelSyncFs.stat(task.localRoot, rel);
+        return {data: buf.dataBase64, size: buf.size, mtimeMs: st?.mtimeMs || 0};
+    }
+    if (op === "write") {
+        await kernelSyncFs.write(task.localRoot, rel, String(args.dataBase64 || ""), Number(args.mtimeMs) || 0);
+        const st = await kernelSyncFs.stat(task.localRoot, rel);
+        return {ok: true, size: st?.size || 0, mtimeMs: st?.mtimeMs || 0};
+    }
+    if (op === "delete") {
+        await removeFile(joinPath(task.localRoot, rel));
+        return {ok: true};
+    }
+    throw new Error(`未知操作: ${op}`);
+}
+
+// 本机任务 → agent 共享根(rootId 加 agent 前缀;deviceId 在 agent 启动时生成并持久化)
+export function agentOwnRoots(deviceId: string): Array<{id: string; name: string}> {
+    const plugin = (window as any).syfePlugin;
+    return parseLanSyncTasks(plugin?.config?.lanSyncTasks).map(t => ({
+        id: `agent:${deviceId}:${t.id}`,
+        name: t.name || t.id,
+    }));
+}
+
+const kernelSyncFs: SyncFs = {    async scan(root: string): Promise<Record<string, FileMeta>> {
         const out: Record<string, FileMeta> = {};
         let count = 0;
         const walk = async (dir: string, rel: string): Promise<void> => {

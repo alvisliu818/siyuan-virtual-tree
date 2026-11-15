@@ -86,6 +86,7 @@ export interface EditorConfig {
     lanSyncPort: number;             // 服务端监听端口
     lanSyncToken: string;            // 同步令牌(空 = 首次使用自动生成)
     lanSyncTasks: string;            // 同步任务列表(JSON 数组,见 api/lan-sync.ts LanSyncTask)
+    lanSyncAgent: string;            // 设备隧道 agent 配置(JSON,见 api/lan-sync-agent.ts LanSyncAgentConfig)
     docPropertiesShowInDoc: boolean; // 是否在思源文档标题下插入属性面板(侧边 dock 常驻)
     docPropertiesSchema: string;     // 属性名 → 类型/选项 全局配置(每行 名称=类型:选项)
     // 导入 Markdown 到思源时,是否把源文件作为资源插入到文档顶部的引述块(保留出处,便于回溯原文件)
@@ -360,6 +361,7 @@ export const DEFAULT_CONFIG: EditorConfig = {
     lanSyncPort: 39099,
     lanSyncToken: "",
     lanSyncTasks: "",                // 空 = 无任务
+    lanSyncAgent: "",                // 空 = agent 关闭
     docPropertiesShowInDoc: false,   // 文档内面板默认隐藏(侧边 dock 常驻可用)
     docPropertiesSchema: "",         // 未配置的属性按文本处理
     importMdSourceAsset: false,      // 默认不插入源文件资源引述块

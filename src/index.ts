@@ -67,8 +67,9 @@ import {loadStartPage, itemFromPath, itemFromDoc, toggleInGroup, START_PAGE_CHAN
 import {isVirtualPath, virtualId, initMountStore, getMountList, dropSyDocMounts} from "./utils/virtual-tree";
 import {initBaiduPanStore} from "./api/baidu-pan";
 import {openBaiduPanDialog} from "./components/baidu-pan-dialog";
-import {startLanSyncServer, stopLanSyncServer, isLanSyncServerRunning} from "./api/lan-sync";
+import {startLanSyncServer, stopLanSyncServer, isLanSyncServerRunning, executeAgentOp, agentOwnRoots} from "./api/lan-sync";
 import {openLanSyncDialog} from "./components/lan-sync-dialog";
+import {initLanSyncAgentRuntime, startLanSyncAgent, stopLanSyncAgent, lanSyncAgentStatus, parseAgentConfig, serializeAgentConfig} from "./api/lan-sync-agent";
 import {openOneDriveDialog} from "./components/onedrive-dialog";
 import {initOneDriveStore} from "./api/onedrive";
 import {initOutlookMailStore} from "./api/outlook-mail";
@@ -210,6 +211,10 @@ export default class FileEditorPlugin extends Plugin {
     private lanSyncEnabledInput?: HTMLInputElement;
     private lanSyncPortInput?: HTMLInputElement;
     private lanSyncTokenInput?: HTMLInputElement;
+    private lanSyncAgentEnabledInput?: HTMLInputElement;
+    private lanSyncAgentUrlInput?: HTMLInputElement;
+    private lanSyncAgentTokenInput?: HTMLInputElement;
+    private lanSyncAgentDeviceInput?: HTMLInputElement;
     private newTabShowPinnedInput?: HTMLInputElement;
     private newTabShowRecentInput?: HTMLInputElement;
     private newTabShowFavoritesInput?: HTMLInputElement;
@@ -410,6 +415,12 @@ export default class FileEditorPlugin extends Plugin {
         disposeAllGlobal();
         // 全局插件引用:局域网同步的服务端共享根/客户端令牌兜底都从这里读
         (window as any).syfePlugin = this;
+        // 设备隧道 agent 运行时:移动端作为"服务端角色"接入对端 server 的执行器装配
+        // (隧道请求落本机内核 API;本机任务经 agent 注册为共享根)
+        initLanSyncAgentRuntime({
+            execOp: executeAgentOp,
+            getRoots: () => agentOwnRoots(parseAgentConfig(this.config?.lanSyncAgent).deviceId),
+        });
         // 移动端走独立的注册链:桌面 onload 里的 addTab / Monaco / 终端 / Python LSP
         // 在移动端要么空实现要么没有 Node,中途抛错会让思源跳过 kernelInit 与
         // onLayoutReady,连移动端官方支持的 dock 都注册不上(见 utils/platform.ts)。
@@ -855,6 +866,11 @@ export default class FileEditorPlugin extends Plugin {
                 console.error("[siyuan-file-editor] 局域网同步服务端启动失败:", e);
             });
         }
+        // 设备隧道 agent:移动端/桌面端都可跑(主动连到对端 server,让本机任务
+        // 成为被同步的共享根 —— 手机改动由此能被桌面端拉取)。断线自动重连
+        if (parseAgentConfig(this.config.lanSyncAgent).enabled) {
+            startLanSyncAgent(this);
+        }
         // 记录最近使用的思源文档(必须在 loadRecents 之后注册,否则会被加载结果覆盖)
         this.eventBus.on("switch-protyle", (e: any) => {
             const protyle = e?.detail?.protyle;
@@ -1132,6 +1148,19 @@ export default class FileEditorPlugin extends Plugin {
 
     stopLanSync(): void {
         stopLanSyncServer();
+    }
+
+    // 设备隧道 agent:手动启停与状态(移动端/桌面端都可)
+    startLanSyncAgentTunnel(): void {
+        startLanSyncAgent(this);
+    }
+
+    stopLanSyncAgentTunnel(): void {
+        stopLanSyncAgent();
+    }
+
+    lanSyncAgentTunnelStatus(): {state: string; error: string} {
+        return lanSyncAgentStatus();
     }
 
     // 新标签页:切换固定 / 收藏(供文件树右键菜单调用)
@@ -1911,6 +1940,40 @@ export default class FileEditorPlugin extends Plugin {
         });
         addRow("lanSync", "同步任务", "配置要同步的目录(支持 /data/... 内核路径或系统绝对路径)、对端地址、方向与白/黑名单正则;支持预览差异后手动同步", lanSyncTaskBtn);
 
+        // 设备隧道 agent:本机(移动端也可)主动连到对端 server,本机任务成为被同步的共享根
+        this.lanSyncAgentEnabledInput = document.createElement("input");
+        this.lanSyncAgentEnabledInput.type = "checkbox";
+        this.lanSyncAgentEnabledInput.className = "b3-switch";
+        addRow("lanSync", "作为设备接入(隧道)", "开启后本机主动连到对端服务端,把本机同步任务注册为对端的共享根 —— 对端就能把本机的改动拉过去/把它的改动推过来(移动端跑不了服务端,靠这条隧道充当服务端角色;断线自动重连)", this.lanSyncAgentEnabledInput);
+
+        this.lanSyncAgentUrlInput = document.createElement("input");
+        this.lanSyncAgentUrlInput.className = "b3-text-field";
+        this.lanSyncAgentUrlInput.type = "text";
+        this.lanSyncAgentUrlInput.placeholder = "http://192.168.1.10:39099";
+        addRow("lanSync", "隧道服务端地址", "要接入的服务端(桌面端)地址,即它的「http://IP:监听端口」", this.lanSyncAgentUrlInput);
+
+        this.lanSyncAgentTokenInput = document.createElement("input");
+        this.lanSyncAgentTokenInput.className = "b3-text-field";
+        this.lanSyncAgentTokenInput.type = "text";
+        this.lanSyncAgentTokenInput.placeholder = "(对端设置页的同步令牌)";
+        addRow("lanSync", "隧道令牌", "对端服务端的同步令牌(与「同步令牌」同一值)", this.lanSyncAgentTokenInput);
+
+        this.lanSyncAgentDeviceInput = document.createElement("input");
+        this.lanSyncAgentDeviceInput.className = "b3-text-field";
+        this.lanSyncAgentDeviceInput.type = "text";
+        this.lanSyncAgentDeviceInput.placeholder = "我的手机";
+        addRow("lanSync", "设备名", "对端共享根列表里显示的名字,便于区分多台设备", this.lanSyncAgentDeviceInput);
+
+        const lanSyncAgentStatusBtn = document.createElement("button");
+        lanSyncAgentStatusBtn.className = "b3-button b3-button--text";
+        lanSyncAgentStatusBtn.textContent = "隧道状态";
+        lanSyncAgentStatusBtn.addEventListener("click", () => {
+            const st = lanSyncAgentStatus();
+            const text = {connected: "已连接", connecting: "连接中", error: "连接失败", off: "未启用"}[st.state] || st.state;
+            showMessage(`设备隧道: ${text}${st.error ? "(" + st.error + ")" : ""}`, 3000, st.state === "connected" ? "info" : "error");
+        });
+        addRow("lanSync", "隧道连接状态", "查看设备隧道当前是否已连上服务端", lanSyncAgentStatusBtn);
+
         this.newTabShowPinnedInput = document.createElement("input");
         this.newTabShowPinnedInput.type = "checkbox";
         this.newTabShowPinnedInput.className = "b3-switch";
@@ -2066,6 +2129,13 @@ export default class FileEditorPlugin extends Plugin {
         if (this.lanSyncEnabledInput) this.lanSyncEnabledInput.checked = this.config.lanSyncEnabled === true;
         if (this.lanSyncPortInput) this.lanSyncPortInput.value = String(this.config.lanSyncPort || 39099);
         if (this.lanSyncTokenInput) this.lanSyncTokenInput.value = this.config.lanSyncToken || "";
+        {
+            const agent = parseAgentConfig(this.config.lanSyncAgent);
+            if (this.lanSyncAgentEnabledInput) this.lanSyncAgentEnabledInput.checked = agent.enabled;
+            if (this.lanSyncAgentUrlInput) this.lanSyncAgentUrlInput.value = agent.serverUrl;
+            if (this.lanSyncAgentTokenInput) this.lanSyncAgentTokenInput.value = agent.token;
+            if (this.lanSyncAgentDeviceInput) this.lanSyncAgentDeviceInput.value = agent.device;
+        }
         if (this.marketTopBarIconInput) this.marketTopBarIconInput.checked = this.config.marketTopBarIcon !== false;
         if (this.newTabShowPinnedInput) this.newTabShowPinnedInput.checked = this.config.newTabShowPinned !== false;
         if (this.newTabShowRecentInput) this.newTabShowRecentInput.checked = this.config.newTabShowRecent !== false;
@@ -2191,6 +2261,13 @@ export default class FileEditorPlugin extends Plugin {
             lanSyncToken: (this.lanSyncTokenInput?.value || "").trim(),
             // 任务列表由「同步任务管理」对话框维护,设置保存时原样保留
             lanSyncTasks: this.config.lanSyncTasks || "",
+            lanSyncAgent: serializeAgentConfig({
+                enabled: this.lanSyncAgentEnabledInput?.checked ?? false,
+                serverUrl: (this.lanSyncAgentUrlInput?.value || "").trim(),
+                token: (this.lanSyncAgentTokenInput?.value || "").trim(),
+                device: (this.lanSyncAgentDeviceInput?.value || "").trim() || "设备",
+                deviceId: parseAgentConfig(this.config.lanSyncAgent).deviceId,
+            }),
             newTabShowPinned: this.newTabShowPinnedInput?.checked ?? true,
             newTabShowRecent: this.newTabShowRecentInput?.checked ?? true,
             newTabShowFavorites: this.newTabShowFavoritesInput?.checked ?? true,
@@ -2254,6 +2331,15 @@ export default class FileEditorPlugin extends Plugin {
             } catch (e) {
                 showMessage(`局域网同步服务端启动失败: ${(e as Error)?.message || e}`, 4000, "error");
             }
+        }
+        // 设备隧道 agent 跟随设置即时生效(移动端/桌面端都可)
+        try {
+            stopLanSyncAgent();
+            if (parseAgentConfig(this.config.lanSyncAgent).enabled) {
+                startLanSyncAgent(this);
+            }
+        } catch (e) {
+            console.error("[siyuan-file-editor] 局域网同步 agent 启动失败:", e);
         }
         // 面板值即用户值:回写 settings.json(只写与默认不同的项,与 VS Code 一致)
         syncUserSettingsFromConfig(this.config);
