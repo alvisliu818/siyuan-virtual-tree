@@ -240,13 +240,9 @@ const syfeCmTheme = EditorView.theme({
     ".syfe-cm-codeblock-body": {
         margin: "0",
         // 左内边距归零:行号列(逐行重建,sticky)从 x=0 起,数字自带缩进;
-        // 右侧 0.9em 给滚动条留白。
-        // ⚠ overflowX 用 auto 不用 scroll:常驻条带的旧理由是「与 Monaco 时代
-        // 编辑态(padding 0 + 横条 10)逐像素等高」,编辑态改为内嵌 CM6 且
-        // padding 与阅读态相同后,常驻条带反而让阅读态多出 10px(用户反馈
-        // 「进编辑会收缩」)。auto 下两态都只在内容超宽时 +10px,恒等高。
+        // 右侧 0.9em 给滚动条留白。固定 px:与编辑态(padding 8×2 + 横条 10)逐像素等高
         padding: "8px 0.9em 8px 0",
-        overflowX: "auto",
+        overflowX: "scroll",        // scroll 非 auto:条带常驻,短块也留 10px 底带
         overflowY: "hidden",
         whiteSpace: "pre",          // 不折行(Logseq parity),长行横向滚
         backgroundColor: "var(--b3-theme-surface)",

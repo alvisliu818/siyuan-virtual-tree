@@ -140,20 +140,6 @@ const gutterTheme = EditorView.theme({
         opacity: "1",
     },
     ".cm-activeLineGutter": {backgroundColor: "transparent"},
-    // ⚠ 滚动条样式必须与阅读态 .syfe-cm-codeblock-body::-webkit-scrollbar
-    // (index.scss)成对且同款:思源全局/对 .cm-scroller 的覆盖会把编辑态
-    // 滚动条变成不同高度(用户反馈「进编辑滚动条高度又变了」)。
-    ".cm-scroller::-webkit-scrollbar": {
-        height: "10px",
-        width: "10px",
-    },
-    ".cm-scroller::-webkit-scrollbar-thumb": {
-        background: "var(--b3-border-color)",
-        borderRadius: "5px",
-    },
-    ".cm-scroller::-webkit-scrollbar-track": {
-        background: "transparent",
-    },
 });
 
 // ===== 与阅读态同源的 token 配色(2026-11-15 用户反馈「进出编辑主题不一样」)=====
@@ -380,10 +366,10 @@ export function mountBlockEditor(o: MountOptions): void {
     // 见 cm6-markdown .is-editing)。
     const scroller = view.dom.querySelector(".cm-scroller") as HTMLElement | null;
     if (scroller) {
-        // padding 全归零(与阅读态 body padding 8/0.9em/8/0 对称:滚动条
-        // 两态都落在 content 底部,同一位置)。⚠ 字体也要定死:思源全局
-        // 样式把行号格字体设成了自己的链("Emojis Additional"...),与
-        // 阅读态 cl-n 的 Consolas 不同(用户反馈「行号的字体不一样」)。
+        // 左右 0(行号槽/代码列与阅读态同一起点)、底部 0 去掉宿主 45vh 留白。
+        // ⚠ 字体也要定死:思源全局样式把行号格字体设成了自己的链
+        // ("Emojis Additional"...),与阅读态 cl-n 的 Consolas 不同
+        // (用户反馈「行号的字体不一样」),内联覆盖为 body 同款。
         scroller.style.padding = "0";
         scroller.style.fontFamily = BLOCK_FONT_FAMILY;
     }
