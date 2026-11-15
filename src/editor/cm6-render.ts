@@ -1700,6 +1700,15 @@ export function cm6MarkdownRender(opts: Cm6RenderOptions): Extension {
         ) as HTMLElement | null : null;
         if (bodyEl) bodyEl.scrollLeft = savedScroll;
         view.focus();
+        // 退出后 body 滚动条出现/消失会改变块高,显式请求重测 —— 否则 CM6
+        // 高度图滞后一拍,卡片滚动条溢出到圆角框外(用户截图 2026-11-15)。
+        // rAF 兜底一次:焦点/字体加载可能让首测仍取旧高。
+        view.requestMeasure();
+        if (typeof requestAnimationFrame !== "undefined") {
+            requestAnimationFrame(() => {
+                if (view.dom.isConnected) view.requestMeasure();
+            });
+        }
     };
 
     // 待穿透的光标:点击代码卡片进入编辑时的屏幕位置(editMounter 挂载后

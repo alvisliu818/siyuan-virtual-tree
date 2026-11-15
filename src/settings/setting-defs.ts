@@ -244,7 +244,12 @@ export const EDITOR_DEFS: SettingDef[] = [
         group: G_INDENT,
         title: "文件末尾换行",
         description: "文件不以换行结尾时如何显示最后一行",
-        default: "off",
+        // ⚠ 默认 on(与 VS Code 一致):off 时文件末尾换行后的空行不渲染
+        // 行号,但当前行高亮条仍在 → 出现「没有行号的空白高亮条」
+        //(代码文件末行、Markdown 卡片退出编辑后的源码末空行,用户 2026-11-15)。
+        // 块内代码卡片锁定 on:Enter 后模型以换行结尾, 末空行的行号要显示
+        //(用户 2026-11-14「换行后行号没出现」); 此键不进块内作用域
+        default: "on",
         enum: ["off", "on", "dimmed"],
         enumLabels: {off: "关", on: "开", dimmed: "淡化显示"},
         // 块内代码卡片锁定 on:Enter 后模型以换行结尾, 末空行的行号要显示
