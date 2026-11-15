@@ -4,6 +4,10 @@
 // 语言标签/盒带/行号补画不变, 正文区换内嵌 CM6, 语法渲染走 language-data
 // 语言包 —— 与源码态围栏行同一套语言管道)。
 //
+// 内嵌编辑器的事件隔离(2026-11-15)行为参考 Logseq OG
+// (E:/HOME/Code/logseq/og, src/main/frontend/extensions/code.cljs 的 render!,
+// AGPL-3.0),按本插件的 Electron + CM6 环境重新实现。
+//
 // 视图值 = codeView(去结构缩进), 写回按栅栏列重新缩进(与 Monaco 版契约
 // 一致, 见 cm6-render 的 syncFromMonaco)。Esc / 点击卡片外退出回 colorize。
 
@@ -187,8 +191,23 @@ export function mountBlockEditor(o: MountOptions): void {
     // 键隔离:嵌套编辑器的 keydown 阻断冒泡 —— 否则宿主 CM6 的 keymap 会对同
     // 一个按键再处理一遍(Monaco 版的 Enter 被吞就是这条链, 见 d9c29e3)。
     // 修饰组合键(Mod-s 保存等)不拦, 继续冒泡给宿主。
-    view.contentDOM.addEventListener("keydown", (e) => {
-        if (!e.ctrlKey && !e.metaKey && !e.altKey) e.stopPropagation();
+    // 监听挂在 view.dom(wrapper)而非 contentDOM:事件先经 CM6 自己的 keymap,
+    // 冒泡到这里才拦,既不影响内嵌编辑器,也覆盖行号槽等非编辑区的按键。
+    // ⚠ 只 stopPropagation,不 preventDefault —— 本 Electron 实测在 mousedown
+    // 上 preventDefault 会抑制后续 click 派生(Logseq 的 util/stop 含
+    // preventDefault,那是 CM5 textarea 场景,不能原样照抄)。
+    view.dom.addEventListener("mousedown", (e) => e.stopPropagation());
+    view.dom.addEventListener("touchstart", (e) => e.stopPropagation());
+    view.dom.addEventListener("keydown", (e) => {
+        const mod = e.ctrlKey || e.metaKey || e.altKey;
+        // Logseq 同款:Cmd/Ctrl + [ / ] 在 Electron 里触发浏览器前进/后退,
+        // 内嵌编辑器里必须连默认行为一起拦掉(其余修饰键仍冒泡给宿主)。
+        if (mod && (e.code === "BracketLeft" || e.code === "BracketRight")) {
+            e.preventDefault();
+            e.stopPropagation();
+            return;
+        }
+        if (!mod) e.stopPropagation();
     });
     // 点击卡片外 → 退出编辑回 colorize(document 捕获, monaco-block 同款)
     const outsideListener = (e: MouseEvent) => {
