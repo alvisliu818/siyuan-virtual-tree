@@ -3839,35 +3839,6 @@ button.syfe-editor__arrow--exp:hover {
     overflow: auto;
 }
 
-// 底部路径栏:悬停行显示该行完整路径,空闲显示当前目录;点击复制。
-// 与 chips 同视觉层级:固定在面板底部,单行省略。
-// 容器 direction:rtl + 内部 span dir=ltr:超宽时省略号出现在**左侧**,保留右端当前段
-.syfe-mtree__pathbar {
-    flex-shrink: 0;
-    padding: 3px 8px;
-    border-top: 1px solid var(--b3-border-color);
-    font-size: 12px;
-    line-height: 18px;
-    color: var(--b3-theme-on-surface);
-    background: var(--b3-theme-surface);
-    white-space: nowrap;
-    overflow: hidden;
-    cursor: pointer;
-    user-select: none;
-    direction: rtl;
-
-    .syfe-mtree__pathbar-text {
-        direction: ltr;
-        unicode-bidi: embed;
-        display: inline-block;
-        max-width: 100%;
-        vertical-align: top;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-    }
-}
-
 .syfe-mtree__chip {
     display: inline-flex;
     align-items: center;

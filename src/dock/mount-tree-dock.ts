@@ -4,7 +4,7 @@
 // 数据层 src/mount-tree.ts(virtual-tree.json);结构变化派发 syfe:mount-tree-changed 自动重绘。
 import {Menu, Dialog, confirm, showMessage} from "siyuan";
 import {MOUNT_TREE_DOCK_TYPE, IMAGE_EXTENSIONS, getMediaKind} from "../constants";
-import {readDir, querySQL, getHPathByID, readTextFile, createDocWithMd, lsNotebooks} from "../api/file";
+import {readDir, querySQL, readTextFile, createDocWithMd, lsNotebooks} from "../api/file";
 import {clearGitRepoCache} from "../api/git-repo";
 import {DirEntry} from "../types";
 import {basename, dirname, joinPath, extname} from "../utils/path";
@@ -329,7 +329,7 @@ function resolvedOrder(cfg: TreeToolbarCfg): string[] {
 // 渲染行(扁平化,按 data-idx 回查)
 type Row =
     | {kind: "mount"; uid: string; depth: number; expanded: boolean; hasChildren: boolean; item: MountItem}
-    | {kind: "file"; path: string; name: string; isDir: boolean; depth: number; expanded: boolean; size?: number; updated?: string}
+    | {kind: "file"; path: string; name: string; isDir: boolean; depth: number; expanded: boolean}
     | {kind: "doc"; docId: string; name: string; depth: number; expanded: boolean; icon?: string; subFileCount?: number; ownerUid?: string}
     // 自动挂载行:引用子层级(引用的文档 + 物理子文档),与挂载行同款渲染与行为
     | {kind: "auto"; docId: string; name: string; hpath: string; depth: number; expanded: boolean; hasChildren: boolean; parentDocId: string; subFileCount?: number}
@@ -459,13 +459,11 @@ export function mountTreePanelInit(self: MountTreeDockInstance, plugin: IPluginF
                 <div class="fn__flex-1 syfe-mtree__scroll">
                     <div class="syfe-mtree__chips" style="display:none;"></div>
                     <ul class="syfe-mtree__list"></ul>
-                </div>
-                <div class="syfe-mtree__pathbar"></div>`;
+                </div>`;
 
             const listEl = self.element.querySelector(".syfe-mtree__list") as HTMLElement;
             const chipsEl = self.element.querySelector(".syfe-mtree__chips") as HTMLElement;
             const scrollEl = self.element.querySelector(".syfe-mtree__scroll") as HTMLElement;
-            const pathbarEl = self.element.querySelector(".syfe-mtree__pathbar") as HTMLElement;
             self._listEl = listEl;
             self._scrollEl = scrollEl;
             self._rows = [];
@@ -491,171 +489,6 @@ export function mountTreePanelInit(self: MountTreeDockInstance, plugin: IPluginF
             let typeSel = new Set<string>();          // 选中的类型 key(空 = 全部)
             let typeFilesCache: {ts: number; files: {path: string; name: string; size: number; updated: string}[]} | null = null;
             let typeViewLoading = false;
-
-            // ===== 底部路径栏:空闲显示目录+子项统计,悬停行显示类型化摘要;点击复制路径 =====
-            const hpathCache = new Map<string, string>();      // 文档 id → hpath(异步取,缓存)
-            const docUpdatedCache = new Map<string, string>(); // 文档 id → 修改时间(格式化后,异步取)
-            let pathbarHoverKey = "";                          // 当前悬停的思源 id(异步回包后仅同行才刷新)
-            let pathbarHoverRow: Row | null = null;            // 当前悬停行(异步回包重渲染用)
-            let pathbarCopyPath = "";                          // 当前栏内容对应的可复制路径(hover=该行路径;空闲=目录)
-            const setPathbar = (text: string, copyPath?: string): void => {
-                // span dir=ltr 嵌在 rtl 容器里:路径从左到右正常渲染,超宽时省略号出现在**左侧**,
-                // 保留最右端的当前文件/文档段(纯 textContent + rtl 会把分隔符路径段打乱)
-                pathbarEl.innerHTML = `<span dir="ltr" class="syfe-mtree__pathbar-text">${escapeHTML(text || "")}</span>`;
-                pathbarEl.title = ((copyPath ?? text) || "") + "\n点击复制路径";
-                pathbarCopyPath = copyPath ?? (text || "");
-            };
-            const rowPathOf = (row: Row | undefined): string => {
-                if (!row) return "";
-                switch (row.kind) {
-                    case "file": return row.path;
-                    case "mount":
-                        return row.item.kind === "file" ? (row.item.path || "") : (row.item.targetId || "");
-                    case "auto": return row.hpath || row.docId;
-                    case "doc": return row.docId;
-                    case "block": return `块 ${row.blockId}`;
-                    default: return "";
-                }
-            };
-            // --- 格式化助手 ---
-            const fmtSize = (n: number): string =>
-                n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : n < 1073741824 ? `${(n / 1048576).toFixed(1)} MB` : `${(n / 1073741824).toFixed(1)} GB`;
-            const fmtTime = (raw: string): string => {
-                if (!raw) return "";
-                let d: Date;
-                if (/^\d{14}$/.test(raw)) { // 思源内核 updated:YYYYMMDDHHmmss
-                    d = new Date(Number(raw.slice(0, 4)), Number(raw.slice(4, 6)) - 1, Number(raw.slice(6, 8)),
-                        Number(raw.slice(8, 10)), Number(raw.slice(10, 12)), Number(raw.slice(12, 14)));
-                } else {
-                    const t = Date.parse(raw);
-                    if (isNaN(t)) return "";
-                    d = new Date(t);
-                }
-                const p = (x: number): string => String(x).padStart(2, "0");
-                return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
-            };
-            const dirCountText = (entries: DirEntry[]): string => {
-                if (!entries.length) return "空目录";
-                let dirs = 0, files = 0;
-                for (const en of entries) { if (en.isDir) dirs++; else files++; }
-                const parts = [`${entries.length} 项`];
-                if (dirs) parts.push(`${dirs} 文件夹`);
-                if (files) parts.push(`${files} 文件`);
-                return parts.join(" · ");
-            };
-            // 悬停行摘要(类型化元信息);copyPath 仍为该行路径(tooltip/点击复制用)
-            const renderHoverBar = (row: Row): void => {
-                const copyPath = rowPathOf(row);
-                if (!copyPath) return;
-                let label = "";
-                switch (row.kind) {
-                    case "file": {
-                        const bits: string[] = [row.isDir ? "文件夹" : row.size ? fmtSize(row.size) : ""];
-                        const t = fmtTime(row.updated || "");
-                        if (t) bits.push(`修改于 ${t}`);
-                        label = [row.name, ...bits.filter(Boolean)].join(" · ");
-                        break;
-                    }
-                    case "mount": {
-                        if (row.item.kind === "file") {
-                            const target = row.item.path || "";
-                            const cached = self._cache!.get("f:" + target);
-                            const cnt = Array.isArray(cached) && cached.length > 0 && "isDir" in cached[0]
-                                ? ` · ${dirCountText(cached as DirEntry[])}` : "";
-                            label = `[挂载] ${target}${cnt}`;
-                        } else {
-                            const kindLabel = row.item.kind === "notebook" ? "挂载·笔记本"
-                                : row.item.kind === "block" ? "挂载·块" : "挂载·文档";
-                            const id = row.item.targetId || "";
-                            if (id) { pathbarHoverKey = id; ensureHPath(id); }
-                            label = `[${kindLabel}] ${hpathCache.get(id) || row.item.name || id}`;
-                        }
-                        break;
-                    }
-                    case "doc": {
-                        if (row.docId) { ensureHPath(row.docId); refreshDocUpdated(row.docId); }
-                        const parts = [hpathCache.get(row.docId) || row.name];
-                        if (typeof row.subFileCount === "number") parts.push(`${row.subFileCount} 子文档`);
-                        const t = docUpdatedCache.get(row.docId);
-                        if (t) parts.push(`修改于 ${t}`);
-                        label = parts.join(" · ");
-                        break;
-                    }
-                    case "auto": {
-                        if (row.docId) { ensureHPath(row.docId); refreshDocUpdated(row.docId); }
-                        const parts = [row.hpath || row.name];
-                        if (typeof row.subFileCount === "number") parts.push(`${row.subFileCount} 子文档`);
-                        const t = docUpdatedCache.get(row.docId);
-                        if (t) parts.push(`修改于 ${t}`);
-                        label = parts.join(" · ");
-                        break;
-                    }
-                    case "block": {
-                        const bs = [row.btype, row.bsubtype].filter(Boolean).join("/");
-                        label = `[块${bs ? " " + bs : ""}] ${row.bname || row.name || row.blockId}`;
-                        break;
-                    }
-                    default:
-                        label = copyPath;
-                }
-                setPathbar(label || copyPath, copyPath);
-            };
-            // 文档修改时间异步补齐(blocks 表;格式化后缓存,hover 回包重渲染)
-            const refreshDocUpdated = (docId: string): void => {
-                if (!docId || docUpdatedCache.has(docId)) return;
-                docUpdatedCache.set(docId, ""); // 占位防并发
-                void querySQL(`SELECT updated FROM blocks WHERE id='${docId}' LIMIT 1`).then(rows => {
-                    const t = fmtTime(String((rows && rows[0] && rows[0].updated) || ""));
-                    docUpdatedCache.set(docId, t);
-                    if (pathbarHoverKey === docId && pathbarHoverRow) renderHoverBar(pathbarHoverRow);
-                }).catch(() => docUpdatedCache.delete(docId));
-            };
-            // 思源文档 id → hpath 异步补齐(挂载文档行 / doc 行;块行只显示块 id)
-            const ensureHPath = (id: string): void => {
-                if (!id || hpathCache.has(id)) return;
-                hpathCache.set(id, ""); // 占位防并发重复请求
-                void getHPathByID(id).then(hp => {
-                    hpathCache.set(id, hp || "");
-                    if (pathbarHoverKey === id && pathbarHoverRow) renderHoverBar(pathbarHoverRow);
-                }).catch(() => hpathCache.delete(id));
-            };
-            // --- 空闲态:目录路径 + 子项统计(优先取展开缓存,未缓存异步取一次) ---
-            let idleSeq = 0;
-            const refreshIdleBar = (): void => {
-                const dir = currentDir || plugin.getFileTreeRoot();
-                const seq = ++idleSeq;
-                const cached = self._cache!.get("f:" + dir);
-                if (Array.isArray(cached) && (cached.length === 0 || "isDir" in cached[0])) {
-                    setPathbar(`${dir} · ${dirCountText(cached as DirEntry[])}`, dir);
-                    return;
-                }
-                setPathbar(dir, dir); // 先占位,统计异步补
-                void readDir(dir).then((entries: DirEntry[]) => {
-                    if (seq !== idleSeq || pathbarHoverKey || pathbarHoverRow) return; // 已不空闲/目录已切换
-                    setPathbar(`${dir} · ${dirCountText(entries)}`, dir);
-                }).catch(() => { /* 列不动就保持纯路径 */ });
-            };
-            scrollEl.addEventListener("mouseover", (e: MouseEvent) => {
-                const rowEl = (e.target as HTMLElement).closest(".syfe-mtree__row") as HTMLElement | null;
-                if (!rowEl || !scrollEl.contains(rowEl)) return;
-                const idx = rowEl.dataset.idx;
-                if (idx === undefined) return;
-                const row = (self._rows || [])[Number(idx)];
-                if (!row || row.kind === "empty" || row.kind === "loading") return;
-                pathbarHoverKey = row.kind === "mount" && row.item.kind !== "file" ? (row.item.targetId || "")
-                    : (row.kind === "auto" || row.kind === "doc") ? row.docId : "";
-                pathbarHoverRow = row;
-                renderHoverBar(row);
-            });
-            scrollEl.addEventListener("mouseleave", () => {
-                pathbarHoverKey = "";
-                pathbarHoverRow = null;
-                refreshIdleBar();
-            });
-            pathbarEl.addEventListener("click", () => {
-                copyWithToast(pathbarCopyPath, "路径已复制", "复制失败");
-            });
-            refreshIdleBar();
 
             // ===== 引用关系树(设置开关控制,只读派生视图)=====
             // 与手动挂载共存:关系树排在手动挂载**上方**,两者互不影响。
@@ -1396,7 +1229,7 @@ export function mountTreePanelInit(self: MountTreeDockInstance, plugin: IPluginF
                     // 与 file-tree 的 createEntryHTML 保持同一套规则
                     const full = e.path || joinPath(path, e.name);
                     const ex = self._expanded!.has("f:" + full);
-                    out.push({kind: "file", path: full, name: String(e.name), isDir: !!e.isDir, depth, expanded: ex, size: Number(e.size || 0), updated: String(e.updated || "")});
+                    out.push({kind: "file", path: full, name: String(e.name), isDir: !!e.isDir, depth, expanded: ex});
                     if (e.isDir && ex) emitDir(full, depth + 1, out);
                 }
             };
@@ -1824,9 +1657,9 @@ export function mountTreePanelInit(self: MountTreeDockInstance, plugin: IPluginF
                         TYPE_CATEGORIES.map((c) => `<span class="syfe-mtree__typechip${typeSel.size === 0 || typeSel.has(c.key) ? " is-on" : ""}" data-type="${c.key}">${c.label}</span>`).join("") +
                         `<span class="syfe-mtree__typechip${typeSel.has("other") ? " is-on" : ""}" data-type="other">其他</span></li>`;
                     let idx = 0;
-                    const fileRow = (f: {path: string; name: string; size?: number; updated?: string}) => {
+                    const fileRow = (f: {path: string; name: string}) => {
                         const i = idx++;
-                        rows.push({kind: "file", path: f.path, name: f.name, isDir: false, depth: 0, expanded: false, size: f.size, updated: f.updated});
+                        rows.push({kind: "file", path: f.path, name: f.name, isDir: false, depth: 0, expanded: false});
                         return `<li class="syfe-mtree__row" data-idx="${i}" style="padding-left:20px" title="${escapeHTML(f.path)}"><span class="syfe-mtree__icon">${fileIconHTML(f.name)}</span><span class="syfe-mtree__text"><span class="syfe-mtree__name">${escapeHTML(f.name)}</span></span>${LINK_BTN}</li>`;
                     };
                     for (const g of visible) {
