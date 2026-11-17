@@ -233,6 +233,36 @@ const syfeCmTheme = EditorView.theme({
         opacity: "1",
         backgroundColor: "var(--b3-list-hover, rgba(127,127,127,.15))",
     },
+    // 运行按钮(python/js 代码卡片):与复制按钮同款规格
+    ".syfe-cm-codeblock-runbtn": {
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        border: "none",
+        padding: "2px 4px",
+        borderRadius: "4px",
+        cursor: "pointer",
+        backgroundColor: "transparent",
+        color: "var(--b3-theme-primary, #4285f4)",
+        opacity: ".75",
+        fontSize: "11px",
+        fontWeight: "600",
+    },
+    ".syfe-cm-codeblock-runbtn:hover": {
+        opacity: "1",
+        backgroundColor: "var(--b3-list-hover, rgba(127,127,127,.15))",
+    },
+    // 结果面板复用全局 .syfe-cb-run 类(protyle 版样式),但作为卡片**内部**元素
+    // 要重置外距与边框(卡片自身已有边框圆角),输出区高度也收敛一些
+    ".syfe-cm-cbrun": {
+        margin: "0",
+        border: "none",
+        borderTop: "1px dashed var(--b3-border-color, rgba(127,127,127,.3))",
+        borderRadius: "0",
+    },
+    ".syfe-cm-cbrun .syfe-cb-run__body": {
+        maxHeight: "40vh",
+    },
     ".syfe-cm-codeblock-copy.is-copied": {
         color: "var(--b3-theme-primary)",
         fontWeight: "600",
