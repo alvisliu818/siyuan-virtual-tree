@@ -14,7 +14,7 @@ import {isWeblinkPath, isBmarksPath, weblinkUrlOf, openExternalUrl, makeWeblinkV
 import {isActionPath, actionSpecOf, executeActionMount} from "../utils/action-mount";
 import {openActionMountDialog} from "../components/action-mount-dialog";
 import {toFileLink, getWorkspacePath} from "../utils/system-path";
-import {virtualListDir, virtualId, isNotebookRoot, isBoxDocEnabled} from "../utils/virtual-tree";
+import {virtualListDir, virtualId, isNotebookRoot, isBoxDocEnabled, VIRTUAL_PREFIX} from "../utils/virtual-tree";
 import {docTreeIconHTML, cachedDocIcon, ensureDocIcons, getNotebookIcon} from "../utils/siyuan-icon";
 import {listChildBlocks, blockTitle, blockGutterIcon, soloImageInfo, BlockNode} from "../utils/blocks";
 import {loadBlockDisplayModes, blockDisplayMode, setBlockDisplayMode} from "../utils/block-names";
@@ -196,6 +196,11 @@ export interface IPluginForMountTree {
     app: any;
     name: string;
     config: any;
+    /** 思源插件事件总线(ws-main 内核广播监听用) */
+    eventBus: {
+        on(type: string, handler: (e: any) => void): void;
+        off(type: string, handler: (e: any) => void): void;
+    };
     openFileSplit(path: string, position: "right" | "bottom"): void;
     loadData(key: string): Promise<any>;
     saveData(key: string, data: any): Promise<void>;
@@ -353,6 +358,9 @@ export interface MountTreeDockInstance {
     _relActionHandler?: (e: MouseEvent) => void;
     _changedHandler?: () => void;
     _filesChangedHandler?: () => void;
+    // 内核 ws-main 广播监听(外部 API 建/删文档时刷新 sydoc 缓存;destroy 经 _pluginRef 反注册)
+    _kernelWsHandler?: (e: any) => void;
+    _pluginRef?: IPluginForMountTree;
     _tagsChangedHandler?: () => void;
     _relationHandler?: () => void;
     _relationRebuildHandler?: () => void;
@@ -3221,6 +3229,67 @@ export function mountTreePanelInit(self: MountTreeDockInstance, plugin: IPluginF
             self._filesChangedHandler = filesChangedHandler;
             window.addEventListener("syfe:files-changed", filesChangedHandler);
 
+            // 内核文档结构广播(外部 API 建的文档,如浏览器插件网页标注):上面的刷新链路
+            // 只覆盖插件自身操作(syfe:files-changed)与 switch-protyle,外部 create/removeDoc
+            // 不会到达 → 折叠的 sydoc 缓存永不失效、展开的也不重取,新文档要收起再展开才出现。
+            // create 按父目录推导缓存键重取;removeDoc 扫描缓存命中含被删文档的目录键。
+            const refreshDocCacheKey = (key: string): Promise<boolean> => {
+                const loader = loaderForKey(key);
+                if (!loader) return Promise.resolve(false);
+                return loader().then((list) => {
+                    const changed = JSON.stringify(self._cache!.get(key)) !== JSON.stringify(list);
+                    self._cache!.set(key, list);
+                    return changed;
+                }).catch(() => false);
+            };
+            const kernelWsHandler = (e: any) => {
+                const cmd = String(e?.detail?.cmd || "");
+                if (cmd === "create") {
+                    const data = e.detail?.data || {};
+                    const p = String(data.path || "");
+                    const boxId = String(data.box?.id || "");
+                    if (!p.endsWith(".sy") || !boxId) return;
+                    // 文档 .sy 路径每段都是文档 id:新建中间层目录时可见变化在**祖先层**
+                    // (如标注流程 /网页标注/<域名>/<标题>,新域名出现在 网页标注 层),
+                    // 只刷直接父层会漏 → 祖先各级 + 笔记本根都试一遍(无缓存的键零请求)
+                    const segs = p.split("/").filter(Boolean);
+                    const keys: string[] = [];
+                    for (let i = 0; i < segs.length - 1; i++) {
+                        keys.push("d:sydoc://" + segs[i].replace(/\.sy$/i, ""));
+                    }
+                    keys.push("d:sydoc://nb/" + boxId);
+                    const jobs = keys
+                        .filter(k => self._cache!.has(k) || self._expanded!.has(k))
+                        .map(refreshDocCacheKey);
+                    if (jobs.length) {
+                        void Promise.all(jobs).then((results) => {
+                            if (results.some(Boolean)) render();
+                        });
+                    }
+                } else if (cmd === "removeDoc") {
+                    const rawIds = e.detail?.data?.ids;
+                    if (!Array.isArray(rawIds) || rawIds.length === 0) return;
+                    const idSet = new Set(rawIds.map((v: any) => String(v)));
+                    const jobs: Promise<boolean>[] = [];
+                    for (const key of Array.from(self._cache!.keys())) {
+                        if (!key.startsWith("d:sydoc://")) continue;
+                        const list = self._cache!.get(key) as DirEntry[] | undefined;
+                        if (!Array.isArray(list)) continue;
+                        if (!list.some((en: DirEntry) => String(en.path || "").startsWith("sydoc://")
+                            && idSet.has(String(en.path).slice(VIRTUAL_PREFIX.length)))) continue;
+                        jobs.push(refreshDocCacheKey(key));
+                    }
+                    if (jobs.length) {
+                        void Promise.all(jobs).then((results) => {
+                            if (results.some(Boolean)) render();
+                        });
+                    }
+                }
+            };
+            self._kernelWsHandler = kernelWsHandler;
+            self._pluginRef = plugin;
+            plugin.eventBus.on("ws-main", kernelWsHandler);
+
             // 标签数据变化(新建/删除标签、文件加标签)→ 刷新 chip 行与筛选结果
             const tagsChangedHandler = () => {
                 renderChips();
@@ -3406,6 +3475,15 @@ export function mountTreePanelDestroy(self: MountTreeDockInstance): void {
             if (self._filesChangedHandler) {
                 window.removeEventListener("syfe:files-changed", self._filesChangedHandler);
                 self._filesChangedHandler = undefined;
+            }
+            if (self._kernelWsHandler) {
+                try {
+                    self._pluginRef?.eventBus.off("ws-main", self._kernelWsHandler);
+                } catch {
+                    // 宿主已卸载时忽略
+                }
+                self._kernelWsHandler = undefined;
+                self._pluginRef = undefined;
             }
             if (self._tagsChangedHandler) {
                 window.removeEventListener(TAGS_CHANGED_EVENT, self._tagsChangedHandler);
