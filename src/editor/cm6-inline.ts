@@ -419,6 +419,61 @@ const mdOrderedMarkDeco = Decoration.mark({class: "syfe-cm-md-listmark-ordered"}
 // m[1]=! m[2]=路径 m[3]=别名
 const WIKI_LINE_RE = /(!?)\[\[([^\]|]+)(?:\|([^\]]*))?\]\]/g;
 
+// emoji shortcode(:star2: 等):lezer 不解析,按行正则 + 查表替换。
+// 必须先查表命中才替换 —— 时间(12:30)与未知名单保持原样。
+const EMOJI_SHORTCODE_RE = /:([a-zA-Z0-9_+-]+):/g;
+
+// shortcode → emoji 映射:思源 Lute 内置(与 SiYuan markdown 编辑器同源)。
+// ⚠ window.Lute 是包 facade(方法在 New() 出来的实例上,GetEmojis 不在 facade),
+// 只有 protyle/vditor 的实例才有;直接 New() 一个自取,不依赖恰好开着文档。
+// 只收值为纯 emoji 字形的条目(gemoji 数据里混有少量非图标值),键一律小写。
+let emojiShortcodeCache: Map<string, string> | null | undefined;
+function emojiShortcodeMap(): Map<string, string> | null {
+    if (emojiShortcodeCache !== undefined) return emojiShortcodeCache;
+    const facade = (window as any).Lute;
+    if (!facade) return null; // lute.min.js 尚未就绪:不缓存,下轮装饰重建时再试
+    emojiShortcodeCache = null;
+    try {
+        const inst = typeof facade.New === "function" ? facade.New() : facade;
+        const raw = typeof inst?.GetEmojis === "function" ? inst.GetEmojis() : null;
+        if (raw && typeof raw === "object") {
+            const m = new Map<string, string>();
+            for (const k of Object.keys(raw)) {
+                if (!/^[a-z0-9_+-]+$/.test(k)) continue;
+                const v = String(raw[k] || "");
+                if (v && /^(?:\p{Extended_Pictographic}|\p{Emoji_Component})+$/u.test(v)) m.set(k, v);
+            }
+            if (m.size > 0) emojiShortcodeCache = m;
+        }
+    } catch {
+        emojiShortcodeCache = undefined; // 异常下轮重试
+    }
+    return emojiShortcodeCache ?? null;
+}
+
+class EmojiWidget extends WidgetType {
+    constructor(readonly char: string, readonly code: string) {
+        super();
+    }
+
+    eq(other: EmojiWidget): boolean {
+        return other.char === this.char;
+    }
+
+    toDOM(): HTMLElement {
+        const el = document.createElement("span");
+        el.className = "syfe-cm-emoji";
+        el.textContent = this.char;
+        el.title = ":" + this.code + ":";
+        el.contentEditable = "false";
+        return el;
+    }
+
+    ignoreEvent(): boolean {
+        return false;
+    }
+}
+
 // Callout:> [!type] 标题 —— 两库都没有,按 Obsidian 语义自研(类型映射见 CSS)
 const RE_CALLOUT = /\[!(\w+)\]([+-]?)/;
 
@@ -764,6 +819,32 @@ function buildInlineDecorations(state: EditorState, opts: Cm6InlineOptions): Inl
         }
         hideRange(closeFrom, w.to);
         if (closeFrom > labelFrom) push(mdLinkDeco.range(labelFrom, closeFrom), false);
+    }
+
+    // --- emoji shortcode(:star2: → ⭐):与 wikilink 同为后置扫描(lezer 不解析)。
+    // 跳过围栏/行内码/wikilink;查表命中才替换;光标触到还原源码(WYSIWYM 同模型)。
+    const emojiMap = emojiShortcodeMap();
+    if (emojiMap) {
+        for (let ln = 1; ln <= doc.lines; ln++) {
+            const line = doc.line(ln);
+            EMOJI_SHORTCODE_RE.lastIndex = 0;
+            let m: RegExpExecArray | null;
+            while ((m = EMOJI_SHORTCODE_RE.exec(line.text)) !== null) {
+                if (m[0].length === 0) {
+                    EMOJI_SHORTCODE_RE.lastIndex++;
+                    continue;
+                }
+                const from = line.from + m.index;
+                const to = from + m[0].length;
+                if (isInsideFencedCode(state, from)) continue;
+                if (inlineCodeRanges.some(c => from < c.to && c.from < to)) continue;
+                if (inWikiRange(from, to)) continue;
+                const char = emojiMap.get(m[1].toLowerCase());
+                if (!char) continue;
+                if (selectionTouches(state, from, to)) continue;
+                push(Decoration.replace({widget: new EmojiWidget(char, m[1])}).range(from, to), true);
+            }
+        }
     }
 
     return {
