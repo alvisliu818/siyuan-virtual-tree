@@ -26,6 +26,7 @@ import {syntaxTree} from "@codemirror/language";
 import type {SyntaxNode} from "@lezer/common";
 import {Menu} from "siyuan";
 import {beginCodeEdit, fencedCodeInfosOfState} from "./cm6-render";
+import {tableAt, type TableBlock, tableDeleteColumn, tableDeleteRow, tableFormatCommand, tableInsertColumnLeft, tableInsertColumnRight, tableInsertCommand, tableInsertRowAbove, tableInsertRowBelow, tableMoveColumnLeft, tableMoveColumnRight, tableMoveRowDown, tableMoveRowUp} from "./cm6-table";
 
 // ===== 1. 行上下文(SB lineTextStart / lineContexts 行级用法) =====
 
@@ -585,6 +586,9 @@ interface LineMenuEntry {
 }
 
 function lineMenuEntries(state: EditorState, n: number): LineMenuEntry[] {
+    // 表格行:行列结构操作(cm6-table.ts;锚定该行,不依赖当前光标)
+    const tb = tableAt(state, state.doc.line(n).from + 1);
+    if (tb) return tableMenuEntries(tb);
     const ctx = lineContext(state, n);
     const out: LineMenuEntry[] = [];
     switch (ctx.kind) {
@@ -618,6 +622,7 @@ function lineMenuEntries(state: EditorState, n: number): LineMenuEntry[] {
             out.push({label: "列表项", icon: ICONS.list, run: prefixLine("- ")});
             out.push({label: "任务", icon: ICONS.task, run: prefixLine("- [ ] ")});
             out.push({label: "引用", icon: ICONS.quote, run: prefixLine("> ")});
+            out.push({label: "插入表格", icon: ICONS.list, run: (view) => { tableInsertCommand(view, n); }});
             out.push({label: "删除段落", icon: ICONS.trash, run: deleteBlock()});
             break;
         }
@@ -625,6 +630,32 @@ function lineMenuEntries(state: EditorState, n: number): LineMenuEntry[] {
             break;
     }
     return out;
+}
+
+/** 表格行菜单:行列结构操作(cm6-table.ts;run 锚定菜单行,不依赖光标) */
+function tableMenuEntries(tb: TableBlock): LineMenuEntry[] {
+    void tb;
+    const run = (fn: (view: EditorView, at: number) => boolean): DocOp =>
+        (view, n) => { fn(view, state0(view, n)); };
+    return [
+        {label: "上方插入行", icon: ICONS.up, run: run(tableInsertRowAbove)},
+        {label: "下方插入行", icon: ICONS.down, run: run(tableInsertRowBelow)},
+        {label: "删除行", icon: ICONS.trash, run: run(tableDeleteRow)},
+        {label: "左侧插入列", icon: ICONS.outdent, run: run(tableInsertColumnLeft)},
+        {label: "右侧插入列", icon: ICONS.indent, run: run(tableInsertColumnRight)},
+        {label: "删除列", icon: ICONS.trash, run: run(tableDeleteColumn)},
+        {label: "行上移", icon: ICONS.up, run: run(tableMoveRowUp)},
+        {label: "行下移", icon: ICONS.down, run: run(tableMoveRowDown)},
+        {label: "列左移", icon: ICONS.outdent, run: run(tableMoveColumnLeft)},
+        {label: "列右移", icon: ICONS.indent, run: run(tableMoveColumnRight)},
+        {label: "格式化表格", icon: ICONS.text, run: run(tableFormatCommand)},
+    ];
+}
+
+/** 菜单行的行内锚点:行首+1 落在首管道后的内容区(tableAt 可识别) */
+function state0(view: EditorView, n: number): number {
+    const line = view.state.doc.line(n);
+    return Math.min(line.from + 1, line.to);
 }
 
 function listEntries(ctx: LineContext, state: EditorState, n: number, isTask: boolean): LineMenuEntry[] {

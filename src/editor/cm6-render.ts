@@ -27,6 +27,7 @@
 // 光标进入块内即回源码,这是 Obsidian 同款的编辑模型。
 // 全局主题切换(Monaco 扩展主题)经 onCodeThemeChanged → StateEffect 强制重建。
 import {ChangeDesc, EditorState, Extension, Range, StateEffect, StateField, Text, Transaction} from "@codemirror/state";
+import {cellSourcePos, tableAt} from "./cm6-table";
 import {
     Decoration,
     DecorationSet,
@@ -1184,19 +1185,25 @@ function renderGfmTable(lines: string[], katex: any): HTMLElement {
     header.forEach((cell, i) => {
         const th = document.createElement("th");
         th.style.textAlign = aligns[i] as any;
+        th.setAttribute("data-cell-row", "0");
+        th.setAttribute("data-cell-col", String(i));
         th.innerHTML = renderCellHtml(cell, katex);
         hr.appendChild(th);
     });
     thead.appendChild(hr);
     table.appendChild(thead);
     const tbody = document.createElement("tbody");
+    let bodyRow = 0;
     for (const line of lines.slice(2)) {
         if (!line.trim()) continue;
+        bodyRow++;
         const cells = splitRow(line);
         const tr = document.createElement("tr");
         header.forEach((_, i) => {
             const td = document.createElement("td");
             td.style.textAlign = aligns[i] as any;
+            td.setAttribute("data-cell-row", String(bodyRow));
+            td.setAttribute("data-cell-col", String(i));
             td.innerHTML = renderCellHtml(cells[i] || "", katex);
             tr.appendChild(td);
         });
@@ -1595,7 +1602,16 @@ export function cm6MarkdownRender(opts: Cm6RenderOptions): Extension {
                     }
                     return true;   // 已挂载:事件交给内嵌 CM6 自行处理
                 }
-                if (wrap.classList.contains("syfe-cm-quote")) {
+                if (wrap.classList.contains("syfe-cm-table")) {
+                    // 表格:点在具体单元格 → 光标落到该格源码内容起点(cm6-table
+                    // 的单元格导航从那里接管);退化表回落到表首
+                    const cell = target.closest("th,td") as HTMLElement | null;
+                    const rowAttr = cell?.getAttribute("data-cell-row");
+                    const colAttr = cell?.getAttribute("data-cell-col");
+                    const tb = cell && rowAttr !== null && colAttr !== null ? tableAt(view.state, view.posAtDOM(wrap)) : null;
+                    const cellPos = tb ? cellSourcePos(view.state, tb, Number(rowAttr), Number(colAttr)) : -1;
+                    anchor = cellPos >= 0 ? cellPos : Math.min(line.from + 1, line.to);
+                } else if (wrap.classList.contains("syfe-cm-quote")) {
                     // 引述块:光标直接落到正文起点(跳过缩进 + 列表标记 + `>`)。
                     // 若落在行首,cm6-inline 的 ListMark/QuoteMark 会把 "- >"
                     // 还原成可见源码(真实焦点下),编辑态与渲染态就不一致了。
@@ -2238,27 +2254,33 @@ function buildBlockDeco(
         }
     }
 
-    // 3) 表格(顶层表格块)
+    // 3) 表格(顶层表格块):光标在块内 → 源码态(tableSrcLineDeco 盒色,单元格级
+    //    可视化编辑见 cm6-table.ts);块外 → 卡片。与公式块同款两态模型
     if (block.kind === "table") {
         const from = block.from;
         const to = block.to;
-        const tableLines: string[] = [];
-        for (let k = fromLine; k <= toLine; k++) tableLines.push(doc.line(k).text);
-        const indent = listBlockIndent(doc, fromLine, false, (l) => hangByLine.get(l)?.pad ?? 0, indentWidth);
-        const span = topListBoxSpan(state, from);
-        let listBoxCls = "";
-        if (span) {
-            const endLn = toLine;
-            if (fromLine <= span.toLine && endLn >= span.fromLine) {
-                listBoxCls = "syfe-cm-list-box-extend";
-                if (fromLine <= span.fromLine) listBoxCls += " is-box-first";
-                if (endLn >= span.toLine) listBoxCls += " is-box-last";
+        usedRanges.push({from, to});
+        if (cursorInBlock(from, to)) {
+            for (let ln = fromLine; ln <= toLine; ln++) lineDecos.push(tableSrcLineDeco.range(doc.line(ln).from));
+        } else {
+            const tableLines: string[] = [];
+            for (let k = fromLine; k <= toLine; k++) tableLines.push(doc.line(k).text);
+            const indent = listBlockIndent(doc, fromLine, false, (l) => hangByLine.get(l)?.pad ?? 0, indentWidth);
+            const span = topListBoxSpan(state, from);
+            let listBoxCls = "";
+            if (span) {
+                const endLn = toLine;
+                if (fromLine <= span.toLine && endLn >= span.fromLine) {
+                    listBoxCls = "syfe-cm-list-box-extend";
+                    if (fromLine <= span.fromLine) listBoxCls += " is-box-first";
+                    if (endLn >= span.toLine) listBoxCls += " is-box-last";
+                }
             }
+            const gutterNums: number[] = [];
+            for (let k = fromLine; k <= toLine; k++) gutterNums.push(k);
+            const decoReplace = Decoration.replace({widget: new TableWidget(tableLines, indent, listBoxCls, gutterNums), block: true});
+            ranges.push(decoReplace.range(from, to));
         }
-        const gutterNums: number[] = [];
-        for (let k = fromLine; k <= toLine; k++) gutterNums.push(k);
-        const decoReplace = Decoration.replace({widget: new TableWidget(tableLines, indent, listBoxCls, gutterNums), block: true});
-        ranges.push(decoReplace.range(from, to));
     }
 
     // 2.6/2.7) 单行显示公式与 \( \[ 块(段落/标题/列表/引述块内的行)

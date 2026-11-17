@@ -27,6 +27,7 @@ import {beginCodeEdit, cm6MarkdownRender, preloadCm6Katex, registerCopyLineHandl
 import {cm6InlineWysiwyg, mdParserExtensions} from "./cm6-inline";
 import {cm6SelectionBubble} from "./cm6-selection-bubble";
 import {cm6LineMenu, listBackspaceCommand, listIndentCommand, moveBlockCommand} from "./cm6-line-menu";
+import {cm6TableKeymap} from "./cm6-table";
 import {cm6BlockPreview} from "./cm6-block-preview";
 import {BLOCK_FONT_FAMILY, BLOCK_FONT_SIZE, BLOCK_LINE_HEIGHT} from "./monaco-block";
 import {getLinkIndex} from "../utils/wikilink";
@@ -957,6 +958,12 @@ export function createCm6MarkdownEditor(
             highlightSelectionMatches(),
             markdown({base: markdownLanguage, codeLanguages: languages, extensions: mdParserExtensions}),
             cm6MarkdownRender({resolveImageSrc: opts.resolveImageSrc}),
+            // 表格可视化编辑(cm6-table.ts):光标在表格内时 Tab/Enter/方向键按
+            // 单元格导航,粘贴 HTML 表格/TSV 自动转 markdown 表;点击渲染表格的
+            // 单元格直接落到该格源码位置。不在表格内一律返回 false,完整回落到
+            // 行内 WYSIWYM/列表缩进/默认键位。注册须在 cm6InlineWysiwyg 之前
+            // (同 Prec.high 先注册先命中,表格行 Enter 不能被列表续行截胡)
+            cm6TableKeymap(),
             cm6InlineWysiwyg({onOpenLink: opts.onOpenLink}),
             // 选中气泡工具条:选中文本浮出格式按钮(SB 同款;只读态插件内部早退,
             // 两态同挂保持扩展一致)。点击按钮执行与 Mod+B/I/E 同源的 toggle 命令
