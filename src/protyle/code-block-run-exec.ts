@@ -129,6 +129,75 @@ export function runPythonCode(options: RunOptions): RunHandle {
     };
 }
 
+/**
+ * 执行一段 JavaScript 代码(node)。CM6 代码卡片运行用:js/javascript/node 语言。
+ * 与 runPythonCode 同款:临时文件 + 管道 stdin(input/readline 可用)、UTF-8 输出
+ * (Node 默认 UTF-8,无需环境变量)。
+ */
+export function runNodeCode(options: RunOptions): RunHandle {
+    const runId = `${Date.now().toString(36)}-${(runSeq++).toString(36)}`;
+    const script = `${tempScriptDir()}/run-${runId}.cjs`;
+    const fs = window.require("fs");
+    // .cjs:CommonJS 语义与 Node 默认一致,不因临时目录里出现 package.json 的 type:module 变 ESModule
+    fs.writeFileSync(script, options.code.replace(/\r\n/g, "\n"), {encoding: "utf8"});
+
+    const child = window.require("child_process").spawn("node", [script], {
+        cwd: options.cwd || undefined,
+        env: {
+            ...window.process?.env,
+        },
+        windowsHide: true,
+        stdio: ["pipe", "pipe", "pipe"],
+    });
+
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => options.onOutput(stripANSI(chunk)));
+    child.stderr.on("data", (chunk: string) => options.onOutput(stripANSI(chunk)));
+
+    let exited = false;
+    child.on("error", (e: any) => {
+        if (exited) return;
+        exited = true;
+        cleanup();
+        options.onOutput("\n[无法启动进程] ${e?.message || e}\n");
+        options.onExit(-1);
+    });
+    child.on("exit", (code: number) => {
+        if (exited) return;
+        exited = true;
+        cleanup();
+        options.onExit(code ?? 0);
+    });
+
+    function cleanup() {
+        try {
+            if (fs.existsSync(script)) fs.unlinkSync(script);
+        } catch {
+            // 临时文件删不掉不影响功能,temp 目录会被思源定期清理
+        }
+    }
+
+    return {
+        sendInput(line: string) {
+            if (exited || child.stdin.destroyed) return;
+            try {
+                child.stdin.write(line.replace(/\r?\n$/, "") + "\n");
+            } catch {
+                // 进程可能刚退出,忽略
+            }
+        },
+        interrupt() {
+            if (exited) return;
+            try {
+                child.kill();
+            } catch {
+                // 已退出
+            }
+        },
+    };
+}
+
 /** 从代码块 DOM 里取源码(.hljs 里是渲染过的,要从 textContent 还原) */
 export function extractCode(blockElement: Element): string {
     const codeEl = blockElement.querySelector(".hljs");

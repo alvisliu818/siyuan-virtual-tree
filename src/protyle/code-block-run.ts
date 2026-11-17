@@ -54,7 +54,7 @@ const ANSI_BG: Record<number, string> = {
     104: "#4a658f", 105: "#7f4a7f", 106: "#42858f", 107: "#9a9a9a",
 };
 
-function ansiToHtml(text: string): string {
+export function ansiToHtml(text: string): string {
     // 先整体 HTML 转义再按 SGR 分段上色(转义不会动 \x1b,顺序安全)
     const parts = escHTML(text).split(/(\x1b\[[0-9;]*m)/);
     let fg = "";

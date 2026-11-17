@@ -28,6 +28,7 @@
 // 全局主题切换(Monaco 扩展主题)经 onCodeThemeChanged → StateEffect 强制重建。
 import {ChangeDesc, EditorState, Extension, Range, StateEffect, StateField, Text, Transaction} from "@codemirror/state";
 import {cellSourcePos, tableAt} from "./cm6-table";
+import {codeRunKey, interruptCodeRun, renderCodeRunPanel, runLangOf, runStateOf, startCodeRun, type CodeRunLang} from "./cm6-code-run";
 import {
     Decoration,
     DecorationSet,
@@ -228,6 +229,9 @@ class CodeBlockWidget extends WidgetType {
     private readonly themeSig = getMonacoThemeName();
     // 构建时本卡片是否处于编辑态(参与 eq:进入/退出编辑态都要重建换正文)
     private readonly editingFlag = getEditingKey() === this.key;
+    // 运行结果面板(python/js):容器与订阅(destroy 时退订)
+    private runPanel: HTMLElement | null = null;
+    private runUnsub: (() => void) | undefined;
 
     constructor(
         readonly lang: string, readonly code: string, readonly key: string,
@@ -271,6 +275,22 @@ class CodeBlockWidget extends WidgetType {
             btn.classList.remove("is-copied");
             btn.innerHTML = COPY_ICON_SVG;
         }, 1600);
+    }
+
+    /** 运行态缓存键:语言 + 当前生效代码(编辑态取 Monaco 实时内容) */
+    private runKey(): string {
+        return codeRunKey(this.lang, getActiveBlockValue() ?? this.code);
+    }
+
+    private toggleRun(lang: CodeRunLang): void {
+        const key = this.runKey();
+        if (runStateOf(key).running) {
+            interruptCodeRun(key);
+            return;
+        }
+        startCodeRun(lang, getActiveBlockValue() ?? this.code, key);
+        // 面板随运行重键(编辑态内容与构建时可能不同),立即重建换到新键
+        if (this.runPanel) renderCodeRunPanel(this.runPanel, key);
     }
 
     private buildHead(view: EditorView): HTMLElement {
@@ -318,6 +338,26 @@ class CodeBlockWidget extends WidgetType {
             runCopy();
         };
         head.appendChild(btn);
+        // 运行按钮(python/js 类):复用 protyle 侧执行器(真子进程+stdin),
+        // 结果面板在卡片正文下方(见 toDOM 尾部的 renderCodeRunPanel)
+        const runLang = runLangOf(this.lang);
+        if (runLang) {
+            const rb = document.createElement("button");
+            rb.className = "syfe-cm-codeblock-runbtn";
+            const st = runStateOf(this.runKey());
+            rb.textContent = st.running ? "■" : "▶";
+            rb.title = st.running ? "停止运行" : "运行代码";
+            rb.onmousedown = (e) => {
+                e.stopPropagation();
+                e.preventDefault();
+            };
+            rb.onclick = (e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                this.toggleRun(runLang);
+            };
+            head.appendChild(rb);
+        }
         return head;
     }
 
@@ -448,11 +488,25 @@ class CodeBlockWidget extends WidgetType {
         host.className = "syfe-cm-codeblock-editorhost";
         slot.appendChild(host);
         if (this.editingFlag) body.classList.add("is-editing");
+        // 运行结果面板:卡片内、正文下方(面板 DOM 是 Decoration.replace 的纯视觉
+        // 层,不进思源文档 —— protyle 版担心的 .sy 污染在这里不存在)。
+        // 状态在 cm6-code-run 的会话缓存里,widget 重建(编辑/滚动)从缓存恢复
+        if (runLangOf(this.lang)) {
+            const panel = document.createElement("div");
+            panel.className = "syfe-cb-run syfe-cm-cbrun";
+            panel.setAttribute("contenteditable", "false");
+            panel.onmousedown = (e) => e.stopPropagation();
+            this.runPanel = panel;
+            this.runUnsub = renderCodeRunPanel(panel, this.runKey());
+            wrap.appendChild(panel);
+        }
         return wrap;
     }
 
     destroy(dom: HTMLElement): void {
         disconnectWidgetResize(dom);
+        if (this.runUnsub) { this.runUnsub(); this.runUnsub = undefined; }
+        this.runPanel = null;
         if (this.copiedTimer) window.clearTimeout(this.copiedTimer);
         this.copiedTimer = undefined;
         // 不在此处卸载单例:同 key 的继任 widget 可能在本实例销毁后才挂载,
@@ -1558,7 +1612,7 @@ export function cm6MarkdownRender(opts: Cm6RenderOptions): Extension {
                     if (event.clientY >= r.top + pane.clientHeight) return false;
                 }
                 // 复制按钮 / calc 结果列是独立交互区(结果可选中复制)
-                if (target.closest(".syfe-cm-codeblock-copy, .syfe-cm-calc-out")) return false;
+                if (target.closest(".syfe-cm-codeblock-copy, .syfe-cm-calc-out, .syfe-cb-run, .syfe-cm-codeblock-runbtn")) return false;
                 const wrap = target.closest(
                     ".syfe-cm-codeblock, .syfe-cm-table, .syfe-cm-math, .syfe-cm-inline-math, " +
                     ".syfe-cm-img, .syfe-cm-properties, .syfe-cm-quote",
