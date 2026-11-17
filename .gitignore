@@ -45,6 +45,7 @@ tools/__pycache__/
 # 一次性诊断/取证脚本与截图(_cdp-*.mjs、_patch_*.py、_shot-*.png 等)
 # 约定入库的长期探针(_cdp.mjs / pty-helper.js 等)不在此列
 tools/_cdp-*.mjs
+tools/_cdp-*.js
 tools/_patch_*.py
 tools/_shot-*.png
 tools/_vc-*.png
@@ -67,6 +68,7 @@ tests/e2e/_*
 
 # 项目内部笔记与 CM6 gutter 调研的一次性产物(文件留磁盘,不入库)
 /project_memory.md
+/SKILL.md
 tools/_cm-gutter.js
 tools/probe-gutter-*.js
 tools/probe-overflow-chain.js
